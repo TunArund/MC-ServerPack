@@ -144,10 +144,14 @@ modpack deploy <ID>                         上传指定整合包
 manager remove|config|start|stop|restart    远程管理整合包
 manager status|logs|backup|restore          状态、日志与存档
 gateway start|stop|status|guard             云主机电源控制
+gateway config                              验证 gateway 配置
 bot status|restart|stop|logs|follow         QQ Bot 管理
 cos <对象名> [--get]                        生成 COS 临时链接
 tui                                         进入 mc> 交互模式
 ```
+
+不带参数启动也会进入 TUI。在 `mc>` 输入模块名可进入该模块，例如输入 `bot` 后在
+`mc bot>` 直接使用 `status`、`logs`；输入 `back` 返回根层。
 
 `modpack` 在个人 PC 执行，`manager` 通过 SSH 调用 mc-server 上的 `manager.sh`。
 修改整合包后重新 `modpack deploy <ID>`，再执行 `manager restart <ID>`。
