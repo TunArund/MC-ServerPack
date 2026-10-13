@@ -26,6 +26,9 @@ cp config.yml.example config.yml
 Windows 将示例中的 `./mc.sh` 替换成 `mc.exe`。
 需要定时开关机和 QQ Bot 时，再填写gateway 配置并执行 `./mc.sh deploy gateway`。
 
+平台发行包已把 terminal 代码编入 `mc`/`mc.exe`，因此不附带根 `lib/`；用于部署
+mc-server 的 `manager/lib/` 仍会保留。
+
 ## 架构
 
 ```text

@@ -135,6 +135,12 @@ def make_zip(
         package = Path(raw) / package_name
         package.mkdir()
         export_source(version, package)
+        # The terminal package is embedded in the native executable. Keep
+        # manager/lib because it is deployed separately to mc-server.
+        shutil.rmtree(package / "lib")
+        (package / ".gitignore").unlink(missing_ok=True)
+        if platform_name.startswith("windows-"):
+            (package / "mc.sh").unlink()
         target = package / executable_name
         shutil.copy2(executable, target)
         if executable_name == "mc":
