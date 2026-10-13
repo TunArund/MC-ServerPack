@@ -17,6 +17,7 @@ def make_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="mc", description="MC-ServerPack 本地部署与远程管理入口")
     commands = root.add_subparsers(dest="module", required=True, metavar="MODULE")
     commands.add_parser("tui", help="进入 mc> 交互模式")
+    commands.add_parser("quickstart", aliases=("setup", "wizard"), help="启动首次配置向导")
     deploy = commands.add_parser("deploy", help="部署 manager 或 gateway")
     deploy.add_argument("target", choices=("manager", "gateway", "all"), metavar="TARGET")
     deploy.add_argument("--check", action="store_true", help="只检查本机配置与远端环境")
@@ -86,6 +87,9 @@ def dispatch(argv: list[str] | None = None, *, interactive: bool = False) -> int
             raise RuntimeError("已经处于交互模式")
         from .tui import run as run_tui
         return run_tui(dispatch)
+    if args.module in ("quickstart", "setup", "wizard"):
+        from .wizard import run as run_wizard
+        return run_wizard()
     if args.module == "modpack" and args.command == "create":
         modpack.create(MANAGER, args.id); return 0
     if args.module == "modpack" and args.command == "import":

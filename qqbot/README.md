@@ -1,15 +1,51 @@
-# QQ Bot 与 CVM 控制器
+# Gateway、QQ Bot 与 CVM 控制器
 
-这是部署到 `lighthouse` 的独立 Compose 单元。
+`qqbot/` 部署到常在线 gateway，负责 QQ 命令、定时开关 mc-server 和告警。运行状态
+保存在 `data/`，重新部署不会覆盖。
 
-- `src/qqbot-menu.py`：QQ 菜单与 TAT 操作
-- `src/cvm-power.sh`：腾讯云 CVM 开关机、状态和 guard
-- `entrypoint.sh`：生成运行配置、启动定时器与 QQ Bot
-- `data/`：日志、冷却、取消预订和调度状态，不随部署覆盖
+## 配置
 
-计划关机时，manager 先按 `MC_PLAY_END` 优雅停服；本控制器等到
-`MC_POWEROFF_AT` 后调用 `StopInstances` 普通关机并复查状态。普通关机失败时，
-只有确认 Minecraft 端口已经关闭才使用 `StopType=HARD`，否则保留实例并告警。
+gateway 的 SSH、CVM 和调度配置位于根 `config.yml`；腾讯云与 QQ Bot 密钥位于根
+`.env`。远端 `qqbot/.env` 是部署时生成的运行产物，不手工维护。
 
-不要直接在本目录维护 `.env`；根目录的 `mc.sh deploy gateway` 会从仓库根 `.env`
-生成最小配置并上传。
+```yaml
+gateway:
+  host: gateway.example
+  user: steam
+  dir: /home/steam/MC-ServerPack/qqbot
+  region: ap-nanjing
+  instance-id: ins-xxx
+  schedule:
+    enabled: true
+    start: 20:00
+    start-elast: 5
+    end: 23:00
+    end-elast: 3
+    notify-elast: 60
+    notify-step: 2
+```
+
+`start-elast` 是为云主机和 Minecraft 启动预留的分钟数；`end-elast` 是关服后的
+正常关机宽限。计划关机时，manager 先保存并停服，gateway 随后调用
+`StopInstances` 并复查；只有确认 Minecraft 已停止时才允许强制关机兜底。
+
+## CAM 最小权限
+
+```text
+cvm:DescribeInstances
+cvm:StartInstances
+cvm:StopInstances
+tat:RunCommand
+tat:DescribeInvocationTasks
+```
+
+## 命令
+
+```text
+deploy gateway
+gateway config
+gateway start|stop|status|guard
+bot status|restart|stop|logs|follow [行数]
+```
+
+当前一个 gateway 固定控制一个整合包。manager 本身仍可管理多个整合包。

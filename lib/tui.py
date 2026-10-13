@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import shlex
 
-MODULES = ("tui", "deploy", "modpack", "manager", "gateway", "bot", "cos")
-ENTERABLE = set(MODULES) - {"tui"}
+MODULES = ("tui", "quickstart", "deploy", "modpack", "manager", "gateway", "bot", "cos")
+ENTERABLE = set(MODULES) - {"tui", "quickstart"}
 
 
 def split_command(line: str) -> list[str]:
@@ -17,7 +17,8 @@ def split_command(line: str) -> list[str]:
 
 
 def run(dispatch) -> int:
-    print("MC-ServerPack 交互模式；输入 help 查看命令，back 返回，exit 退出。")
+    print("MC-ServerPack 交互模式；首次使用请输入 quickstart。")
+    print("输入 help 查看命令，back 返回，exit 退出。")
     module: str | None = None
     while True:
         try:
