@@ -1,0 +1,2 @@
+-r ../lib/requirements.txt
+PyInstaller>=6.0,<7

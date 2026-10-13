@@ -4,7 +4,7 @@ java: 17
 memory: 4g
 port: 25565
 
-# 自动备份由 mc-server 用户的 crontab 执行；关闭时仍可手动 backup。
+# 自动备份由user级的crontab执行，默认关闭，方便使用自动备份模组
 backup:
   enabled: false
   interval: 6h

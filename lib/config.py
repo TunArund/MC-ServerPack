@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Read and validate the repository-level config.yml."""
+"""Read and validate the repository-level config.yml.
+
+This module is the single project-config implementation used by the CLI.
+"""
 
 from __future__ import annotations
 
-import argparse
-import json
 import re
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ try:
 except ModuleNotFoundError:
     yaml = None
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "config.yml"
 PACK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 TIME_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
@@ -58,10 +59,9 @@ def load() -> dict:
         raise ConfigError(f"config.yml 读取失败：{exc}") from exc
     root = mapping(doc, "config.yml")
     manager = mapping(root.get("manager"), "manager")
-    modpack = mapping(manager.get("modpack"), "manager.modpack")
-    nonempty(manager.get("region"), "manager.region")
-    nonempty(manager.get("instance-id"), "manager.instance-id")
+    modpack = mapping(manager.get("modpack"), "manager.modpack", optional=True)
     nonempty(manager.get("host"), "manager.host")
+    nonempty(manager.get("user"), "manager.user")
     directory = nonempty(manager.get("dir"), "manager.dir")
     if not directory.startswith("/"):
         raise ConfigError("manager.dir 必须是绝对路径")
@@ -70,10 +70,14 @@ def load() -> dict:
         raise ConfigError("manager.modpack.max-running 必须是正整数")
     if modpack.get("overnum-action", "reject") not in ("reject", "rotate"):
         raise ConfigError("manager.modpack.overnum-action 只能是 reject 或 rotate")
-    nonempty(modpack.get("mem-limit"), "manager.modpack.mem-limit")
+    if "mem-limit" in modpack:
+        nonempty(modpack["mem-limit"], "manager.modpack.mem-limit")
     gateway = mapping(root.get("gateway"), "gateway", optional=True)
     if gateway:
         nonempty(gateway.get("host"), "gateway.host")
+        nonempty(gateway.get("user"), "gateway.user")
+        nonempty(gateway.get("region"), "gateway.region")
+        nonempty(gateway.get("instance-id"), "gateway.instance-id")
         gateway_dir = nonempty(gateway.get("dir"), "gateway.dir")
         if not gateway_dir.startswith("/"):
             raise ConfigError("gateway.dir 必须是绝对路径")
@@ -136,40 +140,3 @@ def choose_pack() -> str:
     if len(choices) != 1:
         raise ConfigError("gateway 需要唯一整合包；当前请只保留一个非 template 整合包")
     return choices[0]
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="action", required=True)
-    get = sub.add_parser("get"); get.add_argument("path")
-    sub.add_parser("validate")
-    sub.add_parser("gateway-pack")
-    targets = sub.add_parser("targets"); targets.add_argument("type", choices=("user", "group"))
-    sub.add_parser("admins")
-    args = parser.parse_args()
-    doc = load()
-    if args.action == "get":
-        value = get_path(doc, args.path)
-        if isinstance(value, bool):
-            print(str(value).lower())
-        elif isinstance(value, (dict, list)):
-            print(json.dumps(value, ensure_ascii=False))
-        else:
-            print(value)
-    elif args.action == "gateway-pack":
-        print(choose_pack())
-    elif args.action == "targets":
-        values = doc.get("gateway", {}).get("qqbot", {}).get("targets", [])
-        print(" ".join(str(item["id"]) for item in values if item.get("type") == args.type))
-    elif args.action == "admins":
-        values = doc.get("gateway", {}).get("qqbot", {}).get("admins", [])
-        print(" ".join(map(str, values)))
-    return 0
-
-
-if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except ConfigError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        raise SystemExit(2)

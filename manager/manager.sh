@@ -16,7 +16,9 @@ usage(){ cat <<'EOF'
   ./manager.sh restore <modpack-id> [备份文件名]
 EOF
 }
-command -v python3 >/dev/null || die "缺少 python3，请通过 mc.sh deploy manager 安装"
+command -v python3 >/dev/null || die "缺少 Python 3.8+，请通过 mc.sh deploy manager 安装"
+python3 -c 'import sys, yaml; raise SystemExit(sys.version_info < (3, 8))' >/dev/null 2>&1 \
+  || die "manager 需要 Python 3.8+ 和 PyYAML"
 cfg(){ python3 -B "$CONFIG" "$@"; }; global(){ cfg global "$1"; }; value(){ cfg pack "$1" "$2"; }
 packs(){ cfg packs; }; require_pack(){ cfg validate "$1"; }; archive(){ python3 -B "$ARCHIVE" "$@"; }
 require_docker(){ command -v docker >/dev/null && docker compose version >/dev/null || die "缺少 Docker/Compose"; }
@@ -37,7 +39,9 @@ create_pack(){
   local p="$1" d="$ROOT/modpacks/$1"; [[ "$p" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "无效 ID：$p"
   [ ! -e "$d" ] || die "目录已存在：$d"; mkdir -p "$d"/{src,data,backups}
   cp "$ROOT/modpacks/template/config.yml" "$d/config.yml"; sed -i "s/^name:.*/name: $p/" "$d/config.yml"
-  touch "$d/src/.gitkeep" "$d/data/.gitkeep" "$d/backups/.gitkeep"; render "$p"; echo "已创建：$p"
+  touch "$d/src/.gitkeep" "$d/data/.gitkeep" "$d/backups/.gitkeep"
+  echo "已创建：$p"
+  echo "下一步：把服务端文件放入 modpacks/$p/src/，再编辑 config.yml"
 }
 remove_pack(){
   local force=0 p d; [ "${1:-}" != --force ] || { force=1; shift; }; [ "$#" = 1 ] || die "用法：remove [--force] <ID>"

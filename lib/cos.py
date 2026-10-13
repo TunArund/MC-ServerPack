@@ -9,14 +9,14 @@ def die(message: str) -> None:
     raise SystemExit("错误: " + message)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="生成 COS 一次性上传或下载签名链接")
     parser.add_argument("name", nargs="?", help="文件名或完整对象路径")
     parser.add_argument("--get", action="store_true", help="生成下载链接；默认生成上传链接")
     parser.add_argument("--expire", type=int, help="有效期秒数")
     parser.add_argument("--force", action="store_true", help="允许覆盖已经存在的上传对象")
     parser.add_argument("--url-only", action="store_true", help="只输出 URL")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.get and args.force:
         parser.error("--get 与 --force 不能同时使用")
     required = ("TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "REGION", "COS_BUCKET")

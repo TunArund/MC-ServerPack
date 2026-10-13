@@ -77,11 +77,8 @@ class GlobalConfig:
     overflow_policy: str
     max_memory: str
     max_memory_bytes: int
-    stop_time: str
     start_timeout_seconds: int
     stop_timeout_seconds: int
-    broadcast_minutes: tuple[int, ...]
-    stop_enabled: bool
 
     @classmethod
     def load(cls) -> "GlobalConfig":
@@ -95,42 +92,20 @@ class GlobalConfig:
             raise ConfigError(f"config.yml 读取失败：{exc}") from exc
         if not isinstance(doc, dict) or not isinstance(doc.get("manager"), dict):
             raise ConfigError("config.yml 缺少 manager 配置")
-        modpack = doc["manager"].get("modpack")
+        modpack = doc["manager"].get("modpack", {})
         if not isinstance(modpack, dict):
-            raise ConfigError("config.yml 缺少 manager.modpack 配置")
-        gateway = doc.get("gateway", {})
-        timer = gateway.get("schedule", {}) if isinstance(gateway, dict) else {}
+            raise ConfigError("manager.modpack 必须是对象")
         maximum = modpack.get("max-running", 1)
         policy = modpack.get("overnum-action", "reject")
         memory = modpack.get("mem-limit", "0")
-        stop_time_raw = timer.get("end", "23:00")
-        if type(stop_time_raw) is int and 0 <= stop_time_raw < 1440:
-            stop_time_raw = f"{stop_time_raw // 60:02d}:{stop_time_raw % 60:02d}"
-        stop_time = stop_time_raw
-        step = timer.get("notify-step", 2)
         if type(maximum) is not int or maximum < 1:
             raise ConfigError("modpack.max-running 必须是正整数")
         if policy not in ("reject", "rotate"):
             raise ConfigError("manager.modpack.overnum-action 只能是 reject 或 rotate")
-        if not isinstance(stop_time, str) or not TIME_RE.fullmatch(stop_time):
-            raise ConfigError("gateway.schedule.end 必须是 HH:MM")
-        if type(step) is not int or step < 2:
-            raise ConfigError("timer.broadcast-step-before-stop 必须是大于 1 的整数")
-        broadcast = parse_duration(f"{timer.get('notify-elast', 60)}m")
-        if broadcast < 60 or broadcast % 60:
-            raise ConfigError("timer.broadcast-time-before-stop 必须是整分钟")
-        minutes = []
-        current = broadcast // 60
-        while current >= 1:
-            minutes.append(current)
-            current //= step
-        enabled = timer.get("enabled", False)
-        if type(enabled) is not bool:
-            raise ConfigError("gateway.schedule.enabled 必须是 true 或 false")
         return cls(
-            maximum, policy, memory, parse_size(memory), stop_time,
-            parse_duration(f"{timer.get('start-elast', 5)}m"),
-            parse_duration(f"{timer.get('end-elast', 3)}m"), tuple(minutes), enabled,
+            maximum, policy, memory, parse_size(memory),
+            parse_duration(modpack.get("start-timeout", "5m")),
+            parse_duration(modpack.get("stop-timeout", "3m")),
         )
 
     def get(self, key: str) -> str:
@@ -139,11 +114,8 @@ class GlobalConfig:
             "overflow-policy": self.overflow_policy,
             "max-memory": self.max_memory,
             "max-memory-bytes": self.max_memory_bytes,
-            "stop-time": self.stop_time,
             "start-timeout-seconds": self.start_timeout_seconds,
             "stop-timeout-seconds": self.stop_timeout_seconds,
-            "broadcast-minutes": " ".join(map(str, self.broadcast_minutes)),
-            "stop-enabled": str(self.stop_enabled).lower(),
         }
         if key not in values:
             raise ConfigError(f"未知全局配置项：{key}")
@@ -332,7 +304,7 @@ def prepare_mounts(spec: PackSpec) -> None:
 
 def render(spec: PackSpec) -> Path:
     global_config = GlobalConfig.load()
-    if spec.memory_bytes > global_config.max_memory_bytes:
+    if global_config.max_memory_bytes > 0 and spec.memory_bytes > global_config.max_memory_bytes:
         raise ConfigError(f"整合包 {spec.pack} 的内存 {spec.memory} 超过全局上限 {global_config.max_memory}")
     prepare_mounts(spec)
     volumes: list[dict[str, object]] = [{

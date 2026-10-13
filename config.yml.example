@@ -1,19 +1,24 @@
 # 核心管理端
 manager:
-  region: ap-nanjing
-  instance-id: ins-xxxxyyyy
-  host: cvm-mc
-  dir: /root/MC-ServerPack/manager
+  host: hostaddr
+  user: username
+  dir: /home/username/MC-ServerPack/manager
+  # 以下均可省略：默认同时运行 1 个、超限拒绝、不设全局内存上限。
   modpack:
     max-running: 1
     overnum-action: rotate
     mem-limit: 13g
+    start-timeout: 5m
+    stop-timeout: 3m
 
 
 # 可选的gateway，设置后可以自动开关机
 gateway:
-  host: lighthouse
+  host: hostaddr
+  user: username
   dir: /home/steam/MC-ServerPack/qqbot
+  region: ap-nanjing
+  instance-id: ins-xxxxyyyy
   schedule:
     enabled: true
     start: 20:00
