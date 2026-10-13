@@ -256,7 +256,7 @@ def main() -> int:
     parser.add_argument("version", help="版本标签，例如 v0.1")
     parser.add_argument("--publish", action="store_true", help="创建 Gitee Release 并上传附件")
     parser.add_argument("--remote", default="origin", help="Gitee Git 远端名，默认 origin")
-    parser.add_argument("--output", type=Path, default=ROOT / "dist", help="发行包输出目录")
+    parser.add_argument("--output", type=Path, default=ROOT / "dev/dist", help="发行包输出目录")
     args = parser.parse_args()
     owner, repo = precheck(args.version, args.remote)
     platform_name, executable_name = platform_info()

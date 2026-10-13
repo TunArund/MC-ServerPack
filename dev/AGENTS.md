@@ -44,4 +44,4 @@ python dev/release.py v0.1 --publish
 ```
 
 先在 Linux 执行一次，再在 Windows 的同一标签上执行一次。脚本会复用 Gitee
-Release，并上传当前平台的 ZIP 和 SHA-256 文件。
+Release，并上传 `dev/dist/` 中当前平台的 ZIP 和 SHA-256 文件。
