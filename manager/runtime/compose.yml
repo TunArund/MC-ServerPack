@@ -1,0 +1,19 @@
+services:
+  minecraft:
+    init: true
+    # mc-server 重启或 Docker daemon 恢复后自动拉起整合包。
+    restart: unless-stopped
+    working_dir: /server
+    stop_grace_period: "${MC_STOP_TIMEOUT:-180}s"
+    environment:
+      HOME: /tmp
+      MC_STOP_TIMEOUT: "${MC_STOP_TIMEOUT:-180}"
+      MC_SERVER_PORT: "${MC_SERVER_PORT:-25565}"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/$${MC_SERVER_PORT:-25565}"]
+      interval: 10s
+      timeout: 3s
+      start_period: 120s
+      retries: 3
+    labels:
+      mc-manager.managed: "true"

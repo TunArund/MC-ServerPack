@@ -1,0 +1,24 @@
+# Local secrets
+/.env
+/.env.*
+!/.env.example
+/config.yml
+!/config.yml.example
+
+# QQ Bot runtime state
+/qqbot/data/*
+!/qqbot/data/.gitkeep
+
+# Manager local state and private modpacks
+/manager/config.yml
+/manager/.venv/
+/manager/modpacks/*
+!/manager/modpacks/template/
+/manager/modpacks/template/data/
+
+# Caches and temporary files
+__pycache__/
+*.py[cod]
+*.tmp
+*.log
+/.venv/

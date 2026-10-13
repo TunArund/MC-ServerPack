@@ -1,0 +1,30 @@
+name: mc-qqbot
+
+services:
+  qqbot:
+    build: .
+    image: mc-qqbot:local
+    container_name: mc-qqbot
+    restart: unless-stopped
+    env_file: "${DEPLOY_ENV_FILE:-.env}"
+    environment:
+      TZ: Asia/Shanghai
+      QQBOT_ENABLED: "1"
+      INSTANCE_ID: "${CVM_INSTANCE_ID}"
+      REGION: "${CVM_REGION}"
+      MC_PORT: "${MC_PORT}"
+      MC_ADDR: "${MC_ADDR}"
+      POWER_START: "${MC_POWER_START}"
+      PLAY_START: "${MC_PLAY_START}"
+      PLAY_END: "${MC_PLAY_END}"
+      POWEROFF_AT: "${MC_POWEROFF_AT}"
+      SHUTDOWN_AT: "${MC_SHUTDOWN_START}"
+      NOTICE_MINUTES: "${MC_NOTICE_MINUTES}"
+      TENCENTCLOUD_SECRET_ID: "${CVM_SECRET_ID}"
+      TENCENTCLOUD_SECRET_KEY: "${CVM_SECRET_KEY}"
+      # Missing means a pre-monorepo .env; preserve its formerly enabled scheduler.
+      POWER_SCHEDULER_ENABLED: "${MC_AUTO_SCHEDULE:-1}"
+      CVM_POWER_STATE_DIR: /app/state
+      LOG_DIR: /app/state/logs
+    volumes:
+      - ./data:/app/state

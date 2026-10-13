@@ -1,0 +1,40 @@
+# 核心管理端
+manager:
+  region: ap-nanjing
+  instance-id: ins-xxxxyyyy
+  host: cvm-mc
+  dir: /root/MC-ServerPack/manager
+  modpack:
+    max-running: 1
+    overnum-action: rotate
+    mem-limit: 13g
+
+
+# 可选的gateway，设置后可以自动开关机
+gateway:
+  host: lighthouse
+  dir: /home/steam/MC-ServerPack/qqbot
+  schedule:
+    enabled: true
+    start: 20:00
+    start-elast: 5
+    end: 23:00
+    end-elast: 3
+    notify-elast: 60
+    notify-step: 2
+  qqbot:
+    targets:
+    - type: user
+      id: aaa
+    # 只有群主才能邀请机器人进群
+    - type: group
+      id: bbb
+    admins:
+    - aaa
+    
+# 可选的对象存储
+cos:
+  region: ap-shanghai
+  bucket: bucketname-appid
+  prefix: /minecraft
+  expire: 3600

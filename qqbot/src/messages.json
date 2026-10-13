@@ -1,0 +1,147 @@
+{
+  "_note": [
+    "会发到 QQ 的文案都在这里 —— 单一事实来源。",
+    "",
+    "范围: 只有【离开这台机器、发到 QQ】的文字才放进来。log() 那种只写",
+    "journald / cvm-power.log 的保持内联在脚本里 —— 它们不出机器, 抽出来",
+    "只是徒增一层间接。",
+    "",
+    "占位符写 {名字}: Python 直接 str.format(**kw); bash 那边由容器入口把",
+    "本文件摊平成可 source 的 messages.env, 再用 mc-msg.sh 的 msg() 做替换。",
+    "字面量的大括号要写成 {{ }}。",
+    "",
+    "⚠️ 正文一律【不含 markdown 语法】(不用 ** ## ~~) —— 这台机器人不渲染",
+    "markdown, 写了只会把星号漏给用户。强调用 emoji。自检里有守卫扫这个。",
+    "唯一的例外是「按钮的载体」: 带按钮的消息必须走 msg_type=2, 但正文照样",
+    "不含语法, 所以渲染不渲染都长一个样。"
+  ],
+
+  "menu": {
+    "text": "落幕曲·MC\n点下面的按钮\n\n或直接发「状态 / 开机 / 关机」",
+    "plain": "落幕曲·MC\n发「状态 / 开机 / 关机」"
+  },
+
+  "status": {
+    "running": "🟢 开着呢，现在 {players} 人在线",
+    "running_nobody": "🟢 开着呢，现在没人",
+    "running_no_count": "🟢 开着呢，进吧",
+    "booting": "🟡 机器开着，服务器还没起来，等会儿再试",
+    "stopped": "🔴 现在关着",
+    "stopped_window": "🔴 现在关着\n每天 {boot} 开机、{play_start} 能进",
+    "transitioning": "🟡 正在开机或关机，等半分钟",
+    "unknown": "⚠️ 查不到状态",
+    "timeout": "⚠️ 查询超时，再试一次",
+    "addr": "地址：{addr}",
+    "addr_with_port": "地址：{addr}"
+  },
+
+  "logs": {
+    "header": "📜 最近 {n} 行日志",
+    "errors_header": "⚠️ 最近 {n} 条报错",
+    "no_errors": "最近没有报错",
+    "empty": "（日志是空的）",
+    "truncated": "…（太长，已截断）",
+    "read_failed": "读日志失败了：{reason}",
+    "private_only": "日志只能私聊看 —— 里面有机器的路径和玩家聊天记录，不适合发群里。",
+    "section_gap": "\n\n"
+  },
+
+  "cancel": {
+    "doing": "🟡 正在取消今晚 —— 先关服存盘",
+    "ok": "🌙 今晚取消了：机器已关，不会再自动开机，值守检查静音到今晚结束",
+    "already": "🌙 今晚取消了：机器本来就是关的，不会再自动开机，值守检查静音到今晚结束",
+    "stop_failed": "❌ 没取消成：关服失败，所以什么也没动（也没静音 —— 机器可能还在计费）\n{reason}",
+    "query_failed": "⚠️ 没取消成：查不到实例状态，等会儿再试"
+  },
+
+  "players": {
+    "list": "🧑 现在 {n} 人在线\n{names}",
+    "nobody": "🧑 现在没人在线",
+    "unknown": "⚠️ 没问到在线名单，等会儿再试"
+  },
+
+  "start": {
+    "doing": "🟡 正在开机，一两分钟",
+    "already_running": "已经开着啦 🎮",
+    "transitioning": "正在切换状态，等半分钟",
+    "timeout": "开机超时了，十分钟还没好",
+    "failed": "开机没成功，上去看看",
+    "port_closed": "机器起来了，服务器没连上",
+    "ok": "🟢 开好了，可以进 🎮"
+  },
+
+  "stop": {
+    "doing": "🟡 正在存档关服",
+    "already_stopped": "本来就是关着的",
+    "transitioning": "正在切换状态，等半分钟",
+    "shutdown_failed": "⚠️ 关服失败，已中止、没断电（存档优先）\n原因：{reason}",
+    "ok": "🔴 关好了，存档已保存 💤",
+    "poweroff_failed": "服务器停了、存档好了，但断电没成功，还在计费"
+  },
+
+  "reply": {
+    "cooldown_fresh": "⏳ 服务器刚开起来，先不让关 —— 再等 {mins} 分钟",
+    "cooldown_minutes": "⏳ 服务器 {ago} 分钟前才开起来，先不让关 —— 再等 {mins} 分钟",
+    "not_understood": "没听懂，发「菜单」看看",
+    "no_permission": "只有服主能操作",
+    "ignore_ok": "🔕 好，值守检查静音 {hours} 小时；到点还是这样我再喊你",
+    "busy": "上一个还没跑完，稍等",
+    "log_error": "查日志出错了：{reason}",
+    "status_error": "查状态出错了：{reason}",
+    "exec_error": "出错了：{reason}"
+  },
+
+  "alert": {
+    "_note": [
+      "一条告警/播报发出去 = 来源标签 + 正文 + 页脚(见 mc-notify.sh), 三段拼成",
+      "一条消息。所以正文【别再抄一遍标签】—— announce_started 原先写的是",
+      "「服务器已开服，可以进了 🎮」, 拼上标签「🎮 服务器已开服」就变成同一句话",
+      "写两遍、🎮 出现两个。正文只写标签没说的那部分。",
+      "",
+      "开服播报的地址行由 cvm-power.sh 拿 STATUS_ADDR 拼上去, 不写死在这里 ——",
+      "省得以后换地址要改两处。"
+    ],
+    "label_power": "⚠️ MC 开关机",
+    "label_burning": "🔥 MC 在烧钱",
+    "label_not_up": "⚠️ MC 该开却没开",
+    "label_watchdog": "⚠️ MC 看门狗",
+    "label_shutdown": "⚠️ MC 关服",
+    "label_announce": "🎮 服务器已开服",
+    "label_menu": "⚠️ MC 菜单",
+
+    "start_query_failed": "开机失败：查不到实例状态。检查 Lighthouse 上的 tccli 凭据和网络。",
+    "start_api_failed": "开机失败：StartInstances 调用报错。日志在 {log_file}",
+    "start_not_running": "开机失败：等了 {waited} 秒，云那边还是 {state}，没进入运行中。\n按量计费的机器关机时会释放 CPU 和内存，赶上可用区资源紧张就可能起不来 —— 过一会儿再试，或者上控制台看看。",
+    "start_port_closed": "实例跑起来了，但 {waited} 秒内端口 {port} 还是连不上 —— 服务端可能没启动成功。",
+    "announce_started": "可以进了",
+
+    "stop_query_failed": "关机失败：查不到实例状态。检查 Lighthouse 上的 tccli 凭据和网络。",
+    "stop_no_time": "关机失败：{conf} 里没给出断电时刻（文件缺失或损坏），不敢瞎断电。修好之后手动跑一次 {script} stop。",
+    "stop_bad_time": "关机失败：断电时刻 {time} 解析不了，不敢瞎断电。检查 {conf}。",
+    "stop_port_still_open": "已过断电时刻 {time}，端口 {port} 还监听了 {waited} 秒 —— 存档可能没完成。将只尝试普通关机，不会强制断电。",
+    "stop_api_failed": "关机失败：StopInstances 调用报错。日志在 {log_file}",
+    "stop_still_running": "关机失败：实例还是 {state}，可能还在计费！上控制台确认一下。",
+
+    "guard_burning": "非开服时段还开着，正在计费。\n现在是 {now}，开服时段是 {boot}–{poweroff}。\n原因通常是两种：有人手动开了机，或者定时关机没跑成（Lighthouse 重启 / 容器没起来 / 凭据过期）。\n不管它就会一遍遍催，不想现在处理就点「忽略」—— 让它安静 1/2/5 小时。",
+    "guard_should_be_up": "机器是关着的，玩家进不来。\n现在是 {now}，开服时段是 {boot}–{poweroff}。\n可能是 {boot} 那条开机任务没跑成（Lighthouse 重启 / 容器没起来 / 凭据过期），也可能有人手动关了机。",
+
+    "shutdown_timeout": "服务端 3 分钟内没停下来（当前 {state}）。世界可能只存到上一次自动存档（最多回退 5 分钟），而断电照常。按 README「服务端卡死了怎么办」手动处置。",
+    "shutdown_no_leveldat": "读不到 {level_dat}，没法确认世界有没有落盘。人工核对一下 {world_dir}。",
+    "shutdown_not_flushed": "服务端说停了，但 level.dat 的时间戳没前进 —— 世界可能没真正存下去。人工核对 {world_dir}。",
+
+    "watchdog_restarted": "{service} 卡死了，已自动重启（本小时第 {n}/{max} 次）",
+    "watchdog_restart_failed": "看门狗重启 {service} 失败，需要人工介入",
+    "watchdog_giveup": "{service} 一小时内卡死 {n} 次，看门狗已经放弃，需要人工介入",
+    "watchdog_unit_failed": "{service} 已经是 failed 状态（多半是崩溃循环触发了限流），需要人工检查"
+  },
+
+  "button": {
+    "start": "开机",
+    "cancel": "取消预订",
+    "stop": "关机",
+    "players": "玩家列表",
+    "ignore_1h": "忽略1h",
+    "ignore_2h": "忽略2h",
+    "ignore_5h": "忽略5h"
+  }
+}

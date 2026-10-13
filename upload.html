@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<!--
+  给客户的上传页 —— 这就是成品, 原样发给客户就行, 不需要再加工。
+  改外观直接改本文件; 改完想验一遍, 见 README 末尾的测试命令。
+
+  页面本身不含任何凭据: 钥匙是客户自己粘进来的, 所以这个文件发出去
+  没有额外风险。真正不能外传的是每次生成的那把钥匙。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>上传文件</title>
+<style>
+  /* 不用 Web Font: 客户要在内地、离线双击打开, 外链字体大概率加载不出来。
+     所以只用系统字体栈 —— 拉丁字形走 Segoe, 中文回落到雅黑/苹方。 */
+  :root {
+    --paper:     #F5F7F9;
+    --sheet:     #FFFFFF;
+    --ink:       #171A1F;
+    --ink-soft:  #5F6B7A;
+    --rule:      #E1E6EC;
+    --accent:    #1257C4;
+    --ok:        #0B7A3E;
+    --err:       #B4232A;
+
+    --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+               "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+    --font-mono: "Cascadia Mono", "Consolas", "SFMono-Regular", "Menlo", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2rem 1.25rem;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 0.9375rem/1.65 var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  [hidden] { display: none !important; }
+
+  .sheet {
+    width: 100%;
+    max-width: 32rem;
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 2rem;
+  }
+
+  h1 {
+    margin: 0 0 1.75rem;
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* 两个字段共用一套排布, 间距一致, 读起来就是一张两行的表单 */
+  .field { margin-bottom: 1.75rem; }
+
+  .label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+    font-weight: 600;
+  }
+
+  .label svg { color: var(--ink-soft); flex: none; }
+
+  .keybox {
+    display: block;
+    width: 100%;
+    min-height: 4.5rem;
+    padding: 0.7rem 0.85rem;
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+    background: #fff;
+    color: var(--ink);
+    font: 400 0.8125rem/1.5 var(--font-mono);
+    resize: vertical;
+    word-break: break-all;
+  }
+
+  .keybox:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+  }
+
+  .keynote {
+    margin: 0.55rem 0 0;
+    font-size: 0.875rem;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .keynote svg { flex: none; }
+  .keynote.ok  { color: var(--ok); }
+  .keynote.err { color: var(--err); }
+
+  .drop {
+    border: 1.5px dashed var(--rule);
+    border-radius: 12px;
+    padding: 2rem 1.25rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+
+  .drop:hover,
+  .drop.over { border-color: var(--accent); background: #F2F6FD; }
+
+  .drop-main { margin: 0 0 0.3rem; font-weight: 600; }
+  .drop-sub  { margin: 0; color: var(--ink-soft); font-size: 0.875rem; }
+
+  /* 真正的键盘可达控件, 拖拽区只是它的放大器 */
+  .pick {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+
+  .picked {
+    margin: 1rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    word-break: break-all;
+  }
+
+  .picked.warn { color: var(--err); font-family: var(--font-ui); }
+
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 0.75rem 1.5rem;
+    border: 0;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #fff;
+    font: 600 1rem/1.4 var(--font-ui);
+    cursor: pointer;
+  }
+
+  .btn:disabled { background: #C8D2E0; cursor: default; }
+
+  .pick:focus-visible,
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+  progress {
+    display: block;
+    width: 100%;
+    height: 6px;
+    border: 0;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--rule);
+  }
+  progress::-webkit-progress-bar { background: var(--rule); }
+  progress::-webkit-progress-value { background: var(--accent); transition: width 0.2s linear; }
+  progress::-moz-progress-bar { background: var(--accent); }
+
+  .doing-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin: 0.85rem 0 0;
+  }
+
+  .doing-name { font-family: var(--font-mono); font-size: 0.8125rem; word-break: break-all; }
+  .doing-pct  { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+  .hint { margin: 0.6rem 0 0; color: var(--ink-soft); font-size: 0.8125rem; }
+
+  .state-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.75rem;
+    font-size: 1.0625rem;
+    font-weight: 600;
+  }
+
+  .state-head.ok  { color: var(--ok); }
+  .state-head.err { color: var(--err); }
+
+  .state-msg { margin: 0 0 1.5rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+
+  @media (max-width: 26rem) {
+    .sheet { padding: 1.5rem 1.25rem; }
+    .field { margin-bottom: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+<main class="sheet">
+
+  <h1>上传</h1>
+
+  <section id="stage-form">
+
+    <div class="field">
+      <label class="label" for="key">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="8" cy="16" r="4"/><path d="m11 13 8-8"/>
+          <path d="m15.5 8.5 2 2"/><path d="m13 11 2 2"/>
+        </svg>
+        钥匙
+      </label>
+      <textarea id="key" class="keybox" rows="3" spellcheck="false"
+                autocapitalize="off" autocomplete="off"
+                placeholder="把对方给你的钥匙粘贴到这里"></textarea>
+      <p class="keynote" id="keynote" hidden></p>
+    </div>
+
+    <div class="field">
+      <span class="label">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 3v5h5"/>
+          <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>
+        </svg>
+        文件
+      </span>
+      <div class="drop" id="drop">
+        <p class="drop-main">把文件拖到这里</p>
+        <p class="drop-sub">或者 <button type="button" class="pick" id="pick">在电脑里选一个</button></p>
+        <p class="picked" id="picked" hidden></p>
+        <input type="file" id="file" hidden>
+      </div>
+    </div>
+
+    <button type="button" class="btn" id="go" disabled>上传</button>
+  </section>
+
+  <section id="stage-doing" hidden>
+    <progress id="bar" max="100" value="0"></progress>
+    <p class="doing-line">
+      <span class="doing-name" id="doing-name"></span>
+      <span class="doing-pct" id="doing-pct">0%</span>
+    </p>
+    <p class="hint">文件大的话会慢一些，传完之前请不要关闭页面。</p>
+  </section>
+
+  <section id="stage-done" hidden>
+    <p class="state-head ok">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 6 9 17l-5-5"/>
+      </svg>
+      上传完成
+    </p>
+    <p class="state-msg" id="done-msg"></p>
+    <p class="hint">可以关闭本页了。</p>
+  </section>
+
+  <section id="stage-fail" hidden>
+    <p class="state-head err">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/>
+      </svg>
+      上传没有成功
+    </p>
+    <p class="state-msg" id="fail-msg" role="status"></p>
+    <button type="button" class="btn" id="retry">再试一次</button>
+  </section>
+
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var LIMIT = 5 * 1024 * 1024 * 1024;   // 单个文件的硬上限
+
+  var $ = function (id) { return document.getElementById(id); };
+  var stages = {
+    form:  $('stage-form'),
+    doing: $('stage-doing'),
+    done:  $('stage-done'),
+    fail:  $('stage-fail')
+  };
+
+  var key = null;      // { url, until }  until = 失效时刻(毫秒)
+  var file = null;
+
+  function show(name) {
+    for (var k in stages) { stages[k].hidden = (k !== name); }
+  }
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) { return bytes + ' 字节'; }
+    var units = ['KB', 'MB', 'GB'], i = -1;
+    do { bytes /= 1024; i++; } while (bytes >= 1024 && i < units.length - 1);
+    return (bytes >= 100 ? bytes.toFixed(0) : bytes.toFixed(1)) + ' ' + units[i];
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* 钥匙是带引号发过来的, 客户整行复制时会顺带裹上一些东西, 都能安全修掉:
+       1. 链接太长被折行, 复制出来中间夹着换行或空格
+       2. 两边的引号 —— 对方发来的钥匙本来就带一层单引号
+       3. 「钥匙：」这几个字也被一起框进去了
+       4. 聊天软件把 & 转义成 &amp;, 或者把直引号变成了弯引号
+     URL 里的空格本来就该写成 %20, 所以去掉所有空白字符不会误伤。 */
+  function normalize(raw) {
+    return String(raw || '')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, '')
+      .replace(/^钥匙[：:]+/, '')
+      .replace(/^["'“”‘’<（(【\[]+/, '')
+      .replace(/["'“”‘’>）)】\]]+$/, '');
+  }
+
+  // 返回 { url, until } / { bad: true } / { short: true } / null(空)
+  function parseKey(raw) {
+    var text = normalize(raw);
+    if (!text) { return null; }
+    if (text.length < 60) { return { short: true }; }
+
+    var u;
+    try { u = new URL(text); } catch (e) { return { bad: true }; }
+    if (u.protocol !== 'https:' || !u.searchParams.get('q-signature')) { return { bad: true }; }
+
+    // q-sign-time 是 "<起始>;<截止>" 的 epoch 秒, 截止就是这把钥匙的失效时刻
+    var until = 0;
+    var parts = (u.searchParams.get('q-sign-time') || '').split(';');
+    if (parts.length === 2) {
+      var t = Number(parts[1]) * 1000;
+      if (!isNaN(t)) { until = t; }
+    }
+    return { url: text, until: until };
+  }
+
+  function keyIsUsable() { return key && key.url && (!key.until || key.until > Date.now()); }
+
+  function refresh() {
+    $('go').disabled = !(keyIsUsable() && file);
+  }
+
+  function note(kind, text) {
+    var el = $('keynote');
+    el.hidden = false;
+    el.className = 'keynote ' + kind;
+    el.innerHTML = (kind === 'err'
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>');
+    el.appendChild(document.createTextNode(text));
+  }
+
+  function checkKey() {
+    var parsed = parseKey($('key').value);
+
+    if (!parsed) {                                   // 还没粘
+      key = null;
+      $('keynote').hidden = true;
+      refresh();
+      return;
+    }
+    if (parsed.short || parsed.bad) {
+      key = null;
+      note('err', parsed.short ? '这看起来不像一把完整的钥匙。' : '这把钥匙看不懂，可能复制的时候漏了字符。');
+      refresh();
+      return;
+    }
+    if (parsed.until && parsed.until <= Date.now()) {
+      key = null;
+      note('err', '这把钥匙已经过期了，请找对方再要一个。');
+      refresh();
+      return;
+    }
+
+    key = parsed;
+    note('ok', parsed.until
+      ? '这把钥匙 ' + pad(new Date(parsed.until).getHours()) + ':' +
+        pad(new Date(parsed.until).getMinutes()) + ' 前有效'
+      : '钥匙没问题');
+    refresh();
+  }
+
+  $('key').addEventListener('input', checkKey);
+  $('key').addEventListener('paste', function () { setTimeout(checkKey, 0); });
+
+  function choose(f) {
+    if (!f) { return; }
+    file = f;
+
+    var line = $('picked');
+    line.hidden = false;
+
+    if (f.size > LIMIT) {
+      line.className = 'picked warn';
+      line.textContent = f.name + '（' + fmtSize(f.size) + '）太大了，单个文件不能超过 5GB，请找对方另想办法。';
+      file = null;
+      refresh();
+      return;
+    }
+
+    line.className = 'picked';
+    line.textContent = f.name + '（' + fmtSize(f.size) + '）';
+    refresh();
+  }
+
+  document.getElementById('pick').addEventListener('click', function (e) {
+    e.stopPropagation();          // 别让拖拽区再触发一次
+    $('file').click();
+  });
+
+  $('file').addEventListener('change', function () { choose(this.files[0]); });
+
+  $('drop').addEventListener('click', function () { $('file').click(); });
+
+  ['dragenter', 'dragover'].forEach(function (type) {
+    $('drop').addEventListener(type, function (e) {
+      e.preventDefault();
+      $('drop').classList.add('over');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(function (type) {
+    $('drop').addEventListener(type, function (e) {
+      e.preventDefault();
+      $('drop').classList.remove('over');
+    });
+  });
+
+  $('drop').addEventListener('drop', function (e) {
+    if (e.dataTransfer.files.length) { choose(e.dataTransfer.files[0]); }
+  });
+
+  function cosErrorCode(body) {
+    var m = /<Code>([^<]+)<\/Code>/.exec(body || '');
+    return m ? m[1] : '';
+  }
+
+  function start() {
+    if (!keyIsUsable() || !file) { return; }
+
+    var sending = file;
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', key.url, true);
+
+    $('doing-name').textContent = sending.name;
+    $('doing-pct').textContent = '0%';
+    $('bar').value = 0;
+    show('doing');
+
+    xhr.upload.addEventListener('progress', function (e) {
+      if (!e.lengthComputable) { return; }
+      var pct = Math.round(e.loaded / e.total * 100);
+      $('bar').value = pct;
+      $('doing-pct').textContent = pct + '%';
+    });
+
+    xhr.addEventListener('load', function () {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        $('done-msg').textContent = sending.name + ' 已经交给对方了。';
+        show('done');
+        return;
+      }
+
+      var code = cosErrorCode(xhr.responseText);
+      var msg = '请找对方再要一个钥匙。';
+      if (code === 'SignatureDoesNotMatch') {
+        msg = '这把钥匙和对方给的对不上，多半是复制的时候漏了字符。请找对方重发一个。';
+      } else if (code === 'AccessDenied' || code === 'RequestTimeTooSkewed') {
+        msg = '这把钥匙已经失效了，请找对方再要一个。';
+      } else if (xhr.status === 400) {
+        msg = '这个文件太大了，没能传上去。请找对方另想办法。';
+      }
+      $('fail-msg').textContent = msg;
+      show('fail');
+    });
+
+    xhr.addEventListener('error', function () {
+      $('fail-msg').textContent =
+        '没能连上，检查一下网络再试一次。如果还是不行，请找对方。';
+      show('fail');
+    });
+
+    xhr.send(sending);
+  }
+
+  $('go').addEventListener('click', start);
+
+  $('retry').addEventListener('click', function () {
+    // 钥匙和文件都留着, 客户点一下就能重试, 不用重新粘一遍
+    show('form');
+  });
+
+  // 传到一半关掉页面, 客户多半不知道文件只传了一半
+  window.addEventListener('beforeunload', function (e) {
+    if (stages.doing.hidden) { return; }
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  // ── 启动 ────────────────────────────────────────────────────────
+  checkKey();
+})();
+</script>
+</body>
+</html>

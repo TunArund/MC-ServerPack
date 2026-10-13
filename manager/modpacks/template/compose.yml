@@ -1,0 +1,93 @@
+# 此文件由 config.yml 自动生成，请勿直接编辑。
+name: mc-template
+x-modpack:
+  name: 整合包名称
+  version: 版本
+  java: 17
+  dynamic-paths:
+  - world/
+  - logs/
+  - crash-reports/
+  - usercache.json
+  - usernamecache.json
+  - banned-ips.json
+  - banned-players.json
+  - ops.json
+  - whitelist.json
+  - eula.txt
+  - server.properties
+services:
+  minecraft:
+    image: mc-java:17
+    command:
+    - bash
+    - ./run.sh
+    - nogui
+    user: ${MC_CONTAINER_UID:?}:${MC_CONTAINER_GID:?}
+    mem_limit: 4g
+    ports:
+    - 25565:25565
+    environment:
+      MC_SERVER_PORT: '25565'
+    volumes:
+    - type: bind
+      source: ./src
+      target: /server
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/world
+      target: /server/world
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/logs
+      target: /server/logs
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/crash-reports
+      target: /server/crash-reports
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/usercache.json
+      target: /server/usercache.json
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/usernamecache.json
+      target: /server/usernamecache.json
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/banned-ips.json
+      target: /server/banned-ips.json
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/banned-players.json
+      target: /server/banned-players.json
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/ops.json
+      target: /server/ops.json
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/whitelist.json
+      target: /server/whitelist.json
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/eula.txt
+      target: /server/eula.txt
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/server.properties
+      target: /server/server.properties
+      bind:
+        create_host_path: false

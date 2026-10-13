@@ -1,0 +1,26 @@
+name: 整合包名称
+version: 版本
+java: 17
+memory: 4g
+port: 25565
+
+# 自动备份由 mc-server 用户的 crontab 执行；关闭时仍可手动 backup。
+backup:
+  enabled: false
+  interval: 6h
+  retain: 7
+
+# 指定游玩过程中会动态变化的目录与文件
+# 目录以/结尾，文件不加/。
+dynamic-paths:
+  - world/
+  - logs/
+  - crash-reports/
+  - usercache.json
+  - usernamecache.json
+  - banned-ips.json
+  - banned-players.json
+  - ops.json
+  - whitelist.json
+  - eula.txt
+  - server.properties
