@@ -92,18 +92,26 @@ class Controller:
         directory = self.directory("manager")
         ssh(self.target("manager"), ["bash", "-lc", f"cd {shellq(directory)} && exec ./manager.sh {shelljoin(args)}"])
 
-    def install_dependencies(self, target: str) -> None:
-        print(f"==> [{target}] 检查 {self.target(target)} 的运行环境")
+    def install_dependencies(self, target: str, log: str) -> None:
+        if target == "manager":
+            print("==> [manager] 检查 Python 环境")
+        print(f"==> [{target}] 检查 Docker 环境")
         require = "1" if target == "manager" else "0"
-        ssh(self.target(target), ["env", f"REQUIRE_PYTHON={require}", "bash", "-s"], input_text=BOOTSTRAP)
+        script = f"exec >>{shellq(log)} 2>&1\n{BOOTSTRAP}"
+        try:
+            ssh(self.target(target), ["env", f"REQUIRE_PYTHON={require}", "bash", "-s"], input_text=script)
+        except CommandError as exc:
+            raise RuntimeError(f"环境检查失败；详情见 {self.target(target)}:{log}") from exc
 
     def deploy_manager(self) -> None:
         directory, target = self.directory("manager"), self.target("manager")
+        log = directory + "/deploy.log"
         if not (MANAGER / "manager.sh").is_file():
             raise RuntimeError("缺少 manager/manager.sh")
-        self.install_dependencies("manager")
-        print(f"==> [manager] 同步到 {target}:{directory}")
         ssh(target, ["mkdir", "-p", directory])
+        ssh(target, ["bash", "-lc", f": > {shellq(log)}"])
+        self.install_dependencies("manager", log)
+        print(f"==> [manager] 同步到 {target}:{directory}")
         archive = archive_tree(MANAGER, exclude={"modpacks", "config.yml"})
         try:
             scp(archive, f"{target}:{directory}/.manager-upload.tar.gz")
@@ -121,8 +129,17 @@ class Controller:
             output = Path(temp) / "config.yml"
             output.write_text(yaml.safe_dump(runtime, sort_keys=False, allow_unicode=True), encoding="utf-8")
             scp(output, f"{target}:{directory}/config.yml")
-        build = "for version in 8 17 21; do docker build -f runtime/java${version}.dockerfile -t mc-java:${version} . || exit; done"
-        ssh(target, ["bash", "-lc", f"cd {shellq(directory)} && {build}"])
+        versions = self.doc["manager"].get("java", [21])
+        print(f"==> [manager] Java 环境（可用 8 17 21）：{' '.join(map(str, versions))}")
+        print(f"==> [manager] 构建 Java 镜像（详情：{target}:{log}）")
+        build = " && ".join(
+            f"docker build -f runtime/java{version}.dockerfile -t mc-java:{version} ."
+            for version in versions
+        )
+        try:
+            ssh(target, ["bash", "-lc", f"cd {shellq(directory)} && ( {build} ) >> {shellq(log)} 2>&1"])
+        except CommandError as exc:
+            raise RuntimeError(f"Java 镜像构建失败；详情见 {target}:{log}") from exc
         print("manager 部署完成；使用 ./mc.sh modpack deploy <ID> 上传整合包")
 
     def deploy_modpack(self, pack: str) -> None:
@@ -195,13 +212,15 @@ class Controller:
 
     def deploy_gateway(self) -> None:
         directory, target = self.directory("gateway"), self.target("gateway")
+        log = directory + "/deploy.log"
         runtime_env = self.gateway_env()
-        self.install_dependencies("gateway")
         ssh(target, ["mkdir", "-p", directory + "/data"])
+        ssh(target, ["bash", "-lc", f": > {shellq(log)}"])
+        self.install_dependencies("gateway", log)
         archive = archive_tree(GATEWAY, exclude={"data", ".env"})
         try:
             scp(archive, f"{target}:{directory}/.gateway-upload.tar.gz")
-            script = f"find {shellq(directory)} -mindepth 1 -maxdepth 1 ! -name data ! -name .env -exec rm -rf -- {{}} +; tar -xzf {shellq(directory + '/.gateway-upload.tar.gz')} -C {shellq(directory)}; rm -f {shellq(directory + '/.gateway-upload.tar.gz')}"
+            script = f"find {shellq(directory)} -mindepth 1 -maxdepth 1 ! -name data ! -name .env ! -name deploy.log -exec rm -rf -- {{}} +; tar -xzf {shellq(directory + '/.gateway-upload.tar.gz')} -C {shellq(directory)}; rm -f {shellq(directory + '/.gateway-upload.tar.gz')}"
             ssh(target, ["bash", "-lc", script])
         finally:
             shutil.rmtree(archive.parent, ignore_errors=True)

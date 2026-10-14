@@ -65,6 +65,13 @@ def load() -> dict:
     directory = nonempty(manager.get("dir"), "manager.dir")
     if not directory.startswith("/"):
         raise ConfigError("manager.dir 必须是绝对路径")
+    java_versions = manager.get("java", [21])
+    if (
+        not isinstance(java_versions, list) or not java_versions
+        or any(type(version) is not int or version not in (8, 17, 21) for version in java_versions)
+        or len(java_versions) != len(set(java_versions))
+    ):
+        raise ConfigError("manager.java 必须是由 8、17、21 组成的不重复数组")
     maximum = modpack.get("max-running", 1)
     if type(maximum) is not int or maximum < 1:
         raise ConfigError("manager.modpack.max-running 必须是正整数")

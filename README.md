@@ -78,7 +78,7 @@ MC-ServerPack/
 ```text
 quickstart                                  首次配置向导
 deploy manager|gateway|all [--check]        部署或检查环境
-modpack create|import|scan|deploy           本地整合包工作区
+modpack create|import|scan|deploy           创建、导入目录/压缩包并上传整合包
 manager remove|config|start|stop|restart    远程生命周期管理
 manager status|logs|backup|restore          状态、日志与存档
 gateway config|start|stop|status|guard      gateway 与云主机

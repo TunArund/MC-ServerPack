@@ -337,6 +337,7 @@ def main() -> int:
         print(f"Gitee Release 发布完成：{owner}/{repo} {args.version}")
     else:
         print("未上传；确认产物后追加 --publish 发布到 Gitee。")
+    print(flush=True)
     return 0
 
 

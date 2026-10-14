@@ -48,6 +48,19 @@ def ask_int(label: str, default: int) -> int:
             print("请输入整数。")
 
 
+def ask_java_versions(current: object = None) -> list[int]:
+    default = " ".join(map(str, current)) if isinstance(current, list) and current else "21"
+    while True:
+        raw = ask("Java 环境（可用 8 17 21，空格分隔）", default)
+        try:
+            versions = [int(item) for item in raw.replace(",", " ").split()]
+        except ValueError:
+            versions = []
+        if versions and len(versions) == len(set(versions)) and all(item in (8, 17, 21) for item in versions):
+            return versions
+        print("请从 8、17、21 中选择，不能重复。")
+
+
 def secret(label: str, current: str = "") -> str:
     while True:
         suffix = "（回车保留现有值）" if current else ""
@@ -107,15 +120,17 @@ def configure_project() -> None:
         "manager 远端绝对路径",
         str(manager.get("dir", f"/home/{user}/MC-ServerPack/manager")),
     )
+    java_versions = ask_java_versions(manager.get("java"))
     document: dict = {
         "manager": {
-            "host": host, "user": user, "dir": directory,
-            "modpack": manager.get("modpack", {}),
+            "host": host, "user": user, "dir": directory, "java": java_versions,
         }
     }
+    if manager.get("modpack"):
+        document["manager"]["modpack"] = manager["modpack"]
     if isinstance(current.get("cos"), dict):
         document["cos"] = current["cos"]
-    if confirm("同时配置可选的 gateway/QQ Bot", False):
+    if confirm("配置可选的 gateway/QQ Bot（留空跳过）", False):
         old = current.get("gateway") if isinstance(current.get("gateway"), dict) else {}
         gw_user = ask("gateway SSH 用户", str(old.get("user", user)))
         target_type = ask("QQ 目标类型 user/group", "group")
@@ -187,16 +202,31 @@ def configure_pack() -> str:
     else:
         command("modpack", "create", pack)
         modpack.create(MANAGER, pack)
-    source = ask("服务端文件、ZIP/TAR 路径或 HTTP(S) URL")
-    existing = [item for item in (target / "src").iterdir() if item.name != ".gitkeep"]
-    force = bool(existing) and confirm("src/ 已有内容，确认合并导入", False)
-    command("modpack", "import", *(('--force',) if force else ()), pack, source)
-    modpack.import_into(MANAGER, pack, source, force)
+    while True:
+        source = ask("服务端目录、文件、ZIP/TAR 路径或 HTTP(S) URL")
+        existing = [item for item in (target / "src").iterdir() if item.name != ".gitkeep"]
+        force = bool(existing) and confirm("src/ 已有内容，确认合并导入", False)
+        command("modpack", "import", *(('--force',) if force else ()), pack, source)
+        try:
+            modpack.import_into(MANAGER, pack, source, force)
+            break
+        except (OSError, RuntimeError) as exc:
+            print(f"\n导入整合包失败：{exc}")
+            if input("输入 r 重新输入来源，输入 e 退出向导: ").strip().lower() != "r":
+                raise WizardExit()
 
     path = target / "config.yml"
     spec = load_yaml(path)
     spec["name"] = ask("整合包名称", str(spec.get("name", pack)))
-    spec["java"] = ask_int("Java 版本", int(spec.get("java", 17)))
+    project = load_yaml(CONFIG)
+    available = project.get("manager", {}).get("java", [21])
+    default_java = spec.get("java") if spec.get("java") in available else available[0]
+    while True:
+        selected_java = ask_int(f"Java 版本（已构建：{' '.join(map(str, available))}）", int(default_java))
+        if selected_java in available:
+            spec["java"] = selected_java
+            break
+        print("请选择已经构建的 Java 环境。")
     spec["memory"] = ask("内存限制", str(spec.get("memory", "4g")))
     current = spec.get("dynamic-paths", [])
     if not isinstance(current, list):
@@ -216,8 +246,8 @@ def configure_pack() -> str:
 def run() -> int:
     print("\nMC-ServerPack 快速配置向导。按 Ctrl+C 可随时退出。")
     try:
-        section(1, "创建最小项目配置")
-        print("将生成 config.yml；已有配置会作为默认值显示。")
+        section(1, "配置 manager")
+        print("仅 SSH 连接和 Java 环境为必填；gateway 可选，留空默认不配置。")
         configure_project()
 
         section(2, "填写密钥")

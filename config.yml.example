@@ -3,6 +3,8 @@ manager:
   host: hostaddr
   user: username
   dir: /home/username/MC-ServerPack/manager
+  # 部署时构建的 Java 镜像；默认仅构建 21，需要旧 Forge 时添加 8 或 17。
+  java: [21]
   # 以下均可省略：默认同时运行 1 个、超限拒绝、不设全局内存上限。
   modpack:
     max-running: 1

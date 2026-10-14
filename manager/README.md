@@ -17,6 +17,7 @@ manager:
   user: steam
   host: 10.0.0.5
   dir: /home/steam/MC-ServerPack/manager
+  java: [21]                  # 部署时构建；旧 Forge 可添加 8 或 17
   modpack:
     max-running: 1
     overnum-action: reject
@@ -70,7 +71,7 @@ dynamic-paths:
 
 ```text
 modpack create <ID>
-modpack import [--force] <ID> <文件或URL>
+modpack import [--force] <ID> <目录、文件或URL>
 modpack scan <ID>
 modpack deploy <ID>
 

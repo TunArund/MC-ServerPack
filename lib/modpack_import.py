@@ -67,9 +67,24 @@ def import_source(source_text: str, destination: Path, *, force: bool = False) -
             extract(downloaded, destination)
     else:
         source = Path(source_text).expanduser().resolve()
-        if not source.is_file():
+        if source.is_dir():
+            resolved_destination = destination.resolve()
+            if (
+                source == resolved_destination
+                or source in resolved_destination.parents
+                or resolved_destination in source.parents
+            ):
+                raise RuntimeError("导入目录不能与 src/ 互相包含")
+            for item in source.iterdir():
+                target = destination / item.name
+                if item.is_dir():
+                    shutil.copytree(item, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, target)
+        elif source.is_file():
+            extract(source, destination)
+        else:
             raise RuntimeError(f"找不到导入文件：{source}")
-        extract(source, destination)
     print(f"已导入到：{destination}")
 
 
