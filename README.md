@@ -60,9 +60,35 @@ MC-ServerPack/
 └── qqbot/                      # gateway 部署产物
 ```
 
-- [manager 配置、整合包目录、动态挂载、备份与命令](manager/README.md)
+- [manager 配置、整合包目录、只读与持久化、备份及命令](manager/README.md)
 - [gateway、QQ Bot、定时开关机与 CAM 权限](qqbot/README.md)
 - [空整合包模板和 Forge 准备方式](manager/modpacks/template/README.md)
+
+## 服务端整合包标准结构
+
+导入后的服务端入口必须位于 `src/` 根目录。ZIP/TAR 允许额外包含一层包装目录，导入
+时会自动剥离。常见结构如下；不同服务端可以缺少其中部分文件或目录：
+
+```text
+src/
+├── run.sh / server.jar / forge-*.jar   # 至少有一种启动入口
+├── libraries/                          # Forge/NeoForge 依赖
+├── mods/                               # 模组
+├── config/                             # Forge 与模组配置
+├── defaultconfigs/                     # 新世界默认配置
+├── kubejs/                             # 脚本、配方与资源
+├── world/                              # 世界存档
+├── logs/                               # 日志
+├── crash-reports/                      # 崩溃报告
+├── backups/                            # 模组自行生成的备份
+├── server.properties
+├── eula.txt
+└── user_jvm_args.txt
+```
+
+默认启动命令是 `bash ./run.sh nogui`，其他入口可在整合包 `config.yml` 中通过
+`command` 指定。运行时必须保留的内容应加入 `read-only.persistent`，详见
+[manager 的只读与持久化说明](manager/README.md#只读与持久化)。
 
 ## 配置文件
 

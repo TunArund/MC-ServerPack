@@ -4,18 +4,21 @@ x-modpack:
   name: 整合包名称
   version: 版本
   java: 17
-  dynamic-paths:
-  - world/
-  - logs/
-  - crash-reports/
-  - usercache.json
-  - usernamecache.json
-  - banned-ips.json
-  - banned-players.json
-  - ops.json
-  - whitelist.json
-  - eula.txt
-  - server.properties
+  read-only:
+    enabled: false
+    persistent:
+    - config/
+    - world/
+    - logs/
+    - crash-reports/
+    - usercache.json
+    - usernamecache.json
+    - banned-ips.json
+    - banned-players.json
+    - ops.json
+    - whitelist.json
+    - eula.txt
+    - server.properties
 services:
   minecraft:
     image: mc-java:17
@@ -33,7 +36,12 @@ services:
     - type: bind
       source: ./src
       target: /server
-      read_only: true
+      read_only: false
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./data/config
+      target: /server/config
       bind:
         create_host_path: false
     - type: bind

@@ -33,7 +33,7 @@ def main() -> int:
     if not matches:
         print("未发现名称包含 cache 的文件或目录。")
         return 0
-    print("# 可按需加入 config.yml 的 dynamic-paths：")
+    print("# 可按需加入 config.yml 的 read-only.persistent：")
     for path in sorted(matches):
         print(f"  - {path}")
     return 0

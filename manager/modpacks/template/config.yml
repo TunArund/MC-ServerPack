@@ -10,18 +10,20 @@ backup:
   interval: 6h
   retain: 7
 
-# 指定游玩过程中会动态变化的目录与文件
-# 目录以/结尾，文件不加/。
-dynamic-paths:
-  - config/
-  - world/
-  - logs/
-  - crash-reports/
-  - usercache.json
-  - usernamecache.json
-  - banned-ips.json
-  - banned-players.json
-  - ops.json
-  - whitelist.json
-  - eula.txt
-  - server.properties
+# 默认允许 src/ 被服务端修改；persistent 内容单独保存在 data/，更新整合包时不会覆盖。
+# enabled: true 可启用严格只读模式，此时 persistent 同时是可写例外。
+read-only:
+  enabled: false
+  persistent:
+    - config/
+    - world/
+    - logs/
+    - crash-reports/
+    - usercache.json
+    - usernamecache.json
+    - banned-ips.json
+    - banned-players.json
+    - ops.json
+    - whitelist.json
+    - eula.txt
+    - server.properties

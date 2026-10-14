@@ -30,10 +30,10 @@ manager:
 
 ```text
 manager/modpacks/<ID>/
-├── config.yml                  # Java、内存、端口、动态路径、备份
+├── config.yml                  # Java、内存、端口、只读与持久化、备份
 ├── compose.yml                 # 自动生成
-├── src/                        # 静态服务端文件，只读挂载
-├── data/                       # 动态持久化内容
+├── src/                        # 导入的服务端文件
+├── data/                       # 独立持久化内容
 └── backups/                    # world/ 轮转备份
 ```
 
@@ -51,16 +51,38 @@ backup:
   interval: 6h
   retain: 7
 
-dynamic-paths:
-  - world/
-  - logs/
-  - crash-reports/
-  - server.properties
+read-only:
+  enabled: false
+  persistent:
+    - config/
+    - world/
+    - logs/
+    - crash-reports/
+    - server.properties
 ```
 
-`src/` 整体只读；`dynamic-paths` 使用 `data/` 覆盖为可写路径。目录以 `/` 结尾，
-文件不加 `/`。首次配置会从 `src/` 初始化缺失内容，已有 `data/` 不会被覆盖。
-`modpack scan <ID>` 可以查找名称包含 `cache` 的候选路径。
+## 只读与持久化
+
+`read-only.enabled` 默认为 `false`：整个 `src/` 可写，遗漏路径不会阻止服务端启动。
+`persistent` 中的路径仍由 `data/` 覆盖挂载，更新或重新部署 `src/` 时不会丢失。
+
+设为 `true` 后，`src/` 整体只读，`persistent` 同时成为可写例外。严格模式适合已经
+调试成熟的整合包；如果出现 `Read-only file system`、`AccessDeniedException`、
+`FileSystemException` 或 `failed to create/write`，通常是遗漏了运行时写入路径。
+
+常见持久化路径包括：
+
+- `config/`：Forge 和模组可能保存或规范化 TOML/JSON。
+- `world/`、`logs/`、`crash-reports/`。
+- `backups/`：FTB Backups 等模组自己的备份目录。
+- `local/kubejs/cache/`、Forge 在 `libraries/` 下生成的 `.cache` 文件。
+- `server.properties`、`eula.txt`、玩家名单、权限和缓存 JSON。
+- 特定模组产生的 `cache/`、`database/`、`storage/` 或 `data/`。
+
+目录以 `/` 结尾，文件不加 `/`。首次配置会从 `src/` 初始化尚不存在的持久化内容，
+已有 `data/` 永远不会被覆盖。`modpack scan <ID>` 可以查找名称包含 `cache` 的候选
+路径。宽松模式下，未列入 `persistent` 的运行时修改会留在 `src/`，下次重新部署
+整合包时可能被替换。
 
 ## 备份与恢复
 

@@ -48,7 +48,7 @@ def scan(manager: Path, pack: str) -> None:
     if not matches:
         print("未发现名称包含 cache 的文件或目录。")
         return
-    print("# 可按需加入 config.yml 的 dynamic-paths：")
+    print("# 可按需加入 config.yml 的 read-only.persistent：")
     for name in sorted(matches):
         print(f"  - {name}")
 

@@ -41,8 +41,9 @@ template/
 
 模板会在 `data/eula.txt` 建立 `eula=false`。请先阅读
 [Minecraft EULA](https://www.minecraft.net/en-us/eula)，只有接受后才手工改为
-`eula=true`。哪些路径可写完全由 `config.yml` 的 `dynamic-paths` 控制；需要持久化
-的新缓存应同时加入该列表。项目不会替用户预先接受 EULA。
+`eula=true`。需要跨部署保留的路径由 `config.yml` 的 `read-only.persistent` 控制；
+启用 `read-only.enabled` 后，这些路径也同时是只读服务端目录中的可写例外。新产生
+的持久化缓存应加入该列表。项目不会替用户预先接受 EULA。
 
 ## 添加 Mod
 

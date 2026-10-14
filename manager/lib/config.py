@@ -25,7 +25,7 @@ PACK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGT]?)B?$", re.I)
 DURATION_RE = re.compile(r"^([0-9]+)([smhd])$", re.I)
 TIME_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
-DEFAULT_WRITABLE = (
+DEFAULT_PERSISTENT = (
     "config/",
     "world/",
     "logs/",
@@ -139,6 +139,7 @@ class PackSpec:
     memory_bytes: int
     port: int
     command: tuple[str, ...]
+    read_only: bool
     writable: tuple[WritablePath, ...]
     backup_enabled: bool
     backup_interval: str
@@ -171,14 +172,14 @@ def validate_pack_id(pack: str) -> None:
 
 def normalize_writable(raw: object) -> WritablePath:
     if not isinstance(raw, str) or not raw:
-        raise ConfigError("dynamic-paths 的每一项都必须是非空字符串")
+        raise ConfigError("read-only.persistent 的每一项都必须是非空字符串")
     if "\\" in raw or raw.startswith("/"):
-        raise ConfigError(f"动态路径必须是 POSIX 相对路径：{raw}")
+        raise ConfigError(f"持久化路径必须是 POSIX 相对路径：{raw}")
     directory = raw.endswith("/")
     normalized = raw.rstrip("/")
     path = PurePosixPath(normalized)
     if not normalized or any(part in ("", ".", "..") for part in path.parts):
-        raise ConfigError(f"不安全的动态路径：{raw}")
+        raise ConfigError(f"不安全的持久化路径：{raw}")
     return WritablePath(path.as_posix(), directory)
 
 
@@ -217,9 +218,13 @@ def load_pack(pack: str) -> PackSpec:
     name, version = doc.get("name", pack), doc.get("version", "unknown")
     java, memory, port = doc.get("java"), doc.get("memory"), doc.get("port", 25565)
     command = doc.get("command", ["bash", "./run.sh", "nogui"])
-    if "writable-paths" in doc:
-        raise ConfigError("writable-paths 已更名为 dynamic-paths")
-    raw_writable = doc.get("dynamic-paths", list(DEFAULT_WRITABLE))
+    if "writable-paths" in doc or "dynamic-paths" in doc:
+        raise ConfigError("writable-paths/dynamic-paths 已更名为 read-only.persistent")
+    read_only = doc.get("read-only", {})
+    if not isinstance(read_only, dict):
+        raise ConfigError("config.yml 的 read-only 必须是对象")
+    read_only_enabled = read_only.get("enabled", False)
+    raw_writable = read_only.get("persistent", list(DEFAULT_PERSISTENT))
     backup = doc.get("backup", {})
     if not isinstance(name, str) or not name:
         raise ConfigError("config.yml 的 name 必须是非空字符串")
@@ -232,8 +237,10 @@ def load_pack(pack: str) -> PackSpec:
         raise ConfigError("config.yml 的 port 必须是 1 到 65535 的整数")
     if not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command):
         raise ConfigError("config.yml 的 command 必须是非空字符串数组")
+    if type(read_only_enabled) is not bool:
+        raise ConfigError("read-only.enabled 必须是 true 或 false")
     if not isinstance(raw_writable, list):
-        raise ConfigError("config.yml 的 dynamic-paths 必须是数组")
+        raise ConfigError("read-only.persistent 必须是数组")
     if not isinstance(backup, dict):
         raise ConfigError("config.yml 的 backup 必须是对象")
     backup_enabled = backup.get("enabled", False)
@@ -250,16 +257,16 @@ def load_pack(pack: str) -> PackSpec:
     seen: set[str] = set()
     for item in writable:
         if item.path in seen:
-            raise ConfigError(f"重复的动态路径：{item.path}")
+            raise ConfigError(f"重复的持久化路径：{item.path}")
         seen.add(item.path)
     for parent in writable:
         if parent.directory and any(
             child.path != parent.path and PurePosixPath(parent.path) in PurePosixPath(child.path).parents
             for child in writable
         ):
-            raise ConfigError(f"动态目录 {parent.path}/ 已包含其子路径，无需重复声明")
+            raise ConfigError(f"持久化目录 {parent.path}/ 已包含其子路径，无需重复声明")
     return PackSpec(
-        pack, name, str(version), java, memory, memory_bytes, port, tuple(command),
+        pack, name, str(version), java, memory, memory_bytes, port, tuple(command), read_only_enabled,
         writable, backup_enabled, backup_interval, backup_retain, backup_cron,
     )
 
@@ -272,7 +279,7 @@ def prepare_mounts(spec: PackSpec) -> None:
         data_path.parent.mkdir(parents=True, exist_ok=True)
         if item.directory:
             if (src_path.exists() and not src_path.is_dir()) or (data_path.exists() and not data_path.is_dir()):
-                raise ConfigError(f"动态目录类型冲突：{item.path}/")
+                raise ConfigError(f"持久化目录类型冲突：{item.path}/")
             src_path.mkdir(exist_ok=True)
             if not data_path.exists():
                 shutil.copytree(src_path, data_path)
@@ -281,7 +288,7 @@ def prepare_mounts(spec: PackSpec) -> None:
                 shutil.copytree(src_path, data_path, dirs_exist_ok=True)
         else:
             if src_path.is_dir() or data_path.is_dir():
-                raise ConfigError(f"动态文件类型冲突：{item.path}")
+                raise ConfigError(f"持久化文件类型冲突：{item.path}")
             if not data_path.exists():
                 if src_path.is_file():
                     shutil.copy2(src_path, data_path)
@@ -289,7 +296,7 @@ def prepare_mounts(spec: PackSpec) -> None:
                     data_path.write_text(INITIAL_FILE_CONTENT[item.path], encoding="utf-8")
                 else:
                     raise ConfigError(
-                        f"动态文件 {item.path} 不存在；请先在 src/ 或 data/ 创建它"
+                        f"持久化文件 {item.path} 不存在；请先在 src/ 或 data/ 创建它"
                     )
             elif (
                 data_path.stat().st_size == 0
@@ -309,7 +316,7 @@ def render(spec: PackSpec) -> Path:
         raise ConfigError(f"整合包 {spec.pack} 的内存 {spec.memory} 超过全局上限 {global_config.max_memory}")
     prepare_mounts(spec)
     volumes: list[dict[str, object]] = [{
-        "type": "bind", "source": "./src", "target": "/server", "read_only": True,
+        "type": "bind", "source": "./src", "target": "/server", "read_only": spec.read_only,
         "bind": {"create_host_path": False},
     }]
     for item in spec.writable:
@@ -320,7 +327,9 @@ def render(spec: PackSpec) -> Path:
     document = {
         "name": f"mc-{spec.pack}",
         "x-modpack": {"name": spec.name, "version": spec.version, "java": spec.java,
-                      "dynamic-paths": [item.path + ("/" if item.directory else "") for item in spec.writable]},
+                      "read-only": {"enabled": spec.read_only, "persistent": [
+                          item.path + ("/" if item.directory else "") for item in spec.writable
+                      ]}},
         "services": {"minecraft": {
             "image": f"mc-java:{spec.java}", "command": list(spec.command),
             "user": "${MC_CONTAINER_UID:?}:${MC_CONTAINER_GID:?}",

@@ -244,16 +244,21 @@ def configure_pack() -> str:
             break
         print("请选择已经构建的 Java 环境。")
     spec["memory"] = ask("内存限制", str(spec.get("memory", "4g")))
-    current = spec.get("dynamic-paths", [])
+    read_only = spec.get("read-only") if isinstance(spec.get("read-only"), dict) else {}
+    current = read_only.get("persistent", [])
     if not isinstance(current, list):
         current = []
-    print("当前动态路径：" + ", ".join(map(str, current)))
-    additions = ask("追加动态路径（逗号分隔，直接回车跳过）", required=False)
+    print("当前持久化路径：" + ", ".join(map(str, current)))
+    additions = ask("追加持久化路径（逗号分隔，直接回车跳过）", required=False)
     if additions:
         for item in (part.strip() for part in additions.split(",")):
             if item and item not in current:
                 current.append(item)
-    spec["dynamic-paths"] = current
+    enabled = read_only.get("enabled", False)
+    spec["read-only"] = {
+        "enabled": enabled if type(enabled) is bool else False,
+        "persistent": current,
+    }
     write_yaml(path, spec)
     print(f"已写入：{path}")
     return pack

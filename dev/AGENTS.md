@@ -10,9 +10,9 @@
 根 `config.yml` 是部署拓扑，manager 部署时只提取 `manager.modpack`。整合包运行规格
 位于各自的 `manager/modpacks/<ID>/config.yml`，Compose 由它生成。
 
-容器 UID/GID 默认取执行 `manager.sh` 的用户。`src/` 只读，声明为
-`dynamic-paths` 的内容初始化到 `data/`，已有持久化数据不得被部署覆盖。备份与恢复
-只操作 `world/`。
+容器 UID/GID 默认取执行 `manager.sh` 的用户。`read-only.enabled` 控制 `src/` 是否
+只读，`read-only.persistent` 的内容初始化到 `data/`，已有持久化数据不得被部署覆盖。
+备份与恢复只操作 `world/`。
 
 提交公开仓库和制作发行包前，检查其中没有 `.env`、私有整合包、Minecraft/Forge
 文件、Mod、世界、玩家数据、日志、备份或 `eula=true`。
