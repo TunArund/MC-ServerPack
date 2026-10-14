@@ -26,6 +26,7 @@ API = "https://gitee.com/api/v5"
 VERSION_RE = re.compile(r"^v\d+\.\d+$")
 REMOTE_RE = re.compile(r"(?:https://gitee\.com/|git@gitee\.com:)([^/]+)/([^/]+?)(?:\.git)?$")
 EXCLUDED = {"dev", ".github", ".gitee", ".idea", ".vscode"}
+UPDATE_MARKER = "MC_SERVERPACK_RELEASE_UPDATED"
 
 
 class ReleaseError(RuntimeError):
@@ -62,6 +63,22 @@ def precheck(version: str, remote: str) -> tuple[str, str]:
     if tagged != git("rev-parse", "HEAD"):
         raise ReleaseError(f"标签 {version} 不指向当前 HEAD")
     return repository(remote)
+
+
+def update_checkout(version: str, remote: str) -> None:
+    if os.environ.get(UPDATE_MARKER) == "1":
+        return
+    if git("status", "--porcelain"):
+        raise ReleaseError("工作区不干净，不能自动更新；请先提交或清理修改")
+    try:
+        branch = git("symbolic-ref", "--short", "HEAD")
+    except ReleaseError as exc:
+        raise ReleaseError("自动更新需要处于分支上，不能使用 detached HEAD") from exc
+    git("fetch", remote, branch)
+    git("merge", "--ff-only", f"{remote}/{branch}")
+    git("fetch", remote, f"+refs/tags/{version}:refs/tags/{version}")
+    os.environ[UPDATE_MARKER] = "1"
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
 def check_remote_tag(version: str, remote: str) -> None:
@@ -160,6 +177,29 @@ def make_zip(
     checksum = output.with_suffix(output.suffix + ".sha256")
     checksum.write_text(f"{digest}  {output.name}\n", encoding="utf-8")
     return output, checksum
+
+
+def extract_package(archive_path: Path, destination: Path) -> Path:
+    destination = destination.resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    package_name = archive_path.stem
+    target = destination / package_name
+    with tempfile.TemporaryDirectory(prefix="mc-release-extract-", dir=destination) as raw:
+        temporary = Path(raw)
+        with zipfile.ZipFile(archive_path) as archive:
+            root = temporary.resolve()
+            for member in archive.infolist():
+                path = (temporary / member.filename).resolve()
+                if path != root and root not in path.parents:
+                    raise ReleaseError(f"发行包包含不安全路径：{member.filename}")
+            archive.extractall(temporary)
+        extracted = temporary / package_name
+        if not extracted.is_dir():
+            raise ReleaseError(f"发行包缺少顶层目录：{package_name}")
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.move(str(extracted), target)
+    return target
 
 
 def release_notes(version: str) -> str:
@@ -268,9 +308,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="构建并发布当前平台的 Gitee 发行包")
     parser.add_argument("version", help="版本标签，例如 v0.1")
     parser.add_argument("--publish", action="store_true", help="创建 Gitee Release 并上传附件")
+    parser.add_argument("--update", action="store_true", help="先快进当前分支并同步远端版本标签")
+    parser.add_argument(
+        "--extract", nargs="?", const=ROOT.parent, type=Path, metavar="DIR",
+        help="构建后覆盖解压到 DIR；省略 DIR 时使用仓库的上级目录",
+    )
     parser.add_argument("--remote", default="origin", help="Gitee Git 远端名，默认 origin")
     parser.add_argument("--output", type=Path, default=ROOT / "dev/dist", help="发行包输出目录")
     args = parser.parse_args()
+    if args.update:
+        update_checkout(args.version, args.remote)
     owner, repo = precheck(args.version, args.remote)
     check_remote_tag(args.version, args.remote)
     print(f"构建提交：{git('rev-parse', '--short', args.version)} {args.version}")
@@ -282,6 +329,8 @@ def main() -> int:
         )
     print(f"已生成：{package}")
     print(f"已生成：{checksum}")
+    if args.extract is not None:
+        print(f"已解压：{extract_package(package, args.extract)}")
     if args.publish:
         publish(owner, repo, args.version, release_notes(args.version), (package, checksum))
         print(f"Gitee Release 发布完成：{owner}/{repo} {args.version}")

@@ -43,6 +43,12 @@ python dev/release.py v0.1
 python dev/release.py v0.1 --publish
 ```
 
+跨平台测试时可自动快进当前分支、同步被移动的标签、构建并覆盖仓库同级的解压目录：
+
+```bash
+python dev/release.py v0.1 --update --extract
+```
+
 先在 Linux 执行一次，再在 Windows 的同一标签上执行一次。脚本会复用 Gitee
 Release，并上传 `dev/dist/` 中当前平台的 ZIP 和 SHA-256 文件。
 
