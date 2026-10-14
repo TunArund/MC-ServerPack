@@ -101,8 +101,8 @@ def write_env(values: dict[str, str]) -> None:
 def configure_project() -> None:
     current = load_yaml(CONFIG)
     manager = current.get("manager") if isinstance(current.get("manager"), dict) else {}
-    user = ask("mc-server SSH 用户", str(manager.get("user", "steam")))
-    host = ask("mc-server SSH 主机或地址", str(manager.get("host", "")))
+    user = ask("manager SSH 用户", str(manager.get("user", "steam")))
+    host = ask("manager SSH 主机或地址", str(manager.get("host", "")))
     directory = ask(
         "manager 远端绝对路径",
         str(manager.get("dir", f"/home/{user}/MC-ServerPack/manager")),
@@ -128,7 +128,7 @@ def configure_project() -> None:
             "user": gw_user,
             "dir": ask("gateway 远端绝对路径", str(old.get("dir", f"/home/{gw_user}/MC-ServerPack/qqbot"))),
             "region": ask("腾讯云地域", str(old.get("region", "ap-nanjing"))),
-            "instance-id": ask("mc-server 实例 ID", str(old.get("instance-id", ""))),
+            "instance-id": ask("manager 所在云主机实例 ID", str(old.get("instance-id", ""))),
             "schedule": {
                 "enabled": confirm("启用自动开关机", True),
                 "start": ask("预计可进入服务器时间 HH:MM", "20:00"),

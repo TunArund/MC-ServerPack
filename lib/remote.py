@@ -20,10 +20,27 @@ def run(
     env: dict[str, str] | None = None, check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            list(map(str, argv)), input=input_text, text=True, check=check,
-            capture_output=capture, env=env,
+        arguments = list(map(str, argv))
+        if input_text is None:
+            return subprocess.run(
+                arguments, text=True, check=check, capture_output=capture, env=env,
+            )
+
+        # Text-mode pipes translate LF to CRLF on Windows. Shell scripts sent
+        # through SSH must retain LF, otherwise Bash reads options such as
+        # ``pipefail\r``. Supplying bytes bypasses the platform translation.
+        result = subprocess.run(
+            arguments, input=input_text.replace("\r\n", "\n").encode("utf-8"),
+            text=False, check=False, capture_output=capture, env=env,
         )
+        stdout = result.stdout.decode(errors="replace") if result.stdout is not None else None
+        stderr = result.stderr.decode(errors="replace") if result.stderr is not None else None
+        decoded = subprocess.CompletedProcess(arguments, result.returncode, stdout, stderr)
+        if check and decoded.returncode:
+            raise subprocess.CalledProcessError(
+                decoded.returncode, arguments, output=stdout, stderr=stderr,
+            )
+        return decoded
     except FileNotFoundError as exc:
         raise CommandError(f"找不到命令：{argv[0]}") from exc
     except subprocess.CalledProcessError as exc:

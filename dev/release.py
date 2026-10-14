@@ -71,6 +71,13 @@ def check_remote_tag(version: str, remote: str) -> None:
     )
     if result.returncode:
         raise ReleaseError(f"远端 {remote} 没有标签 {version}；请先 push 标签")
+    remote_revision = result.stdout.split()[0]
+    local_revision = git("rev-parse", version)
+    if remote_revision != local_revision:
+        raise ReleaseError(
+            f"本地标签 {version} 与远端不一致；请先强制更新本地标签："
+            f"git fetch {remote} +refs/tags/{version}:refs/tags/{version}"
+        )
 
 
 def platform_info() -> tuple[str, str]:
@@ -265,9 +272,9 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=ROOT / "dev/dist", help="发行包输出目录")
     args = parser.parse_args()
     owner, repo = precheck(args.version, args.remote)
+    check_remote_tag(args.version, args.remote)
+    print(f"构建提交：{git('rev-parse', '--short', args.version)} {args.version}")
     platform_name, executable_name = platform_info()
-    if args.publish:
-        check_remote_tag(args.version, args.remote)
     with tempfile.TemporaryDirectory(prefix="mc-release-build-") as raw:
         executable = build_executable(Path(raw), executable_name)
         package, checksum = make_zip(
