@@ -26,6 +26,7 @@ SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGT]?)B?$", re.I)
 DURATION_RE = re.compile(r"^([0-9]+)([smhd])$", re.I)
 TIME_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
 DEFAULT_WRITABLE = (
+    "config/",
     "world/",
     "logs/",
     "crash-reports/",

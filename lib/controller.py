@@ -28,29 +28,40 @@ if [ "$REQUIRE_PYTHON" = 1 ]; then
   python3 -c 'import sys, yaml; raise SystemExit(sys.version_info < (3, 8))' >/dev/null 2>&1 || need=1
   command -v crontab >/dev/null 2>&1 || need=1
 fi
-[ "$need" = 0 ] && exit 0
 if [ "$(id -u)" -eq 0 ]; then run_root() { "$@"; }
-else sudo -n true >/dev/null 2>&1 || { echo '需要免密 sudo 才能安装运行环境' >&2; exit 1; }; run_root() { sudo -n "$@"; }; fi
-. /etc/os-release
-case "$ID" in debian|ubuntu) ;; *) echo "暂不支持的系统: $ID" >&2; exit 1 ;; esac
-run_root apt-get update
-packages=(ca-certificates curl gnupg)
-if [ "$REQUIRE_PYTHON" = 1 ]; then packages+=(python3 python3-yaml cron); fi
-run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
-if ! docker compose version >/dev/null 2>&1; then
-  run_root install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /tmp/docker.asc
-  run_root install -m 0644 /tmp/docker.asc /etc/apt/keyrings/docker.asc
-  rm -f /tmp/docker.asc
-  arch="$(dpkg --print-architecture)"
-  repo="deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable"
-  run_root sh -c "printf '%s\\n' '$repo' > /etc/apt/sources.list.d/docker.list"
+else run_root() { sudo -n "$@"; }; fi
+if [ "$need" = 1 ]; then
+  [ "$(id -u)" -eq 0 ] || sudo -n true >/dev/null 2>&1 || { echo '安装运行环境需要免密 sudo' >&2; exit 1; }
+  . /etc/os-release
+  case "$ID" in debian|ubuntu) ;; *) echo "暂不支持的系统: $ID" >&2; exit 1 ;; esac
   run_root apt-get update
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  packages=(ca-certificates curl gnupg)
+  if [ "$REQUIRE_PYTHON" = 1 ]; then packages+=(python3 python3-yaml cron); fi
+  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+  if ! docker compose version >/dev/null 2>&1; then
+    run_root install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /tmp/docker.asc
+    run_root install -m 0644 /tmp/docker.asc /etc/apt/keyrings/docker.asc
+    rm -f /tmp/docker.asc
+    arch="$(dpkg --print-architecture)"
+    repo="deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable"
+    run_root sh -c "printf '%s\\n' '$repo' > /etc/apt/sources.list.d/docker.list"
+    run_root apt-get update
+    run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  fi
+  run_root systemctl enable --now docker
+  if [ "$REQUIRE_PYTHON" = 1 ]; then run_root systemctl enable --now cron; fi
 fi
-run_root systemctl enable --now docker
-if [ "$REQUIRE_PYTHON" = 1 ]; then run_root systemctl enable --now cron; fi
-if [ "$(id -u)" -ne 0 ]; then run_root usermod -aG docker "$(id -un)"; fi
+if [ "$(id -u)" -ne 0 ] && ! id -nG | tr ' ' '\n' | grep -qx docker; then
+  sudo -n true >/dev/null 2>&1 || { echo '加入 docker 组需要免密 sudo' >&2; exit 1; }
+  run_root usermod -aG docker "$(id -un)"
+  echo '当前用户已加入 docker 组；请重新登录后重试（不会使用 sudo 运行 Docker）' >&2
+  exit 3
+fi
+docker info >/dev/null 2>&1 || {
+  echo '当前会话无权访问 Docker；请重新登录或执行 newgrp docker 后重试' >&2
+  exit 3
+}
 if [ "$REQUIRE_PYTHON" = 1 ]; then
   python3 -c 'import sys, yaml; raise SystemExit(sys.version_info < (3, 8))' \
     || { echo 'manager 需要 Python 3.8+ 和 PyYAML' >&2; exit 1; }

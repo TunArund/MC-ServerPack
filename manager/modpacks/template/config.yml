@@ -13,6 +13,7 @@ backup:
 # 指定游玩过程中会动态变化的目录与文件
 # 目录以/结尾，文件不加/。
 dynamic-paths:
+  - config/
   - world/
   - logs/
   - crash-reports/

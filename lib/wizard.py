@@ -103,12 +103,28 @@ def load_env() -> dict[str, str]:
 
 
 def write_env(values: dict[str, str]) -> None:
-    keys = (
-        "GW_SECRET_ID", "GW_SECRET_KEY", "COS_SECRET_ID", "COS_SECRET_KEY",
-        "QQBOT_SECRET_ID", "QQBOT_SECRET_KEY",
-    )
-    ordered = [*keys, *(key for key in values if key not in keys)]
-    ENV_FILE.write_text("".join(f"{key}={values.get(key, '')}\n" for key in ordered), encoding="utf-8")
+    if not ENV_FILE.exists():
+        shutil.copy2(ROOT / ".env.example", ENV_FILE)
+    if not values:
+        return
+    with ENV_FILE.open("r", encoding="utf-8", newline="") as stream:
+        lines = stream.readlines()
+    remaining = dict(values)
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        key = stripped.split("=", 1)[0].strip() if stripped and not stripped.startswith("#") and "=" in stripped else ""
+        if key in remaining:
+            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            output.append(f"{key}={remaining.pop(key)}{ending}")
+        else:
+            output.append(line)
+    if remaining:
+        if output and not output[-1].endswith(("\n", "\r")):
+            output[-1] += "\n"
+        output.extend(f"{key}={value}\n" for key, value in remaining.items())
+    with ENV_FILE.open("w", encoding="utf-8", newline="") as stream:
+        stream.writelines(output)
 
 
 def configure_project() -> None:
@@ -160,7 +176,7 @@ def configure_project() -> None:
 
 
 def configure_secrets() -> None:
-    document, values = load_yaml(CONFIG), load_env()
+    document, current, updates = load_yaml(CONFIG), load_env(), {}
     if "gateway" in document:
         print("安全考虑，输入密钥时不会显示。")
         for key, label in (
@@ -169,14 +185,14 @@ def configure_secrets() -> None:
             ("QQBOT_SECRET_ID", "QQ Bot SecretId"),
             ("QQBOT_SECRET_KEY", "QQ Bot SecretKey"),
         ):
-            values[key] = secret(label, values.get(key, ""))
+            updates[key] = secret(label, current.get(key, ""))
     if "cos" in document:
         print("安全考虑，输入 COS 密钥时不会显示。")
-        values["COS_SECRET_ID"] = secret("COS SecretId", values.get("COS_SECRET_ID", ""))
-        values["COS_SECRET_KEY"] = secret("COS SecretKey", values.get("COS_SECRET_KEY", ""))
+        updates["COS_SECRET_ID"] = secret("COS SecretId", current.get("COS_SECRET_ID", ""))
+        updates["COS_SECRET_KEY"] = secret("COS SecretKey", current.get("COS_SECRET_KEY", ""))
     if "gateway" not in document and "cos" not in document:
         print("当前只配置 manager，没有必需密钥；已跳过。")
-    write_env(values)
+    write_env(updates)
     print(f"已写入：{ENV_FILE}")
 
 

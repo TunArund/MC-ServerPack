@@ -20,7 +20,22 @@ def safe_target(root: Path, name: str) -> Path:
     return target
 
 
+def flatten_single_directory(destination: Path, previous: set[str]) -> None:
+    added = [item for item in destination.iterdir() if item.name not in previous and item.name != ".gitkeep"]
+    if previous - {".gitkeep"} or len(added) != 1 or not added[0].is_dir():
+        return
+    wrapper = added[0]
+    for item in wrapper.iterdir():
+        target = destination / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, dirs_exist_ok=True)
+        else:
+            shutil.move(str(item), target)
+    shutil.rmtree(wrapper)
+
+
 def extract(source: Path, destination: Path) -> None:
+    previous = {item.name for item in destination.iterdir()}
     if zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:
             for info in archive.infolist():
@@ -31,6 +46,7 @@ def extract(source: Path, destination: Path) -> None:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(info) as src, target.open("wb") as dst:
                         shutil.copyfileobj(src, dst)
+        flatten_single_directory(destination, previous)
         return
     if tarfile.is_tarfile(source):
         with tarfile.open(source, "r:*") as archive:
@@ -47,6 +63,7 @@ def extract(source: Path, destination: Path) -> None:
                         raise RuntimeError(f"无法读取压缩包成员：{member.name}")
                     with extracted, target.open("wb") as dst:
                         shutil.copyfileobj(extracted, dst)
+        flatten_single_directory(destination, previous)
         return
     shutil.copy2(source, destination / source.name)
 
