@@ -43,7 +43,8 @@ python dev/release.py v0.1
 python dev/release.py v0.1 --publish
 ```
 
-跨平台测试时可自动快进当前分支、同步被移动的标签、构建并覆盖仓库同级的解压目录：
+跨平台测试时可自动快进当前分支、同步被移动的标签、构建并升级仓库同级的解压目录。
+发行文件会被替换，已有的 `config.yml`、`.env`、用户整合包和运行数据会保留：
 
 ```bash
 python dev/release.py v0.1 --update --extract

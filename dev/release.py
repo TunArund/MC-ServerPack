@@ -196,9 +196,10 @@ def extract_package(archive_path: Path, destination: Path) -> Path:
         extracted = temporary / package_name
         if not extracted.is_dir():
             raise ReleaseError(f"发行包缺少顶层目录：{package_name}")
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.move(str(extracted), target)
+        # Upgrade the distribution in place. Files shipped by the archive are
+        # replaced, while local config, secrets, modpacks and runtime data that
+        # are absent from the archive remain untouched.
+        shutil.copytree(extracted, target, dirs_exist_ok=True)
     return target
 
 
@@ -311,7 +312,7 @@ def main() -> int:
     parser.add_argument("--update", action="store_true", help="先快进当前分支并同步远端版本标签")
     parser.add_argument(
         "--extract", nargs="?", const=ROOT.parent, type=Path, metavar="DIR",
-        help="构建后覆盖解压到 DIR；省略 DIR 时使用仓库的上级目录",
+        help="构建后升级解压到 DIR；省略 DIR 时使用仓库的上级目录",
     )
     parser.add_argument("--remote", default="origin", help="Gitee Git 远端名，默认 origin")
     parser.add_argument("--output", type=Path, default=ROOT / "dev/dist", help="发行包输出目录")
