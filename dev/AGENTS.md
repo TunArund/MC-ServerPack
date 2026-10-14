@@ -33,8 +33,9 @@ Windows 和 Linux 必须分别在对应系统构建。安装开发依赖：
 python -m pip install -r dev/requirements-dev.txt
 ```
 
-发布脚本从进程环境读取 `GITEE_TOKEN`，未设置时读取根 `.env`。版本使用 `v0.1`
-格式：
+发布脚本从进程环境读取 `GITHUB_TOKEN`，未设置时读取根 `.env`。建议创建仅授权本
+仓库、Repository permissions 中 `Contents: Read and write` 的 fine-grained PAT。版本
+使用 `v0.1` 格式：
 
 ```bash
 git tag -a v0.1 -m "v0.1"
@@ -50,8 +51,8 @@ python dev/release.py v0.1 --publish
 python dev/release.py v0.1 --update --extract
 ```
 
-先在 Linux 执行一次，再在 Windows 的同一标签上执行一次。脚本会复用 Gitee
-Release，并上传 `dev/dist/` 中当前平台的 ZIP 和 SHA-256 文件。
+先在 Linux 执行一次，再在 Windows 的同一标签上执行一次。脚本会复用 GitHub
+Release，删除同名旧附件后上传 `dev/dist/` 中当前平台的 ZIP 和 SHA-256 文件。
 
 平台包不包含根 `lib/` 和 `.gitignore`；Windows 包也不包含 `mc.sh`。
 `manager/lib/` 是 mc-server 运行时代码，必须保留。

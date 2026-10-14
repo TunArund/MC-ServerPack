@@ -1,4 +1,4 @@
-"""Build and optionally publish a native release to Gitee."""
+"""Build and optionally publish a native release to GitHub."""
 
 from __future__ import annotations
 
@@ -17,14 +17,13 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-API = "https://gitee.com/api/v5"
+API = "https://api.github.com"
 VERSION_RE = re.compile(r"^v\d+\.\d+$")
-REMOTE_RE = re.compile(r"(?:https://gitee\.com/|git@gitee\.com:)([^/]+)/([^/]+?)(?:\.git)?$")
+REMOTE_RE = re.compile(r"(?:https://github\.com/|git@github\.com:)([^/]+)/([^/]+?)(?:\.git)?$")
 EXCLUDED = {"dev", ".github", ".gitee", ".idea", ".vscode"}
 UPDATE_MARKER = "MC_SERVERPACK_RELEASE_UPDATED"
 
@@ -47,7 +46,7 @@ def repository(remote: str) -> tuple[str, str]:
     url = git("remote", "get-url", remote)
     match = REMOTE_RE.search(url)
     if not match:
-        raise ReleaseError(f"{remote} 不是可识别的 Gitee 远端：{url}")
+        raise ReleaseError(f"{remote} 不是可识别的 GitHub 远端：{url}")
     return match.group(1), match.group(2)
 
 
@@ -228,93 +227,94 @@ def local_secret(name: str) -> str:
     return ""
 
 
-def request_json(url: str, *, fields: dict[str, str], token: str) -> dict:
-    payload = urllib.parse.urlencode({**fields, "access_token": token}).encode()
-    request = urllib.request.Request(url, data=payload, method="POST")
+def api_request(
+    url: str, token: str, *, method: str = "GET", payload: dict | None = None,
+    data: bytes | None = None, content_type: str = "application/vnd.github+json",
+    not_found_ok: bool = False,
+) -> dict:
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("Accept", "application/vnd.github+json")
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+    if data is not None:
+        request.add_header("Content-Type", content_type)
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.load(response)
+        timeout = 300 if content_type == "application/octet-stream" else 60
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+            return json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
+        if exc.code == 404 and not_found_ok:
+            return {}
         detail = exc.read().decode(errors="replace")
-        raise ReleaseError(f"Gitee API 返回 {exc.code}：{detail}") from exc
+        raise ReleaseError(f"GitHub API 返回 {exc.code}：{detail}") from exc
     except urllib.error.URLError as exc:
-        raise ReleaseError(f"无法连接 Gitee API：{exc.reason}") from exc
+        raise ReleaseError(f"无法连接 GitHub API：{exc.reason}") from exc
 
 
 def find_release(owner: str, repo: str, version: str, token: str) -> dict | None:
     tag = urllib.parse.quote(version, safe="")
-    query = urllib.parse.urlencode({"access_token": token})
-    request = urllib.request.Request(
-        f"{API}/repos/{owner}/{repo}/releases/tags/{tag}?{query}", method="GET",
+    result = api_request(
+        f"{API}/repos/{owner}/{repo}/releases/tags/{tag}", token,
+        not_found_ok=True,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        detail = exc.read().decode(errors="replace")
-        raise ReleaseError(f"查询 Gitee Release 失败（{exc.code}）：{detail}") from exc
-    except urllib.error.URLError as exc:
-        raise ReleaseError(f"无法连接 Gitee API：{exc.reason}") from exc
+    return result or None
 
 
 def upload(url: str, path: Path, token: str) -> dict:
-    boundary = f"----mc-serverpack-{uuid.uuid4().hex}"
-    chunks: list[bytes] = []
-    for name, value in (("access_token", token),):
-        chunks.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode())
-    chunks.append(
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{path.name}\"\r\n"
-        "Content-Type: application/octet-stream\r\n\r\n".encode()
+    query = urllib.parse.urlencode({"name": path.name})
+    return api_request(
+        f"{url}?{query}", token, method="POST", data=path.read_bytes(),
+        content_type="application/octet-stream",
     )
-    chunks.extend((path.read_bytes(), f"\r\n--{boundary}--\r\n".encode()))
-    request = urllib.request.Request(url, data=b"".join(chunks), method="POST")
-    request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise ReleaseError(f"上传 {path.name} 失败（{exc.code}）：{detail}") from exc
-    except urllib.error.URLError as exc:
-        raise ReleaseError(f"上传 {path.name} 时无法连接 Gitee API：{exc.reason}") from exc
 
 
 def publish(owner: str, repo: str, version: str, notes: str, files: tuple[Path, ...]) -> None:
-    token = local_secret("GITEE_TOKEN")
+    token = local_secret("GITHUB_TOKEN")
     if not token:
-        raise ReleaseError("发布需要在进程环境或根 .env 中设置 GITEE_TOKEN")
+        raise ReleaseError("发布需要在进程环境或根 .env 中设置 GITHUB_TOKEN")
     release = find_release(owner, repo, version, token)
     if release:
-        print(f"复用已有 Gitee Release：{version}")
+        print(f"复用已有 GitHub Release：{version}")
     else:
-        release = request_json(
+        release = api_request(
             f"{API}/repos/{owner}/{repo}/releases", token=token,
-            fields={
+            method="POST", payload={
                 "tag_name": version, "name": version, "body": notes,
-                "target_commitish": version, "prerelease": "false",
+                "target_commitish": version, "draft": False, "prerelease": False,
             },
         )
     release_id = release.get("id")
     if not release_id:
-        raise ReleaseError(f"Gitee 未返回 Release ID：{release}")
-    url = f"{API}/repos/{owner}/{repo}/releases/{release_id}/attach_files"
+        raise ReleaseError(f"GitHub 未返回 Release ID：{release}")
+    assets = {item.get("name"): item for item in release.get("assets", [])}
+    url = str(release.get("upload_url", "")).split("{", 1)[0]
+    if not url:
+        raise ReleaseError(f"GitHub 未返回附件上传地址：{release}")
     for path in files:
+        existing = assets.get(path.name)
+        if existing and existing.get("id"):
+            api_request(
+                f"{API}/repos/{owner}/{repo}/releases/assets/{existing['id']}",
+                token, method="DELETE",
+            )
+            print(f"已删除同名附件：{path.name}")
         result = upload(url, path, token)
         print(f"已上传：{result.get('browser_download_url', path.name)}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="构建并发布当前平台的 Gitee 发行包")
+    parser = argparse.ArgumentParser(description="构建并发布当前平台的 GitHub 发行包")
     parser.add_argument("version", help="版本标签，例如 v0.1")
-    parser.add_argument("--publish", action="store_true", help="创建 Gitee Release 并上传附件")
+    parser.add_argument("--publish", action="store_true", help="创建 GitHub Release 并上传附件")
     parser.add_argument("--update", action="store_true", help="先快进当前分支并同步远端版本标签")
     parser.add_argument(
         "--extract", nargs="?", const=ROOT.parent, type=Path, metavar="DIR",
         help="构建后升级解压到 DIR；省略 DIR 时使用仓库的上级目录",
     )
-    parser.add_argument("--remote", default="origin", help="Gitee Git 远端名，默认 origin")
+    parser.add_argument("--remote", default="origin", help="GitHub Git 远端名，默认 origin")
     parser.add_argument("--output", type=Path, default=ROOT / "dev/dist", help="发行包输出目录")
     args = parser.parse_args()
     if args.update:
@@ -334,9 +334,9 @@ def main() -> int:
         print(f"已解压：{extract_package(package, args.extract)}")
     if args.publish:
         publish(owner, repo, args.version, release_notes(args.version), (package, checksum))
-        print(f"Gitee Release 发布完成：{owner}/{repo} {args.version}")
+        print(f"GitHub Release 发布完成：{owner}/{repo} {args.version}")
     else:
-        print("未上传；确认产物后追加 --publish 发布到 Gitee。")
+        print("未上传；确认产物后追加 --publish 发布到 GitHub。")
     print(flush=True)
     return 0
 
