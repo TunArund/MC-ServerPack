@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_FILE = ROOT / "config.yml"
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
+REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 
 
 class ConfigError(RuntimeError):
@@ -137,8 +138,11 @@ def _optional_clock(section: dict[str, Any], enabled: bool, key: str, field: str
 
 def _endpoint(section: dict[str, Any], field: str) -> Endpoint:
     directory = _text(section.get("dir"), f"{field}.dir")
-    if not directory.startswith("/"):
-        raise ConfigError(f"{field}.dir 必须是绝对路径")
+    path = PurePosixPath(directory)
+    if not path.is_absolute() or ".." in path.parts or not REMOTE_DIR_RE.fullmatch(directory):
+        raise ConfigError(f"{field}.dir 必须是安全的绝对路径")
+    if len(path.parts) < 3:
+        raise ConfigError(f"{field}.dir 不能是系统顶层目录")
     return Endpoint(
         _text(section.get("host"), f"{field}.host"),
         _text(section.get("user"), f"{field}.user"),

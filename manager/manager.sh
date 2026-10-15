@@ -12,4 +12,8 @@ if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
 fi
 
 cd "$ROOT_DIR"
-exec python3 -m lib.cli "$@"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON=python3
+fi
+exec "$PYTHON" -m lib.cli "$@"

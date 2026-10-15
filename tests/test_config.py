@@ -73,6 +73,18 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "绝对路径"):
             load(self.write(document))
 
+    def test_rejects_system_top_level_remote_directory(self) -> None:
+        document = self.minimum()
+        document["manager"]["dir"] = "/srv"
+        with self.assertRaisesRegex(ConfigError, "系统顶层"):
+            load(self.write(document))
+
+    def test_rejects_remote_directory_with_shell_characters(self) -> None:
+        document = self.minimum()
+        document["manager"]["dir"] = "/srv/minecraft;touch-bad"
+        with self.assertRaisesRegex(ConfigError, "安全的绝对路径"):
+            load(self.write(document))
+
     def test_runtime_examples_are_direct_root_sections(self) -> None:
         source = ROOT / "config.yml.example"
         manager_text = (ROOT / "manager/config.yml.example").read_text(encoding="utf-8")
