@@ -19,10 +19,16 @@ class ManagerConfigTests(unittest.TestCase):
 
     def minimum(self) -> dict:
         return {
-            "max-running": 1,
-            "mem-limit": "4g",
-            "start-timeout": 300,
-            "stop-timeout": 180,
+            "auto-stop": False,
+            "stop-at": "23:05",
+            "modpack": {
+                "auto-stop": False,
+                "stop-at": "23:00",
+                "max-running": 1,
+                "mem-limit": "4g",
+                "start-timeout": 300,
+                "stop-timeout": 180,
+            },
         }
 
     def test_schedule_defaults_to_disabled(self) -> None:
@@ -33,43 +39,40 @@ class ManagerConfigTests(unittest.TestCase):
 
     def test_schedule_and_poweroff_are_parsed(self) -> None:
         document = self.minimum()
-        document["schedule"] = {
+        document.update({
             "auto-stop": True,
             "stop-at": "23:05",
-            "notify-elast": 30,
-            "notify-step": 3,
-            "poweroff": {
-                "enabled": True,
-                "deadline": 8,
-                "region": "ap-shanghai",
-                "instance-id": "ins-test",
-            },
-        }
+            "region": "ap-shanghai",
+            "instance-id": "ins-test",
+        })
+        document["modpack"].update({
+            "auto-stop": True,
+            "stop-notify-elast": 30,
+            "stop-notify-step": 3,
+        })
         settings = load_limits(self.write(document))
         self.assertTrue(settings.schedule_enabled)
-        self.assertEqual(settings.stop_at, "23:05")
+        self.assertEqual(settings.stop_at, "23:00")
         self.assertEqual(settings.notify_elast, 30)
         self.assertEqual(settings.notify_step, 3)
         self.assertTrue(settings.poweroff_enabled)
+        self.assertEqual(settings.poweroff_at, "23:05")
         self.assertEqual(settings.power_region, "ap-shanghai")
         self.assertEqual(settings.power_instance_id, "ins-test")
 
     def test_poweroff_requires_auto_stop(self) -> None:
         document = self.minimum()
-        document["schedule"] = {
-            "auto-stop": False,
-            "poweroff": {
-                "enabled": True,
-                "region": "ap-shanghai",
-                "instance-id": "ins-test",
-            },
-        }
-        with self.assertRaisesRegex(ConfigError, "需要 schedule.auto-stop=true"):
+        document.update({
+            "auto-stop": True,
+            "region": "ap-shanghai",
+            "instance-id": "ins-test",
+        })
+        with self.assertRaisesRegex(ConfigError, "需要 modpack.auto-stop=true"):
             load_limits(self.write(document))
 
     def test_schedule_rejects_invalid_clock(self) -> None:
         document = self.minimum()
-        document["schedule"] = {"stop-at": "24:00"}
+        document["modpack"]["stop-at"] = "24:00"
         with self.assertRaisesRegex(ConfigError, "HH:MM"):
             load_limits(self.write(document))
 

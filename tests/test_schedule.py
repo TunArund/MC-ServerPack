@@ -162,9 +162,12 @@ class ScheduleTests(unittest.TestCase):
                 calls.append("stop")
 
         factory = lambda settings, root: Power()
-        now = datetime(2026, 10, 16, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        zone = ZoneInfo("Asia/Shanghai")
+        stopped = run_all(manager, datetime(2026, 10, 16, 23, 0, tzinfo=zone), factory)
+        now = datetime(2026, 10, 16, 23, 5, tzinfo=zone)
         first = run_all(manager, now, factory)
         second = run_all(manager, now, factory)
+        self.assertFalse(stopped.poweroff)
         self.assertTrue(first.poweroff)
         self.assertFalse(second.poweroff)
         self.assertEqual(calls, ["stop"])

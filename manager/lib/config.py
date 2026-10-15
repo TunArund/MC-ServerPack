@@ -68,6 +68,7 @@ class ManagerLimits:
     poweroff_deadline: int = 5
     power_region: str | None = None
     power_instance_id: str | None = None
+    poweroff_at: str = "23:05"
 
 
 def validate_pack_id(pack_id: str) -> str:
@@ -144,36 +145,34 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
         raise ConfigError(f"Manager 配置读取失败：{exc}") from exc
     if not isinstance(document, dict):
         raise ConfigError("manager/config.yml 必须是对象")
-    memory, memory_bytes = parse_memory(document.get("mem-limit"))
-    schedule = document.get("schedule", {})
-    if not isinstance(schedule, dict):
-        raise ConfigError("schedule 必须是对象")
-    poweroff = schedule.get("poweroff", {})
-    if not isinstance(poweroff, dict):
-        raise ConfigError("schedule.poweroff 必须是对象")
-    schedule_enabled = _boolean(schedule.get("auto-stop"), "schedule.auto-stop")
-    poweroff_enabled = _boolean(poweroff.get("enabled"), "schedule.poweroff.enabled")
-    region = poweroff.get("region")
-    instance_id = poweroff.get("instance-id")
+    modpack = document.get("modpack")
+    if not isinstance(modpack, dict):
+        raise ConfigError("modpack 必须是对象")
+    memory, memory_bytes = parse_memory(modpack.get("mem-limit"))
+    schedule_enabled = _boolean(modpack.get("auto-stop"), "modpack.auto-stop")
+    poweroff_enabled = _boolean(document.get("auto-stop"), "auto-stop")
+    region = document.get("region")
+    instance_id = document.get("instance-id")
     if poweroff_enabled:
         if not schedule_enabled:
-            raise ConfigError("schedule.poweroff.enabled 需要 schedule.auto-stop=true")
+            raise ConfigError("auto-stop 需要 modpack.auto-stop=true")
         if not isinstance(region, str) or not region.strip() or not isinstance(instance_id, str) or not instance_id.strip():
-            raise ConfigError("云关机需要 schedule.poweroff.region 和 instance-id")
+            raise ConfigError("云关机需要 region 和 instance-id")
     return ManagerLimits(
-        _positive_integer(document.get("max-running", 1), "max-running"),
+        _positive_integer(modpack.get("max-running", 1), "modpack.max-running"),
         memory,
         memory_bytes,
-        _positive_integer(document.get("start-timeout", 300), "start-timeout"),
-        _positive_integer(document.get("stop-timeout", 180), "stop-timeout"),
+        _positive_integer(modpack.get("start-timeout", 300), "modpack.start-timeout"),
+        _positive_integer(modpack.get("stop-timeout", 180), "modpack.stop-timeout"),
         schedule_enabled,
-        _clock(schedule.get("stop-at", "23:00"), "schedule.stop-at"),
-        _positive_integer(schedule.get("notify-elast", 60), "schedule.notify-elast"),
-        _positive_integer(schedule.get("notify-step", 2), "schedule.notify-step", minimum=2),
+        _clock(modpack.get("stop-at", "23:00"), "modpack.stop-at"),
+        _positive_integer(modpack.get("stop-notify-elast", 60), "modpack.stop-notify-elast"),
+        _positive_integer(modpack.get("stop-notify-step", 2), "modpack.stop-notify-step", minimum=2),
         poweroff_enabled,
-        _positive_integer(poweroff.get("deadline", 5), "schedule.poweroff.deadline"),
+        5,
         region.strip() if isinstance(region, str) else None,
         instance_id.strip() if isinstance(instance_id, str) else None,
+        _clock(document.get("stop-at", "23:05"), "stop-at"),
     )
 
 

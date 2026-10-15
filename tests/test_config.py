@@ -26,8 +26,8 @@ class ConfigTests(unittest.TestCase):
                 "host": "manager.example",
                 "user": "minecraft",
                 "dir": "/srv/minecraft",
-                "java": [17, 21],
-                "mem-limit": "16g",
+                "auto-stop": False,
+                "modpack": {"java": [17, 21], "mem-limit": "16g"},
             },
             "monitor": {"enabled": False},
             "cos": {"enabled": False},
@@ -54,16 +54,16 @@ class ConfigTests(unittest.TestCase):
 
     def test_enabled_schedule_requires_time(self) -> None:
         document = self.minimum()
-        document["manager"]["schedule"] = {"auto-stop": True}
-        with self.assertRaisesRegex(ConfigError, "manager.schedule.stop-at"):
+        document["manager"]["modpack"]["auto-stop"] = True
+        with self.assertRaisesRegex(ConfigError, "manager.modpack.stop-at"):
             load(self.write(document))
 
     def test_yaml_sexagesimal_time_is_normalized(self) -> None:
         document = self.minimum()
-        document["manager"]["schedule"] = {
+        document["manager"]["modpack"].update({
             "auto-stop": True,
             "stop-at": 23 * 60 + 5,
-        }
+        })
         config = load(self.write(document))
         self.assertEqual(config.manager.modpack.stop_at, "23:05")
 

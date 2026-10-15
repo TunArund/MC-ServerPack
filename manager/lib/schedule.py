@@ -107,11 +107,24 @@ def _stop_time(now: datetime, text: str) -> datetime:
     return now.astimezone(ZONE).replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+def _power_time(stop_at: datetime, settings: ManagerLimits) -> datetime:
+    result = _stop_time(stop_at, settings.poweroff_at)
+    if result < stop_at:
+        result += timedelta(days=1)
+    return result
+
+
+def _event_end(stop_at: datetime, settings: ManagerLimits) -> datetime:
+    if settings.poweroff_enabled:
+        return _power_time(stop_at, settings) + timedelta(minutes=settings.poweroff_deadline)
+    return stop_at + timedelta(minutes=settings.poweroff_deadline)
+
+
 def _scheduled_stop(now: datetime, settings: ManagerLimits) -> datetime:
     local = now.astimezone(ZONE)
     today = _stop_time(local, settings.stop_at)
     previous = today - timedelta(days=1)
-    if local < today and local <= previous + timedelta(minutes=settings.poweroff_deadline):
+    if local < today and local <= _event_end(previous, settings):
         return previous
     return today
 
@@ -138,7 +151,7 @@ def _run_shutdown(
                 state.add(key)
                 _save_state(state_handle, state)
 
-    if not (-settings.poweroff_deadline <= remaining <= 0):
+    if not (stop_at <= local <= _event_end(stop_at, settings)):
         return
     stop_key = f"{date}:stop-all"
     if stop_key not in state:
@@ -151,6 +164,9 @@ def _run_shutdown(
         _save_state(state_handle, state)
 
     if not settings.poweroff_enabled:
+        return
+    power_at = _power_time(stop_at, settings)
+    if not (power_at <= local <= power_at + timedelta(minutes=settings.poweroff_deadline)):
         return
     power_key = f"{date}:poweroff"
     if power_key in state:

@@ -102,25 +102,24 @@ backup:
 
 ## 定时关服与关机
 
-根 `config.yml` 的 `manager.schedule` 可配置一次全局每日停服，部署时会随 `manager`
-子树原样生成到 Manager。以下配置会按 60、30、15、7、3、1
-分钟逐步广播，在 23:00 优雅停止所有正在运行的整合包，并在成功后请求云主机关机：
+根 `config.yml` 的 `manager.modpack` 配置整合包停服，`manager.auto-stop` 配置云主机关机；
+部署时会将整个 `manager` 子树原样生成到 Manager。以下配置会按 60、30、15、7、3、1
+分钟逐步广播，在 23:00 优雅停止所有整合包，并在 23:05 请求云主机关机：
 
 ```yaml
-schedule:
+auto-stop: true
+stop-at: '23:05'
+region: ap-nanjing
+instance-id: ins-xxxxyyyy
+modpack:
   auto-stop: true
   stop-at: '23:00'
-  notify-elast: 60
-  notify-step: 2
-  poweroff:
-    enabled: true
-    deadline: 5
-    region: ap-nanjing
-    instance-id: ins-xxxxyyyy
+  stop-notify-elast: 60
+  stop-notify-step: 2
 ```
 
-`notify-elast` 是第一次提前通知的分钟数，后续通知按 `notify-step` 做整数除法，直到
-1 分钟。停服或云 API 调用失败时，聚合任务会在 `deadline` 分钟窗口内每分钟重试；
+`stop-notify-elast` 是第一次提前通知的分钟数，后续通知按 `stop-notify-step` 做整数除法，直到
+1 分钟。停服失败时会在云主机关机时间前每分钟重试；云 API 调用失败后会在 5 分钟内重试。
 成功动作写入 `.schedule-state.json`，同一天不会重复执行。进入停服窗口后不会再开始
 新的备份。
 
