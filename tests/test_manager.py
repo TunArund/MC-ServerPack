@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import yaml
 
-from manager.lib.config import ConfigError, load_pack, normalize_persistent, render_compose
+from manager.lib.config import ConfigError, load_pack, normalize_persistent, parse_interval, render_compose
 from manager.lib.docker import DockerClient
 from manager.lib.modpacks import ModpackManager
 
@@ -46,6 +46,14 @@ class ManagerFixture(unittest.TestCase):
 
 
 class PackConfigTests(ManagerFixture):
+    def test_backup_interval_units(self) -> None:
+        self.assertEqual(parse_interval("30m"), ("30m", 1800))
+        self.assertEqual(parse_interval("6H"), ("6h", 21600))
+        self.assertEqual(parse_interval("1d"), ("1d", 86400))
+        for value in ("0m", "30", "1w", 60):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                parse_interval(value)
+
     def test_render_prepares_persistent_data_and_is_idempotent(self) -> None:
         directory = self.make_pack()
         spec = load_pack("example", self.packs)

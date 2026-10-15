@@ -9,6 +9,7 @@ from .archive import ArchiveError
 from .config import ConfigError
 from .docker import DockerError
 from .modpacks import ModpackError, ModpackManager
+from . import schedule
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -31,12 +32,34 @@ def make_parser() -> argparse.ArgumentParser:
     remove.add_argument("pack_id")
     remove.add_argument("--force", action="store_true", help="确认删除持久化数据和备份")
     commands.add_parser("stop-all")
+    scheduled = commands.add_parser("schedule", help="自动备份调度")
+    scheduled.add_argument("command", choices=("run", "install", "remove"))
     return parser
 
 
 def dispatch(argv: list[str] | None = None, manager: ModpackManager | None = None) -> int:
     args = make_parser().parse_args(argv)
     service = manager or ModpackManager()
+    if args.action == "schedule":
+        if args.command == "install":
+            schedule.install(service.manager_root)
+            print("已安装 Manager 用户级调度任务")
+            return 0
+        if args.command == "remove":
+            schedule.remove()
+            print("已移除 Manager 用户级调度任务")
+            return 0
+        completed, failed, acquired = schedule.run_due(service)
+        if not acquired:
+            print("已有调度任务在运行，本次跳过")
+            return 0
+        for path in completed:
+            print(f"自动备份完成：{path}")
+        for pack_id, reason in failed:
+            print(f"自动备份失败：{pack_id}：{reason}", file=sys.stderr)
+        if not completed and not failed:
+            print("没有到期的自动备份")
+        return 1 if failed else 0
     if args.action == "stop-all":
         stopped, failed = service.stop_all()
         for pack_id in stopped:
@@ -75,7 +98,7 @@ def dispatch(argv: list[str] | None = None, manager: ModpackManager | None = Non
 def main(argv: list[str] | None = None) -> int:
     try:
         return dispatch(argv)
-    except (ArchiveError, ConfigError, DockerError, ModpackError, OSError) as exc:
+    except (ArchiveError, ConfigError, DockerError, ModpackError, schedule.ScheduleError, OSError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
 

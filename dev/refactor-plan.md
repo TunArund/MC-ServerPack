@@ -16,9 +16,10 @@
 
 命令设计遵循以下原则：
 
-1. **不重复已知上下文**：`manager.sh` 只管理整合包，不再重复一层 `pack`。
+1. **不重复已知上下文**：`manager.sh` 的生命周期动作默认作用于整合包，不再重复一层 `pack`；
+   只有调度器这种独立资源使用 `schedule` 子命令。
 2. **动词在前、资源在后**：统一为 `<action> <id>`，便于帮助、补全和权限审计。
-3. **不同层级不共用裸命令**：Terminal 的云主机电源放在 `mcsp host manager`，
+3. **不同层级不共用裸命令**：Terminal 的云主机电源放在 `mcsp manager`，
    整合包放在 `mcsp pack`，避免两种 `start/stop` 混淆。
 4. **危险操作必须显式**：有数据的删除需要 `--force`，恢复必须停服，资源超限不自动顶掉其他服务。
 5. **未实现不假成功**：命令只在完整实现后加入 CLI，失败使用非零退出码。
@@ -27,11 +28,12 @@
 
 ```text
 mcsp deploy manager|monitor
-mcsp host manager start|stop|status
-mcsp pack <id> create|start|stop|status|logs|console|backup|restore|remove
+mcsp manager start|stop|status
+mcsp pack create|config|start|stop|status|logs|console|backup|restore|remove <id>
 
 manager.sh create|config|start|stop|status|logs|console|backup|restore|remove <id>
 manager.sh stop-all
+manager.sh schedule run|install|remove
 ```
 
 Monitor 手动关机时通过 TAT 调用 `manager.sh stop-all`，无论停服是否成功都继续请求云关机，并对风险告警。

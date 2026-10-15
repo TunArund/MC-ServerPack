@@ -18,6 +18,7 @@ PACKS_DIR = MANAGER_ROOT / "modpacks"
 MANAGER_CONFIG = MANAGER_ROOT / "config.yml"
 PACK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
+INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
 DEFAULT_COMMAND = ("bash", "./run.sh", "nogui")
 
 
@@ -45,6 +46,8 @@ class PackSpec:
     read_only: bool
     persistent: tuple[PersistentPath, ...]
     backup_enabled: bool
+    backup_interval: str
+    backup_interval_seconds: int
     backup_retain: int
     backup_quiesce_seconds: int
 
@@ -73,6 +76,18 @@ def parse_memory(value: object) -> tuple[str, int]:
     amount, unit = int(match.group(1)), match.group(2).lower()
     multiplier = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}[unit]
     return f"{amount}{unit}", amount * multiplier
+
+
+def parse_interval(value: object) -> tuple[str, int]:
+    if not isinstance(value, str):
+        raise ConfigError("backup.interval 必须是类似 30m、6h 或 1d 的时长")
+    normalized = value.strip().lower()
+    match = INTERVAL_RE.fullmatch(normalized)
+    if not match:
+        raise ConfigError("backup.interval 必须是类似 30m、6h 或 1d 的时长")
+    amount, unit = int(match.group(1)), match.group(2)
+    multiplier = {"m": 60, "h": 3600, "d": 86400}[unit]
+    return normalized, amount * multiplier
 
 
 def normalize_persistent(value: object) -> PersistentPath:
@@ -176,6 +191,7 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
     backup_enabled = backup.get("enabled", False)
     if type(backup_enabled) is not bool:
         raise ConfigError("backup.enabled 必须是 true 或 false")
+    backup_interval, backup_interval_seconds = parse_interval(backup.get("interval", "6h"))
     backup_retain = _positive_integer(backup.get("retain", 7), "backup.retain")
     quiesce = _positive_integer(backup.get("quiesce-seconds", 5), "backup.quiesce-seconds", minimum=0)
     persistent = tuple(normalize_persistent(item) for item in raw_persistent)
@@ -193,7 +209,8 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
             raise ConfigError(f"持久化目录 {parent.path}/ 已包含子路径")
     return PackSpec(
         pack_id, directory, name.strip(), str(version), java, memory, memory_bytes,
-        port, tuple(command), enabled, persistent, backup_enabled, backup_retain, quiesce,
+        port, tuple(command), enabled, persistent, backup_enabled,
+        backup_interval, backup_interval_seconds, backup_retain, quiesce,
     )
 
 

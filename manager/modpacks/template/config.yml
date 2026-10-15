@@ -5,6 +5,7 @@ mem-limit: 8g
 port: 25565
 backup:
   enabled: false
+  interval: 6h
   retain: 7
   # 在线备份执行 save-all flush 后等待的秒数。
   quiesce-seconds: 5

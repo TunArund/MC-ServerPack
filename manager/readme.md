@@ -60,7 +60,27 @@ cp config.yml.example config.yml
 ./manager.sh restore example
 ./manager.sh remove example --force
 ./manager.sh stop-all
+./manager.sh schedule install
+./manager.sh schedule run
+./manager.sh schedule remove
 ```
 
 `start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
 修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。
+
+## 自动备份
+
+整合包 `config.yml` 的 `backup.enabled` 为 `true` 时，`interval` 决定备份间隔，
+支持分钟、小时和天，例如 `30m`、`6h`、`1d`。`retain` 控制最大保留份数。
+
+```yaml
+backup:
+  enabled: true
+  interval: 6h
+  retain: 7
+  quiesce-seconds: 5
+```
+
+`schedule install` 只修改当前 Manager 用户的 crontab，每分钟检查一次到期备份。
+实际备份仍按 `interval` 执行，全局锁会防止上一次备份未完成时重复启动。
+开启自动备份但尚无任何备份的整合包，会在下一次检查时立即建立首份备份。
