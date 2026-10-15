@@ -47,8 +47,8 @@ compose.yml | 由config.yml自动生成，指导docker容器创建
 `compose.yml` 是生成物，不要手工修改。将服务端文件放入 `src/`，并根据实际
 启动脚本修改 `config.yml` 中的 `command`。
 
-Manager 的 `config.yml` 由 Terminal 从根 `config.yml` 的 `manager` 子树原样生成。
-日常修改应先改根配置，不要分别维护两份结构。仅在脱离 Terminal 手工部署时才执行：
+Manager 独立读取并持有自己的 `config.yml`，不依赖 Terminal 或 Monitor 的运行时文件。
+通过 Terminal 部署时，只提取 Terminal 配置中的 `manager` 段初始化该文件；手工独立部署时执行：
 
 ```bash
 cp config.yml.example config.yml
@@ -102,8 +102,8 @@ backup:
 
 ## 定时关服与关机
 
-根 `config.yml` 的 `manager.modpack` 配置整合包停服，`manager.auto-stop` 配置云主机关机；
-部署时会将整个 `manager` 子树原样生成到 Manager。以下配置会按 60、30、15、7、3、1
+Manager 本机 `config.yml` 的 `modpack` 配置整合包停服，顶层 `auto-stop` 配置云主机关机。
+以下配置会按 60、30、15、7、3、1
 分钟逐步广播，在 23:00 优雅停止所有整合包，并在 23:05 请求云主机关机：
 
 ```yaml
