@@ -1,0 +1,21 @@
+name: 整合包名称
+version: 版本
+java: 17
+mem-limit: 8g
+port: 25565
+# 默认整个 src/ 可写；enabled=true 时只有 persistent 列表可写。
+read-only:
+  enabled: false
+  persistent:
+  - config/
+  - world/
+  - logs/
+  - crash-reports/
+  - usercache.json
+  - usernamecache.json
+  - banned-ips.json
+  - banned-players.json
+  - ops.json
+  - whitelist.json
+  - eula.txt
+  - server.properties

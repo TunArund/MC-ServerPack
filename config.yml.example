@@ -1,0 +1,53 @@
+# 核心服务器
+manager:
+  host: manageraddr
+  user: manageruser
+  dir: /home/manageruser/MC-ServerPack-manager
+  # 定时关机
+  auto-stop: false # 可选开启，需填写实例地域与ID，并在.env设置POWER_SECRET
+  stop-at: '23:05'
+  region: ap-nanjing
+  instance-id: ins-xxxxyyyy
+  # 整合包设置
+  modpack:
+    # 定时关服
+    auto-stop: true
+    stop-at: '23:00'      # 必需早于关机时间
+    stop-notify-elast: 60 # 提前几分钟通知关服
+    stop-notify-step: 2   # 倒计时递减倍率
+    # 其他配置
+    java: [8,17,21]     # 需要的Java环境，在三个版本中自行增减
+    max-running: 1      # 最多运行整合包数量
+    overnum-action: ask # 超限时询问是否顶掉
+    mem-limit: 16g      # 所有整合包加起来允许使用的内存上限
+
+# 7x24h监控，可选开启，开启后可设置定时开机、manager监控告警、qq消息控制
+monitor:
+  enabled: false
+  host: monitoraddr
+  user: monitoruser
+  dir: /home/monitoruser/MC-ServerPack-monitor
+  manager:
+    # 定时开机
+    auto-start: true
+    start-at: '19:55'  # 开机时间
+    # 定时关机（可同时开启，作为二次检查）
+    auto-stop: true    # 自动关机
+    stop-at: '23:05'   # 关机时间
+  qqbot:
+    targets:
+    - type: user
+      id: aaa
+    # 只有群主才能邀请机器人进群
+    - type: group
+      id: bbb
+    admins:
+    - aaa
+
+# 可选的对象存储，开启后可配置云端备份（当网盘用）
+cos:
+  enabled: false
+  region: ap-shanghai
+  bucket: bucketname-appid
+  prefix: /minecraft
+  expire: 3600
