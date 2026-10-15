@@ -68,7 +68,19 @@ cp config.yml.example config.yml
 `start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
 修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。
 
-## 自动备份
+## 聚合调度与自动备份
+
+系统只需要一个 Manager 用户级 cron，不要为每个整合包分别创建 cronjob：
+
+```bash
+./manager.sh schedule install
+```
+
+它每分钟运行一次聚合检查，并由全局文件锁阻止任务重叠。`schedule install` 是幂等的，
+只维护带有 Manager 标记的那一行，不会覆盖用户已有的其他 crontab 项。
+
+每个整合包在自己的 `modpacks/<id>/config.yml` 中独立决定是否备份、备份周期和
+保留数量：
 
 整合包 `config.yml` 的 `backup.enabled` 为 `true` 时，`interval` 决定备份间隔，
 支持分钟、小时和天，例如 `30m`、`6h`、`1d`。`retain` 控制最大保留份数。
@@ -81,6 +93,43 @@ backup:
   quiesce-seconds: 5
 ```
 
-`schedule install` 只修改当前 Manager 用户的 crontab，每分钟检查一次到期备份。
-实际备份仍按 `interval` 执行，全局锁会防止上一次备份未完成时重复启动。
-开启自动备份但尚无任何备份的整合包，会在下一次检查时立即建立首份备份。
+`interval` 是相对周期，不是每天的固定时刻。开启自动备份但尚无任何备份的整合包，
+会在下一次聚合检查时立即建立首份备份；某个整合包失败不会阻止其他包继续备份。
+
+## 每日停服与可选云关机
+
+Manager 的 `config.yml` 可配置一次全局每日停服。以下配置会按 60、30、15、7、3、1
+分钟逐步广播，在 23:00 优雅停止所有正在运行的整合包，并在成功后请求云主机关机：
+
+```yaml
+schedule:
+  auto-stop: true
+  stop-at: '23:00'
+  notify-elast: 60
+  notify-step: 2
+  poweroff:
+    enabled: true
+    deadline: 5
+    region: ap-nanjing
+    instance-id: ins-xxxxyyyy
+```
+
+`notify-elast` 是第一次提前通知的分钟数，后续通知按 `notify-step` 做整数除法，直到
+1 分钟。停服或云 API 调用失败时，聚合任务会在 `deadline` 分钟窗口内每分钟重试；
+成功动作写入 `.schedule-state.json`，同一天不会重复执行。进入停服窗口后不会再开始
+新的备份。
+
+云关机使用腾讯云 `tccli`。先安装依赖并填写密钥文件：
+
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+cp .env.example .env
+```
+
+`.env` 中只需要 `POWER_SECRET_ID` 与 `POWER_SECRET_KEY`，该文件不会进入 Git。
+调用前会先查询实例状态；已停止或正在停止时视为成功，运行中实例使用软关机并选择
+关机不收费模式。建议云子账号只授予目标实例查询和关机所需的最小权限。
+
+修改配置后可先手工执行 `./manager.sh schedule run` 验证。它不会提前触发尚未到期的
+停服动作；确认无误后再运行 `schedule install`。`schedule remove` 只移除这一条聚合任务。

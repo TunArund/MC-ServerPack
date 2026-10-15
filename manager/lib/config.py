@@ -19,6 +19,7 @@ MANAGER_CONFIG = MANAGER_ROOT / "config.yml"
 PACK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
+TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 DEFAULT_COMMAND = ("bash", "./run.sh", "nogui")
 
 
@@ -59,6 +60,14 @@ class ManagerLimits:
     memory_bytes: int
     start_timeout: int
     stop_timeout: int
+    schedule_enabled: bool = False
+    stop_at: str = "23:00"
+    notify_elast: int = 60
+    notify_step: int = 2
+    poweroff_enabled: bool = False
+    poweroff_deadline: int = 5
+    power_region: str | None = None
+    power_instance_id: str | None = None
 
 
 def validate_pack_id(pack_id: str) -> str:
@@ -108,6 +117,22 @@ def _positive_integer(value: object, field: str, *, minimum: int = 1) -> int:
     return value
 
 
+def _boolean(value: object, field: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if type(value) is not bool:
+        raise ConfigError(f"{field} 必须是 true 或 false")
+    return value
+
+
+def _clock(value: object, field: str) -> str:
+    if type(value) is int and 0 <= value < 1440:
+        value = f"{value // 60:02d}:{value % 60:02d}"
+    if not isinstance(value, str) or not TIME_RE.fullmatch(value):
+        raise ConfigError(f"{field} 必须是 HH:MM")
+    return value
+
+
 def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
     if yaml is None:
         raise ConfigError("缺少 PyYAML")
@@ -120,12 +145,35 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
     if not isinstance(document, dict):
         raise ConfigError("manager/config.yml 必须是对象")
     memory, memory_bytes = parse_memory(document.get("mem-limit"))
+    schedule = document.get("schedule", {})
+    if not isinstance(schedule, dict):
+        raise ConfigError("schedule 必须是对象")
+    poweroff = schedule.get("poweroff", {})
+    if not isinstance(poweroff, dict):
+        raise ConfigError("schedule.poweroff 必须是对象")
+    schedule_enabled = _boolean(schedule.get("auto-stop"), "schedule.auto-stop")
+    poweroff_enabled = _boolean(poweroff.get("enabled"), "schedule.poweroff.enabled")
+    region = poweroff.get("region")
+    instance_id = poweroff.get("instance-id")
+    if poweroff_enabled:
+        if not schedule_enabled:
+            raise ConfigError("schedule.poweroff.enabled 需要 schedule.auto-stop=true")
+        if not isinstance(region, str) or not region.strip() or not isinstance(instance_id, str) or not instance_id.strip():
+            raise ConfigError("云关机需要 schedule.poweroff.region 和 instance-id")
     return ManagerLimits(
         _positive_integer(document.get("max-running", 1), "max-running"),
         memory,
         memory_bytes,
         _positive_integer(document.get("start-timeout", 300), "start-timeout"),
         _positive_integer(document.get("stop-timeout", 180), "stop-timeout"),
+        schedule_enabled,
+        _clock(schedule.get("stop-at", "23:00"), "schedule.stop-at"),
+        _positive_integer(schedule.get("notify-elast", 60), "schedule.notify-elast"),
+        _positive_integer(schedule.get("notify-step", 2), "schedule.notify-step", minimum=2),
+        poweroff_enabled,
+        _positive_integer(poweroff.get("deadline", 5), "schedule.poweroff.deadline"),
+        region.strip() if isinstance(region, str) else None,
+        instance_id.strip() if isinstance(instance_id, str) else None,
     )
 
 

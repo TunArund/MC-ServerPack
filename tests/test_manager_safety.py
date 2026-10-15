@@ -18,6 +18,7 @@ class FakeDocker:
     def __init__(self) -> None:
         self.active: set[str] = set()
         self.removed: list[str] = []
+        self.commands: list[tuple[str, str]] = []
 
     def running(self, spec) -> bool:
         return spec.pack_id in self.active
@@ -30,6 +31,9 @@ class FakeDocker:
 
     def remove_project(self, spec) -> None:
         self.removed.append(spec.pack_id)
+
+    def console(self, spec, command: str) -> None:
+        self.commands.append((spec.pack_id, command))
 
 
 class ManagerSafetyTests(unittest.TestCase):
@@ -86,6 +90,15 @@ class ManagerSafetyTests(unittest.TestCase):
         self.assertTrue((self.packs / "example").exists())
         self.manager.remove("example", force=True)
         self.assertFalse((self.packs / "example").exists())
+
+    def test_broadcast_only_targets_running_packs(self) -> None:
+        self.make_pack("running")
+        self.make_pack("stopped", port=25566)
+        self.docker.active.add("running")
+        sent, failed = self.manager.broadcast_all(15)
+        self.assertEqual(sent, ["running"])
+        self.assertFalse(failed)
+        self.assertEqual(self.docker.commands, [("running", "say 服务器将在 15 分钟后关闭")])
 
 
 if __name__ == "__main__":

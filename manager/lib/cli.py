@@ -32,7 +32,7 @@ def make_parser() -> argparse.ArgumentParser:
     remove.add_argument("pack_id")
     remove.add_argument("--force", action="store_true", help="确认删除持久化数据和备份")
     commands.add_parser("stop-all")
-    scheduled = commands.add_parser("schedule", help="自动备份调度")
+    scheduled = commands.add_parser("schedule", help="聚合执行备份、定时停服与云关机")
     scheduled.add_argument("command", choices=("run", "install", "remove"))
     return parser
 
@@ -49,17 +49,23 @@ def dispatch(argv: list[str] | None = None, manager: ModpackManager | None = Non
             schedule.remove()
             print("已移除 Manager 用户级调度任务")
             return 0
-        completed, failed, acquired = schedule.run_due(service)
-        if not acquired:
+        report = schedule.run_all(service)
+        if not report.acquired:
             print("已有调度任务在运行，本次跳过")
             return 0
-        for path in completed:
+        for minutes in report.broadcasts:
+            print(f"已广播：距离关服 {minutes} 分钟")
+        for pack_id in report.stopped:
+            print(f"定时停服完成：{pack_id}")
+        for path in report.backups:
             print(f"自动备份完成：{path}")
-        for pack_id, reason in failed:
-            print(f"自动备份失败：{pack_id}：{reason}", file=sys.stderr)
-        if not completed and not failed:
-            print("没有到期的自动备份")
-        return 1 if failed else 0
+        if report.poweroff:
+            print("已提交 Manager 云主机关机")
+        for action, reason in report.failures:
+            print(f"调度任务失败：{action}：{reason}", file=sys.stderr)
+        if not (report.broadcasts or report.stopped or report.backups or report.poweroff or report.failures):
+            print("没有到期的调度任务")
+        return 1 if report.failures else 0
     if args.action == "stop-all":
         stopped, failed = service.stop_all()
         for pack_id in stopped:

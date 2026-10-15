@@ -74,6 +74,18 @@ class ModpackManager:
     def _running(self) -> list[PackSpec]:
         return [spec for spec in self.specs() if self.docker.running(spec)]
 
+    def broadcast_all(self, minutes: int) -> tuple[list[str], list[tuple[str, str]]]:
+        sent: list[str] = []
+        failed: list[tuple[str, str]] = []
+        for spec in self.specs():
+            try:
+                if self.docker.running(spec):
+                    self.docker.console(spec, f"say 服务器将在 {minutes} 分钟后关闭")
+                    sent.append(spec.pack_id)
+            except Exception as exc:
+                failed.append((spec.pack_id, str(exc)))
+        return sent, failed
+
     def _check_capacity(self, wanted: PackSpec, active: list[PackSpec]) -> None:
         if any(spec.port == wanted.port for spec in active):
             owner = next(spec.pack_id for spec in active if spec.port == wanted.port)
