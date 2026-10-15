@@ -6,7 +6,10 @@ from pathlib import Path
 
 import yaml
 
-from lib.config import ConfigError, load
+from lib.config import ConfigError, load, render_runtime_section, runtime_section
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConfigTests(unittest.TestCase):
@@ -23,7 +26,8 @@ class ConfigTests(unittest.TestCase):
                 "host": "manager.example",
                 "user": "minecraft",
                 "dir": "/srv/minecraft",
-                "modpack": {"java": [17, 21], "mem-limit": "16g"},
+                "java": [17, 21],
+                "mem-limit": "16g",
             },
             "monitor": {"enabled": False},
             "cos": {"enabled": False},
@@ -43,32 +47,42 @@ class ConfigTests(unittest.TestCase):
             "host": "monitor.example",
             "user": "monitor",
             "dir": "/srv/monitor",
+            "manager": {},
         }
-        with self.assertRaisesRegex(ConfigError, "manager.region"):
+        with self.assertRaisesRegex(ConfigError, "monitor.manager.region"):
             load(self.write(document))
 
     def test_enabled_schedule_requires_time(self) -> None:
         document = self.minimum()
-        document["manager"]["modpack"]["auto-stop"] = True
-        with self.assertRaisesRegex(ConfigError, "manager.modpack.stop-at"):
+        document["manager"]["schedule"] = {"auto-stop": True}
+        with self.assertRaisesRegex(ConfigError, "manager.schedule.stop-at"):
             load(self.write(document))
 
     def test_yaml_sexagesimal_time_is_normalized(self) -> None:
         document = self.minimum()
-        document["manager"].update({
+        document["manager"]["schedule"] = {
             "auto-stop": True,
             "stop-at": 23 * 60 + 5,
-            "region": "ap-shanghai",
-            "instance-id": "ins-test",
-        })
+        }
         config = load(self.write(document))
-        self.assertEqual(config.manager.stop_at, "23:05")
+        self.assertEqual(config.manager.modpack.stop_at, "23:05")
 
     def test_rejects_relative_remote_directory(self) -> None:
         document = self.minimum()
         document["manager"]["dir"] = "srv/minecraft"
         with self.assertRaisesRegex(ConfigError, "绝对路径"):
             load(self.write(document))
+
+    def test_runtime_examples_are_direct_root_sections(self) -> None:
+        source = ROOT / "config.yml.example"
+        manager_text = (ROOT / "manager/config.yml.example").read_text(encoding="utf-8")
+        monitor_text = (ROOT / "monitor/config.yml.example").read_text(encoding="utf-8")
+        manager = yaml.safe_load(manager_text)
+        monitor = yaml.safe_load(monitor_text)
+        self.assertEqual(manager, runtime_section(source, "manager"))
+        self.assertEqual(monitor, runtime_section(source, "monitor"))
+        self.assertEqual(manager_text, render_runtime_section(source, "manager"))
+        self.assertEqual(monitor_text, render_runtime_section(source, "monitor"))
 
 
 if __name__ == "__main__":

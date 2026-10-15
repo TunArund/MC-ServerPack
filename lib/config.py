@@ -146,8 +146,7 @@ def _endpoint(section: dict[str, Any], field: str) -> Endpoint:
     )
 
 
-def load(path: str | Path = CONFIG_FILE) -> AppConfig:
-    """Read *path* and return a validated, typed configuration."""
+def _read_root(path: str | Path) -> dict[str, Any]:
     if yaml is None:
         raise ConfigError("缺少 PyYAML；请先安装项目依赖")
     source = Path(path)
@@ -158,42 +157,70 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
     except (OSError, yaml.YAMLError) as exc:
         raise ConfigError(f"{source} 读取失败：{exc}") from exc
 
-    root = _mapping(document, "config.yml")
+    return _mapping(document, "config.yml")
+
+
+def runtime_section(path: str | Path, runtime: str) -> dict[str, Any]:
+    """Return one runtime subtree unchanged for deployment serialization."""
+    if runtime not in ("manager", "monitor"):
+        raise ConfigError(f"未知运行时：{runtime}")
+    return _mapping(_read_root(path).get(runtime), runtime)
+
+
+def render_runtime_section(path: str | Path, runtime: str) -> str:
+    """Serialize a runtime subtree without sorting or remapping its keys."""
+    if yaml is None:
+        raise ConfigError("缺少 PyYAML；请先安装项目依赖")
+    return yaml.safe_dump(
+        runtime_section(path, runtime), allow_unicode=True, sort_keys=False,
+    )
+
+
+def load(path: str | Path = CONFIG_FILE) -> AppConfig:
+    """Read *path* and return a validated, typed configuration."""
+    root = _read_root(path)
     manager_raw = _mapping(root.get("manager"), "manager")
     manager_endpoint = _endpoint(manager_raw, "manager")
-    manager_auto_stop = _boolean(manager_raw.get("auto-stop"), "manager.auto-stop", default=False)
-    manager_stop_at = _optional_clock(manager_raw, manager_auto_stop, "stop-at", "manager.stop-at")
-    region_value = manager_raw.get("region")
-    instance_value = manager_raw.get("instance-id")
-    region = _text(region_value, "manager.region") if region_value is not None else None
-    instance_id = _text(instance_value, "manager.instance-id") if instance_value is not None else None
+    schedule_raw = _mapping(manager_raw.get("schedule"), "manager.schedule", optional=True)
+    poweroff_raw = _mapping(schedule_raw.get("poweroff"), "manager.schedule.poweroff", optional=True)
+    manager_auto_stop = _boolean(
+        poweroff_raw.get("enabled"), "manager.schedule.poweroff.enabled", default=False,
+    )
+    manager_stop_at = _optional_clock(
+        schedule_raw, manager_auto_stop, "stop-at", "manager.schedule.stop-at",
+    )
+    region_value = poweroff_raw.get("region")
+    instance_value = poweroff_raw.get("instance-id")
+    region = _text(region_value, "manager.schedule.poweroff.region") if region_value is not None else None
+    instance_id = _text(instance_value, "manager.schedule.poweroff.instance-id") if instance_value is not None else None
     if manager_auto_stop and (not region or not instance_id):
-        raise ConfigError("manager.auto-stop 需要 manager.region 和 manager.instance-id")
+        raise ConfigError("manager.schedule.poweroff.enabled 需要 region 和 instance-id")
 
-    modpack_raw = _mapping(manager_raw.get("modpack"), "manager.modpack")
-    pack_auto_stop = _boolean(modpack_raw.get("auto-stop"), "manager.modpack.auto-stop", default=False)
-    pack_stop_at = _optional_clock(modpack_raw, pack_auto_stop, "stop-at", "manager.modpack.stop-at") or "23:00"
-    notify_elast = _positive_int(modpack_raw.get("stop-notify-elast", 60), "manager.modpack.stop-notify-elast")
-    notify_step = _positive_int(modpack_raw.get("stop-notify-step", 2), "manager.modpack.stop-notify-step", minimum=2)
-    java_raw = modpack_raw.get("java", [21])
+    pack_auto_stop = _boolean(schedule_raw.get("auto-stop"), "manager.schedule.auto-stop", default=False)
+    if manager_auto_stop and not pack_auto_stop:
+        raise ConfigError("manager.schedule.poweroff.enabled 需要 manager.schedule.auto-stop=true")
+    pack_stop_at = _optional_clock(schedule_raw, pack_auto_stop, "stop-at", "manager.schedule.stop-at") or "23:00"
+    notify_elast = _positive_int(schedule_raw.get("notify-elast", 60), "manager.schedule.notify-elast")
+    notify_step = _positive_int(schedule_raw.get("notify-step", 2), "manager.schedule.notify-step", minimum=2)
+    java_raw = manager_raw.get("java", [21])
     if (
         not isinstance(java_raw, list)
         or not java_raw
         or any(type(item) is not int or item not in (8, 17, 21) for item in java_raw)
         or len(set(java_raw)) != len(java_raw)
     ):
-        raise ConfigError("manager.modpack.java 必须是由 8、17、21 组成的不重复数组")
-    action = modpack_raw.get("overnum-action", "reject")
-    if action not in ("ask", "reject", "rotate"):
-        raise ConfigError("manager.modpack.overnum-action 只能是 ask、reject 或 rotate")
-    memory = _text(modpack_raw.get("mem-limit", "16g"), "manager.modpack.mem-limit")
+        raise ConfigError("manager.java 必须是由 8、17、21 组成的不重复数组")
+    action = "reject"
+    memory = _text(manager_raw.get("mem-limit", "16g"), "manager.mem-limit")
     if not MEMORY_RE.fullmatch(memory):
-        raise ConfigError("manager.modpack.mem-limit 必须是类似 16g 的内存大小")
+        raise ConfigError("manager.mem-limit 必须是类似 16g 的内存大小")
     modpack = ModpackDefaults(
         pack_auto_stop, pack_stop_at, notify_elast, notify_step, tuple(java_raw),
-        _positive_int(modpack_raw.get("max-running", 1), "manager.modpack.max-running"),
+        _positive_int(manager_raw.get("max-running", 1), "manager.max-running"),
         action, memory.lower(),
     )
+    _positive_int(manager_raw.get("start-timeout", 300), "manager.start-timeout")
+    _positive_int(manager_raw.get("stop-timeout", 180), "manager.stop-timeout")
 
     monitor_raw = _mapping(root.get("monitor"), "monitor", optional=True)
     monitor_enabled = _boolean(monitor_raw.get("enabled"), "monitor.enabled", default=False)
@@ -201,14 +228,17 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
     monitor_manager_raw = _mapping(monitor_raw.get("manager"), "monitor.manager", optional=True)
     auto_start = _boolean(monitor_manager_raw.get("auto-start"), "monitor.manager.auto-start", default=False)
     auto_stop = _boolean(monitor_manager_raw.get("auto-stop"), "monitor.manager.auto-stop", default=False)
+    monitor_region = monitor_manager_raw.get("region")
+    monitor_instance = monitor_manager_raw.get("instance-id")
     monitor_schedule = MonitorSchedule(
         auto_start,
         _optional_clock(monitor_manager_raw, auto_start, "start-at", "monitor.manager.start-at"),
         auto_stop,
         _optional_clock(monitor_manager_raw, auto_stop, "stop-at", "monitor.manager.stop-at"),
     )
-    if monitor_enabled and (not region or not instance_id):
-        raise ConfigError("启用 monitor 需要 manager.region 和 manager.instance-id")
+    if monitor_enabled:
+        _text(monitor_region, "monitor.manager.region")
+        _text(monitor_instance, "monitor.manager.instance-id")
     qqbot = _mapping(monitor_raw.get("qqbot"), "monitor.qqbot", optional=True)
     targets_raw = qqbot.get("targets", [])
     admins_raw = qqbot.get("admins", [])

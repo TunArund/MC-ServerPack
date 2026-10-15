@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator
+from typing import IO, Iterator
 from zoneinfo import ZoneInfo
 
 from .archive import list_backups
@@ -59,26 +59,31 @@ def backup_due(spec: PackSpec, now: float | None = None) -> bool:
 
 
 @contextmanager
-def schedule_lock(manager_root: Path = MANAGER_ROOT) -> Iterator[bool]:
-    path = manager_root / ".schedule.lock"
+def schedule_lock(manager_root: Path = MANAGER_ROOT) -> Iterator[IO[str] | None]:
+    path = manager_root / STATE_FILE
     with path.open("a+", encoding="utf-8") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            yield False
+            yield None
             return
         try:
-            yield True
+            handle.seek(0)
+            if not handle.read().strip():
+                handle.seek(0)
+                handle.write("[]\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            yield handle
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def _load_state(manager_root: Path, date: str) -> set[str]:
-    path = manager_root / STATE_FILE
+def _load_state(handle: IO[str], date: str) -> set[str]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return set()
+        handle.seek(0)
+        content = handle.read()
+        value = json.loads(content) if content.strip() else []
     except (OSError, ValueError) as exc:
         raise ScheduleError(f"调度状态无法读取：{exc}") from exc
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -86,14 +91,14 @@ def _load_state(manager_root: Path, date: str) -> set[str]:
     return {item for item in value if item.startswith(date + ":")}
 
 
-def _save_state(manager_root: Path, state: set[str]) -> None:
-    target = manager_root / STATE_FILE
-    temporary = manager_root / f".{STATE_FILE}.tmp"
+def _save_state(handle: IO[str], state: set[str]) -> None:
     try:
-        temporary.write_text(json.dumps(sorted(state), ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(temporary, target)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps(sorted(state), ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     except OSError as exc:
-        temporary.unlink(missing_ok=True)
         raise ScheduleError(f"调度状态无法写入：{exc}") from exc
 
 
@@ -111,7 +116,10 @@ def _scheduled_stop(now: datetime, settings: ManagerLimits) -> datetime:
     return today
 
 
-def _run_shutdown(manager, now: datetime, state: set[str], report: ScheduleReport, power_factory) -> None:
+def _run_shutdown(
+    manager, now: datetime, state: set[str], report: ScheduleReport,
+    power_factory, state_handle: IO[str],
+) -> None:
     settings: ManagerLimits = manager.limits
     if not settings.schedule_enabled:
         return
@@ -128,7 +136,7 @@ def _run_shutdown(manager, now: datetime, state: set[str], report: ScheduleRepor
             report.failures.extend((f"broadcast:{pack_id}", reason) for pack_id, reason in failed)
             if not failed:
                 state.add(key)
-                _save_state(manager.manager_root, state)
+                _save_state(state_handle, state)
 
     if not (-settings.poweroff_deadline <= remaining <= 0):
         return
@@ -140,7 +148,7 @@ def _run_shutdown(manager, now: datetime, state: set[str], report: ScheduleRepor
         if failed:
             return
         state.add(stop_key)
-        _save_state(manager.manager_root, state)
+        _save_state(state_handle, state)
 
     if not settings.poweroff_enabled:
         return
@@ -154,7 +162,7 @@ def _run_shutdown(manager, now: datetime, state: set[str], report: ScheduleRepor
         return
     report.poweroff = True
     state.add(power_key)
-    _save_state(manager.manager_root, state)
+    _save_state(state_handle, state)
 
 
 def _run_backups(manager, now_timestamp: float, report: ScheduleReport) -> None:
@@ -173,14 +181,14 @@ def run_all(
 ) -> ScheduleReport:
     current = datetime.now(ZONE) if now is None else now.astimezone(ZONE)
     report = ScheduleReport()
-    with schedule_lock(manager.manager_root) as acquired:
-        report.acquired = acquired
-        if not acquired:
+    with schedule_lock(manager.manager_root) as state_handle:
+        report.acquired = state_handle is not None
+        if state_handle is None:
             return report
         event = _scheduled_stop(current, manager.limits) if manager.limits.schedule_enabled else current
         date = event.date().isoformat()
-        state = _load_state(manager.manager_root, date)
-        _run_shutdown(manager, current, state, report, power_factory)
+        state = _load_state(state_handle, date)
+        _run_shutdown(manager, current, state, report, power_factory, state_handle)
         # Never begin a potentially long backup once the shutdown window starts.
         if not manager.limits.schedule_enabled or current < _scheduled_stop(current, manager.limits):
             _run_backups(manager, current.timestamp(), report)
@@ -190,9 +198,9 @@ def run_all(
 def run_due(manager, now: float | None = None) -> tuple[list[Path], list[tuple[str, str]], bool]:
     """Compatibility helper for tests and backup-only callers."""
     report = ScheduleReport()
-    with schedule_lock(manager.manager_root) as acquired:
-        report.acquired = acquired
-        if acquired:
+    with schedule_lock(manager.manager_root) as state_handle:
+        report.acquired = state_handle is not None
+        if state_handle is not None:
             _run_backups(manager, time.time() if now is None else now, report)
     failures = [(name.removeprefix("backup:"), reason) for name, reason in report.failures]
     return report.backups, failures, report.acquired

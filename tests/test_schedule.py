@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -99,6 +100,7 @@ class ScheduleTests(unittest.TestCase):
         self.assertFalse(failed)
         self.assertEqual(manager.backed_up, ["due"])
         self.assertEqual(completed, [self.root / "due.tar.gz"])
+        self.assertEqual(json.loads((self.root / ".schedule-state.json").read_text()), [])
 
     def test_failure_does_not_block_other_packs(self) -> None:
         manager = PartlyFailingManager(self.root, [self.spec("broken"), self.spec("healthy")])

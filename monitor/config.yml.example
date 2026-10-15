@@ -1,0 +1,19 @@
+enabled: false
+host: monitoraddr
+user: monitoruser
+dir: /home/monitoruser/MC-ServerPack-monitor
+manager:
+  region: ap-nanjing
+  instance-id: ins-xxxxyyyy
+  auto-start: true
+  start-at: '19:55'
+  auto-stop: true
+  stop-at: '23:05'
+qqbot:
+  targets:
+  - type: user
+    id: aaa
+  - type: group
+    id: bbb
+  admins:
+  - aaa

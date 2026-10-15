@@ -1,16 +1,19 @@
-# Manager 本机安全限制。Terminal 部署时会从根 config.yml 生成此文件。
+host: manageraddr
+user: manageruser
+dir: /home/manageruser/MC-ServerPack-manager
+java:
+- 8
+- 17
+- 21
 max-running: 1
 mem-limit: 16g
 start-timeout: 300
 stop-timeout: 180
-
-# 每日统一停服。备份周期仍由每个 modpack/config.yml 独立控制。
 schedule:
   auto-stop: false
   stop-at: '23:00'
   notify-elast: 60
   notify-step: 2
-  # 停服完成后提交云关机；失败时在 deadline 分钟内每分钟重试。
   poweroff:
     enabled: false
     deadline: 5

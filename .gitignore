@@ -4,10 +4,10 @@ __pycache__/
 /.env
 /config.yml
 /manager/config.yml
-/manager/.schedule.lock
 /manager/.schedule-state.json
 /manager/schedule.log
 /manager/.env
+/monitor/config.yml
 manager/modpacks/*/
 !manager/modpacks/template/
 monitor/data/*

@@ -1,9 +1,10 @@
-# 账号准备
+# 用户账户
+## 账号创建
 useradd username
 usermod -aG sudo,docker username
 echo 'username ALL=(ALL:ALL) NOPASS | sudo tee /etc/sudoers.d/username'
 
-# ssh免密登录
+## ssh免密登录
 ssh-keygen
 
 ~username/.ssh/authorized_keys 写入公钥，如id_ed25519.pub的内容
@@ -46,6 +47,9 @@ compose.yml | 由config.yml自动生成，指导docker容器创建
 `compose.yml` 是生成物，不要手工修改。将服务端文件放入 `src/`，并根据实际
 启动脚本修改 `config.yml` 中的 `command`。
 
+Manager 的 `config.yml` 由 Terminal 从根 `config.yml` 的 `manager` 子树原样生成。
+日常修改应先改根配置，不要分别维护两份结构。仅在脱离 Terminal 手工部署时才执行：
+
 ```bash
 cp config.yml.example config.yml
 ./manager.sh create example
@@ -68,19 +72,19 @@ cp config.yml.example config.yml
 `start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
 修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。
 
-## 聚合调度与自动备份
+# 定时任务cronjob
 
-系统只需要一个 Manager 用户级 cron，不要为每个整合包分别创建 cronjob：
+只会生成一个 Manager 用户级 cron，不要为每个整合包分别创建 cronjob：
 
 ```bash
 ./manager.sh schedule install
 ```
 
-它每分钟运行一次聚合检查，并由全局文件锁阻止任务重叠。`schedule install` 是幂等的，
-只维护带有 Manager 标记的那一行，不会覆盖用户已有的其他 crontab 项。
-
-每个整合包在自己的 `modpacks/<id>/config.yml` 中独立决定是否备份、备份周期和
-保留数量：
+每分钟运行一次聚合检查，并在 `.schedule-state.json` 上加锁阻止任务重叠；该文件也保存
+当天已完成的调度动作。`schedule install` 是幂等的，重复执行无影响。
+有 `# mc-serverpack-manager-schedule` 标记，不会误改其他 cronjob。
+## 定时备份
+每个整合包在自己的 `modpacks/<id>/config.yml` 中独立决定是否备份、备份周期和保留数量：
 
 整合包 `config.yml` 的 `backup.enabled` 为 `true` 时，`interval` 决定备份间隔，
 支持分钟、小时和天，例如 `30m`、`6h`、`1d`。`retain` 控制最大保留份数。
@@ -96,9 +100,10 @@ backup:
 `interval` 是相对周期，不是每天的固定时刻。开启自动备份但尚无任何备份的整合包，
 会在下一次聚合检查时立即建立首份备份；某个整合包失败不会阻止其他包继续备份。
 
-## 每日停服与可选云关机
+## 定时关服与关机
 
-Manager 的 `config.yml` 可配置一次全局每日停服。以下配置会按 60、30、15、7、3、1
+根 `config.yml` 的 `manager.schedule` 可配置一次全局每日停服，部署时会随 `manager`
+子树原样生成到 Manager。以下配置会按 60、30、15、7、3、1
 分钟逐步广播，在 23:00 优雅停止所有正在运行的整合包，并在成功后请求云主机关机：
 
 ```yaml
