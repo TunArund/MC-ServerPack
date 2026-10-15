@@ -25,6 +25,7 @@ class ManagerFixture(unittest.TestCase):
         self.root = Path(temporary.name)
         self.packs = self.root / "modpacks"
         self.packs.mkdir()
+        shutil.copytree(PROJECT_ROOT / "manager/runtime", self.root / "runtime")
 
     def make_pack(self, pack_id: str = "example") -> Path:
         directory = self.packs / pack_id
@@ -57,7 +58,7 @@ class PackConfigTests(ManagerFixture):
         self.assertEqual(target.read_text(encoding="utf-8"), first)
         compose = yaml.safe_load(first)
         service = compose["services"]["minecraft"]
-        self.assertEqual(service["image"], "mc-java:17")
+        self.assertRegex(service["image"], r"^mc-java:17-[0-9a-f]{12}$")
         self.assertEqual(service["mem_limit"], "4g")
         self.assertTrue(service["volumes"][0]["read_only"])
 
@@ -86,7 +87,7 @@ class FakeRunner:
     def __call__(self, arguments: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         self.calls.append((arguments, kwargs))
         output, error, code = "", "", 0
-        if arguments[:4] == ["docker", "image", "inspect", "mc-java:17"]:
+        if arguments[:3] == ["docker", "image", "inspect"]:
             code = 1
         elif "--status" in arguments and "running" in arguments:
             output = "container-id\n" if self.running else ""
@@ -105,9 +106,6 @@ class DockerClientTests(ManagerFixture):
     def setUp(self) -> None:
         super().setUp()
         self.make_pack()
-        runtime = self.root / "runtime"
-        runtime.mkdir()
-        (runtime / "java17.dockerfile").write_text("FROM scratch\n", encoding="utf-8")
         self.spec = load_pack("example", self.packs)
         self.runner = FakeRunner()
         self.client = DockerClient(self.root, self.runner)

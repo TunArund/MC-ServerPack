@@ -47,15 +47,20 @@ compose.yml | 由config.yml自动生成，指导docker容器创建
 启动脚本修改 `config.yml` 中的 `command`。
 
 ```bash
-./manager.sh pack example create
-./manager.sh pack example config
-./manager.sh pack example start
-./manager.sh pack example status
-./manager.sh pack example logs --lines 100
-./manager.sh pack example logs --follow
-./manager.sh pack example console say hello
-./manager.sh pack example stop
-./manager.sh pack stop-all
+cp config.yml.example config.yml
+./manager.sh create example
+./manager.sh config example
+./manager.sh start example
+./manager.sh status example
+./manager.sh logs example --lines 100
+./manager.sh logs example --follow
+./manager.sh console example say hello
+./manager.sh backup example
+./manager.sh stop example
+./manager.sh restore example
+./manager.sh remove example --force
+./manager.sh stop-all
 ```
 
-`start` 会按需构建 `mc-java:8|17|21` 镜像，并在容器健康检查通过后返回。
+`start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
+修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。

@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 /.env
 /config.yml
+/manager/config.yml
 manager/modpacks/*/
 !manager/modpacks/template/
 monitor/data/*

@@ -1,0 +1,5 @@
+# Manager 本机安全限制。Terminal 部署时会从根 config.yml 生成此文件。
+max-running: 1
+mem-limit: 16g
+start-timeout: 300
+stop-timeout: 180

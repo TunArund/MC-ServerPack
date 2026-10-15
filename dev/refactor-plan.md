@@ -14,18 +14,27 @@
 
 ## 命令语义
 
-避免旧版中两种 `start` 的歧义：
+命令设计遵循以下原则：
+
+1. **不重复已知上下文**：`manager.sh` 只管理整合包，不再重复一层 `pack`。
+2. **动词在前、资源在后**：统一为 `<action> <id>`，便于帮助、补全和权限审计。
+3. **不同层级不共用裸命令**：Terminal 的云主机电源放在 `mcsp host manager`，
+   整合包放在 `mcsp pack`，避免两种 `start/stop` 混淆。
+4. **危险操作必须显式**：有数据的删除需要 `--force`，恢复必须停服，资源超限不自动顶掉其他服务。
+5. **未实现不假成功**：命令只在完整实现后加入 CLI，失败使用非零退出码。
+
+稳定命令层级：
 
 ```text
 mcsp deploy manager|monitor
 mcsp host manager start|stop|status
 mcsp pack <id> create|start|stop|status|logs|console|backup|restore|remove
 
-manager.sh pack <id> start|stop|status|logs|console|backup|restore|remove
-manager.sh pack stop-all
+manager.sh create|config|start|stop|status|logs|console|backup|restore|remove <id>
+manager.sh stop-all
 ```
 
-Monitor 手动关机时通过 TAT 调用 `manager.sh pack stop-all`，无论停服是否成功都继续请求云关机，并对风险告警。
+Monitor 手动关机时通过 TAT 调用 `manager.sh stop-all`，无论停服是否成功都继续请求云关机，并对风险告警。
 
 ## 唯一调度所有者
 

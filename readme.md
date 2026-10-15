@@ -2,8 +2,7 @@
 MC服务端管理器
 提供常见的java8、17、21环境，支持多实例启动、定时开关机qq机器人控制、便捷备份恢复
 
-> 当前状态：重构中。Manager 已完成配置渲染、启停、状态、日志和控制台命令；
-> Terminal 部署、备份/恢复、调度和 Monitor 尚未完成。未实现功能不会返回假成功。
+
 
 简易架构图
 ```mermaid
@@ -55,7 +54,7 @@ manager和monitor可以独立部署，terminal仅作为控制编排
 ```bash
 python3 -m pip install -r requirements.txt
 ./mcsp.sh config check config.yml.example
-./manager/manager.sh pack example create
+./manager/manager.sh create example
 ```
 
 详细 Manager 命令见 [manager/readme.md](./manager/readme.md#manager-命令)。远程部署命令尚未实现。
@@ -120,6 +119,9 @@ https://console.cloud.tencent.com/cam
 点击用户名-API密钥-新建密钥
 成功获取POWER_SECRET_ID POWER_SECRET_KEY
 # TODO
+- 重构中。Manager 已完成配置渲染、启停、状态、日志、控制台、备份/恢复和资源保护；
+- Terminal 部署、调度和 Monitor 尚未完成。未实现功能不会返回假成功。
+
 - 兼容不同API
 目前仅支持调用腾讯云API，新增配置自定义API
 - 实现cos

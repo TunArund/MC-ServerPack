@@ -20,13 +20,13 @@ class ManagerCliTests(unittest.TestCase):
     def test_log_options_are_parsed_after_action(self) -> None:
         manager = FakeManager()
         self.assertEqual(
-            dispatch(["pack", "example", "logs", "--lines", "42", "--follow"], manager), 0,
+            dispatch(["logs", "example", "--lines", "42", "--follow"], manager), 0,
         )
         self.assertEqual(manager.call, ("logs", "example", 42, True))
 
     def test_console_preserves_arguments_as_text(self) -> None:
         manager = FakeManager()
-        self.assertEqual(dispatch(["pack", "example", "console", "say", "hello"], manager), 0)
+        self.assertEqual(dispatch(["console", "example", "say", "hello"], manager), 0)
         self.assertEqual(manager.call, ("console", "example", "say hello"))
 
 

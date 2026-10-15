@@ -7,7 +7,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from .config import MANAGER_ROOT, PackSpec, render_compose
+from .config import MANAGER_ROOT, PackSpec, render_compose, runtime_image
 
 
 class DockerError(RuntimeError):
@@ -42,7 +42,7 @@ class DockerClient:
         self._run(["docker", "compose", "version"], capture=True)
 
     def ensure_image(self, java: int) -> None:
-        image = f"mc-java:{java}"
+        image = runtime_image(java, self.manager_root)
         try:
             inspected = self.runner(
                 ["docker", "image", "inspect", image], cwd=self.manager_root,
@@ -57,7 +57,7 @@ class DockerClient:
             raise DockerError(f"缺少 Java {java} 镜像定义")
         self._run(["docker", "build", "-f", str(dockerfile), "-t", image, str(self.manager_root)])
 
-    def _environment(self) -> dict[str, str]:
+    def _environment(self, *, stop_timeout: int | None = None) -> dict[str, str]:
         uid = os.environ.get("MC_CONTAINER_UID", str(os.getuid()))
         gid = os.environ.get("MC_CONTAINER_GID", str(os.getgid()))
         if not uid.isdigit() or not gid.isdigit():
@@ -65,40 +65,44 @@ class DockerClient:
         if uid == "0":
             raise DockerError("拒绝以 root 运行 Minecraft 容器")
         values = os.environ.copy()
+        timeout = str(stop_timeout if stop_timeout is not None else os.environ.get("MC_STOP_TIMEOUT", "180"))
         values.update({
             "MC_CONTAINER_UID": uid, "MC_CONTAINER_GID": gid,
-            "MC_STOP_TIMEOUT": os.environ.get("MC_STOP_TIMEOUT", "180"),
-            "MC_DOCKER_GRACE": os.environ.get("MC_DOCKER_GRACE", "190"),
+            "MC_STOP_TIMEOUT": timeout,
+            "MC_DOCKER_GRACE": str(int(timeout) + 10),
         })
         return values
 
     def compose(
         self, spec: PackSpec, *arguments: str, capture: bool = False,
-        input_text: str | None = None,
+        input_text: str | None = None, stop_timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         compose_file = render_compose(spec)
         command = [
             "docker", "compose", "--project-name", f"mc-{spec.pack_id}",
             "--project-directory", str(spec.directory), "-f", str(compose_file), *arguments,
         ]
-        return self._run(command, capture=capture, input_text=input_text, environment=self._environment())
+        return self._run(
+            command, capture=capture, input_text=input_text,
+            environment=self._environment(stop_timeout=stop_timeout),
+        )
 
     def running(self, spec: PackSpec) -> bool:
         result = self.compose(spec, "ps", "--status", "running", "-q", "minecraft", capture=True)
         return bool(result.stdout.strip())
 
-    def start(self, spec: PackSpec) -> None:
+    def start(self, spec: PackSpec, *, timeout: int = 300) -> None:
         self.check()
         if self.running(spec):
             return
         self.ensure_image(spec.java)
-        self.compose(spec, "up", "-d", "--wait", "--wait-timeout", "300")
+        self.compose(spec, "up", "-d", "--wait", "--wait-timeout", str(timeout))
 
-    def stop(self, spec: PackSpec) -> None:
+    def stop(self, spec: PackSpec, *, timeout: int = 180) -> None:
         self.check()
         if not self.running(spec):
             return
-        self.compose(spec, "stop", "minecraft")
+        self.compose(spec, "stop", "minecraft", stop_timeout=timeout)
         container = self.compose(spec, "ps", "-a", "-q", "minecraft", capture=True).stdout.strip()
         if not container:
             raise DockerError(f"停止 {spec.pack_id} 后找不到容器")
@@ -126,3 +130,7 @@ class DockerClient:
             spec, "exec", "-T", "minecraft", "sh", "-c",
             "cat > /tmp/mc-manager-console.pipe", input_text=command.rstrip("\n") + "\n",
         )
+
+    def remove_project(self, spec: PackSpec) -> None:
+        self.check()
+        self.compose(spec, "down", "--remove-orphans")

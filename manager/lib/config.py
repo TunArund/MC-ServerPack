@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ except ModuleNotFoundError:
 
 MANAGER_ROOT = Path(__file__).resolve().parents[1]
 PACKS_DIR = MANAGER_ROOT / "modpacks"
+MANAGER_CONFIG = MANAGER_ROOT / "config.yml"
 PACK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 DEFAULT_COMMAND = ("bash", "./run.sh", "nogui")
@@ -42,6 +44,18 @@ class PackSpec:
     command: tuple[str, ...]
     read_only: bool
     persistent: tuple[PersistentPath, ...]
+    backup_enabled: bool
+    backup_retain: int
+    backup_quiesce_seconds: int
+
+
+@dataclass(frozen=True)
+class ManagerLimits:
+    max_running: int
+    memory: str
+    memory_bytes: int
+    start_timeout: int
+    stop_timeout: int
 
 
 def validate_pack_id(pack_id: str) -> str:
@@ -73,6 +87,47 @@ def normalize_persistent(value: object) -> PersistentPath:
     return PersistentPath(path.as_posix(), directory)
 
 
+def _positive_integer(value: object, field: str, *, minimum: int = 1) -> int:
+    if type(value) is not int or value < minimum:
+        raise ConfigError(f"{field} 必须是不小于 {minimum} 的整数")
+    return value
+
+
+def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
+    if yaml is None:
+        raise ConfigError("缺少 PyYAML")
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"缺少 {path}；请从 config.yml.example 复制") from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"Manager 配置读取失败：{exc}") from exc
+    if not isinstance(document, dict):
+        raise ConfigError("manager/config.yml 必须是对象")
+    memory, memory_bytes = parse_memory(document.get("mem-limit"))
+    return ManagerLimits(
+        _positive_integer(document.get("max-running", 1), "max-running"),
+        memory,
+        memory_bytes,
+        _positive_integer(document.get("start-timeout", 300), "start-timeout"),
+        _positive_integer(document.get("stop-timeout", 180), "stop-timeout"),
+    )
+
+
+def runtime_image(java: int, manager_root: Path = MANAGER_ROOT) -> str:
+    digest = hashlib.sha256()
+    paths = (
+        manager_root / "runtime" / f"java{java}.dockerfile",
+        manager_root / "runtime" / "entrypoint.sh",
+    )
+    for path in paths:
+        try:
+            digest.update(path.read_bytes())
+        except OSError as exc:
+            raise ConfigError(f"无法读取运行时文件 {path}：{exc}") from exc
+    return f"mc-java:{java}-{digest.hexdigest()[:12]}"
+
+
 def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
     validate_pack_id(pack_id)
     if yaml is None:
@@ -96,6 +151,7 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
     port = document.get("port", 25565)
     command = document.get("command", list(DEFAULT_COMMAND))
     read_only = document.get("read-only", {})
+    backup = document.get("backup", {})
     if not isinstance(name, str) or not name.strip():
         raise ConfigError("name 必须是非空字符串")
     if not isinstance(version, (str, int, float)) or isinstance(version, bool):
@@ -115,6 +171,13 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
         raise ConfigError("read-only.enabled 必须是 true 或 false")
     if not isinstance(raw_persistent, list):
         raise ConfigError("read-only.persistent 必须是数组")
+    if not isinstance(backup, dict):
+        raise ConfigError("backup 必须是对象")
+    backup_enabled = backup.get("enabled", False)
+    if type(backup_enabled) is not bool:
+        raise ConfigError("backup.enabled 必须是 true 或 false")
+    backup_retain = _positive_integer(backup.get("retain", 7), "backup.retain")
+    quiesce = _positive_integer(backup.get("quiesce-seconds", 5), "backup.quiesce-seconds", minimum=0)
     persistent = tuple(normalize_persistent(item) for item in raw_persistent)
     seen: set[str] = set()
     for item in persistent:
@@ -130,7 +193,7 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
             raise ConfigError(f"持久化目录 {parent.path}/ 已包含子路径")
     return PackSpec(
         pack_id, directory, name.strip(), str(version), java, memory, memory_bytes,
-        port, tuple(command), enabled, persistent,
+        port, tuple(command), enabled, persistent, backup_enabled, backup_retain, quiesce,
     )
 
 
@@ -172,8 +235,9 @@ def render_compose(spec: PackSpec) -> Path:
             "type": "bind", "source": f"./data/{item.path}",
             "target": f"/server/{item.path}", "bind": {"create_host_path": False},
         })
+    manager_root = spec.directory.parents[1]
     service = {
-        "image": f"mc-java:{spec.java}", "init": True, "restart": "unless-stopped",
+        "image": runtime_image(spec.java, manager_root), "init": True, "restart": "unless-stopped",
         "working_dir": "/server", "stop_grace_period": "${MC_DOCKER_GRACE:-190}s",
         "command": list(spec.command), "user": "${MC_CONTAINER_UID:?}:${MC_CONTAINER_GID:?}",
         "mem_limit": spec.memory, "ports": [f"{spec.port}:{spec.port}"],
