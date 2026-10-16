@@ -1,2 +1,3 @@
 PyYAML>=6.0,<7
 tencentcloud-sdk-python-cvm>=3,<4
+tzdata>=2025.2

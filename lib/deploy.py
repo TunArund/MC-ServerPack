@@ -120,7 +120,7 @@ class DeploymentService:
         try:
             self.transport.ssh(destination, ["mkdir", "-p", directory])
             self.transport.scp(archive, f"{destination}:{remote_archive}")
-            names = ["lib", "runtime", "src", "manager.sh", "gateway.sh", "Dockerfile", "compose.yml", "requirements.txt"]
+            names = ["lib", "runtime", "src", "manager.sh", "monitor.sh", "gateway.sh", "Dockerfile", "compose.yml", "requirements.txt"]
             targets = [directory + "/" + name for name in names]
             script = (
                 "rm -rf -- " + remote.shell_join(targets) + "; "
@@ -164,7 +164,7 @@ class DeploymentService:
             self.transport.ssh(destination, ["rm", "-f", endpoint.directory + "/.env"])
         command = (
             f"cd {remote.shell_join([endpoint.directory])} && "
-            "python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt && "
+            "python3 -m venv .venv && ./.venv/bin/pip install -r lib/requirements.txt && "
             "chmod 700 manager.sh && ./manager.sh schedule install"
         )
         self.transport.ssh(destination, ["bash", "-lc", command])

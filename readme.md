@@ -7,7 +7,7 @@ MC服务端管理器
 flowchart LR
   T[Terminal] -->|ssh:deploy| M[Manager]
   T -->|ssh:deploy| G[monitor]
-  G -->|api:manage| M
+  G -->|api:power| M
 
   classDef dashed stroke-dasharray:5 5,stroke:#e91e63,stroke-width:2px;
   class G dashed;
@@ -41,16 +41,17 @@ manager和monitor可以独立部署，terminal仅作为控制编排
 可选的7x24h值守，方便定时自动开关机与qq机器人交互管理
 需包年包月的服务器，配置1C2G即可
 ### 功能
-- QQ机器人
-通过QQ消息控制Manager：开关机、资源利用率
-管理整合包：启停、状态、查询在线人数、简要日志、发广播
+- QQ机器人（后续接入）
+通过QQ消息查询云主机电源状态、开机和关机
 - 7x24h值守
 可在指定时间自动让Manager开关机
-周期性检查，该开了但关着，该关了却还开着时告警、关机
+内部定时器周期性检查并提交幂等开关机，不依赖 cron
+
+Monitor 只调用云电源 API，不通过 SSH、TAT 或 `manager.sh` 执行 Manager 内部指令。
 ## 当前本地使用
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r lib/requirements.txt
 ./mcsp.sh config check config.yml.example
 cp config.yml.example config.yml
 cp .env.example .env
@@ -97,8 +98,8 @@ lib/providers/{tencent_api.py,example_api.py}
 runtime/{java{8,17,21}.dockerfile,entrypoint.sh}
 modpacks/template/{src/,data/,backups/,config.yml}
 
-/monitor/{src/,data,compose.yml,entrypoint.sh}
-src/{app.py,power.py,config.py,network.py,menu.py,messages.json}
+/monitor/{src/,data/,Dockerfile,compose.yml,monitor.sh}
+src/{app.py,config.py,monitor.py,power.py,schedule.py,state.py,providers/,requirements.txt}
 后续可能改go实现
 
 /dev存放开发时需要的工具
@@ -107,6 +108,14 @@ spec.md 当前文档
 
 # 定时开关机
 ## monitor
+
+Monitor 保留 `monitor.manager.auto-start/start-at/auto-stop/stop-at` 配置。
+每 30 秒检查一次云主机状态；每天的开、关机事件成功处理后写入
+`monitor/data/state.json`，失败会在下一周期重试。进程重启会补处理当前时间线上
+最近的事件。
+
+生产镜像会复制 `monitor/src`，运行时只挂载只读 `config.yml` 和可写 `data/`；
+不挂载源码，以保证同一镜像的行为可复现。
 
 ## 电源 API
 

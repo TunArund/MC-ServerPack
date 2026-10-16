@@ -1,0 +1,27 @@
+services:
+  monitor:
+    build:
+      context: .
+    image: mc-serverpack-monitor:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MCSP_CONFIG: /app/config.yml
+      MCSP_DATA: /app/data
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,time; p='/app/data/heartbeat'; raise SystemExit(not os.path.isfile(p) or time.time()-os.path.getmtime(p)>120)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s

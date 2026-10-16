@@ -1,0 +1,1 @@
+"""Power API provider adapters."""

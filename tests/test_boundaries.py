@@ -9,19 +9,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
-    def test_power_core_is_identical_in_terminal_and_manager(self) -> None:
-        self.assertEqual(
-            (ROOT / "lib/power.py").read_bytes(),
-            (ROOT / "manager/lib/power.py").read_bytes(),
-        )
+    def test_power_core_is_identical_in_all_runtimes(self) -> None:
+        expected = (ROOT / "lib/power.py").read_bytes()
+        self.assertEqual(expected, (ROOT / "manager/lib/power.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "monitor/src/power.py").read_bytes())
 
     def test_shared_provider_implementations_are_identical(self) -> None:
         for name in ("tencent_api.py", "example_api.py"):
-            with self.subTest(name=name):
-                self.assertEqual(
-                    (ROOT / "lib/providers" / name).read_bytes(),
-                    (ROOT / "manager/lib/providers" / name).read_bytes(),
-                )
+            expected = (ROOT / "lib/providers" / name).read_bytes()
+            with self.subTest(name=name, runtime="manager"):
+                self.assertEqual(expected, (ROOT / "manager/lib/providers" / name).read_bytes())
+            with self.subTest(name=name, runtime="monitor"):
+                self.assertEqual(expected, (ROOT / "monitor/src/providers" / name).read_bytes())
 
     def test_no_cross_runtime_imports(self) -> None:
         forbidden = {
@@ -43,7 +42,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
                         self.assertFalse(name.startswith(prefixes), f"{path}: cross-runtime import {name}")
 
     def test_provider_implementations_do_not_import_power_state_machine(self) -> None:
-        for directory in (ROOT / "lib/providers", ROOT / "manager/lib/providers"):
+        for directory in (
+            ROOT / "lib/providers", ROOT / "manager/lib/providers",
+            ROOT / "monitor/src/providers",
+        ):
             for path in directory.glob("*_api.py"):
                 with self.subTest(path=path):
                     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
