@@ -8,10 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .config import MonitorConfig
+from ..config import MonitorConfig
 from .power import InstanceStatus, PowerError
-from .schedule import ZONE, PowerEvent, latest_event
-from .state import StateStore
+from .schedule import ZONE, PowerEvent, StateStore, latest_event
 
 
 LOGGER = logging.getLogger(__name__)

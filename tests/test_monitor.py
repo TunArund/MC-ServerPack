@@ -9,10 +9,9 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from monitor.src.config import ConfigError, MonitorConfig, PowerApiConfig, ScheduleConfig, load
-from monitor.src.monitor import MonitorService
-from monitor.src.power import InstanceStatus, PowerError
-from monitor.src.schedule import latest_event
-from monitor.src.state import StateStore
+from monitor.src.monitor.power import InstanceStatus, PowerError
+from monitor.src.monitor.schedule import StateStore, latest_event
+from monitor.src.monitor.service import MonitorService
 
 
 ZONE = ZoneInfo("Asia/Shanghai")

@@ -99,7 +99,8 @@ runtime/{java{8,17,21}.dockerfile,entrypoint.sh}
 modpacks/template/{src/,data/,backups/,config.yml}
 
 /monitor/{src/,data/,Dockerfile,compose.yml,monitor.sh}
-src/{app.py,config.py,monitor.py,power.py,schedule.py,state.py,providers/,requirements.txt}
+src/{app.py,config.py,monitor/,qqbot/,requirements.txt}
+src/monitor/{service.py,power.py,schedule.py,providers/}
 后续可能改go实现
 
 /dev存放开发时需要的工具
