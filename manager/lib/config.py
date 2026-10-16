@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 MANAGER_ROOT = Path(__file__).resolve().parents[1]
 PACKS_DIR = MANAGER_ROOT / "modpacks"
 MANAGER_CONFIG = MANAGER_ROOT / "config.yml"
-PACK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+PACK_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")

@@ -5,13 +5,16 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
 from lib.cli import dispatch
-from lib.cloud import CloudError, CloudTarget, InstanceStatus, TencentCloud
+from lib.config import load as load_config
+from lib.deploy import DeploymentService
+from lib.modpacks import ModpackError, ModpackService, stop_all_via_tat, validate_pack_id
+from lib.power import InstanceStatus, PowerError, PowerTarget, TencentPower
 from lib.remote import archive_tree, cleanup_archive, shell_join
-from lib.terminal import TerminalService
 
 
 class FakeCloud:
@@ -26,15 +29,16 @@ class FakeCloud:
         self.calls.append("start")
         return InstanceStatus("RUNNING")
 
-    def stop(self, *, continue_on_stop_failure: bool):
-        self.calls.append(("stop", continue_on_stop_failure))
+    def stop(self, current=None):
+        self.calls.append(("stop", current.state if current else None))
         return InstanceStatus("STOPPED")
 
 
 class FakeService:
     def __init__(self) -> None:
         self.calls: list[object] = []
-        self.power = FakeCloud()
+        self.cloud = FakeCloud()
+        self.stop_error: Exception | None = None
 
     def check(self, target: str) -> None:
         self.calls.append(("check", target))
@@ -55,8 +59,13 @@ class FakeService:
     def remote_manager(self, arguments: list[str], *, tty: bool = False) -> None:
         self.calls.append(("remote", arguments, tty))
 
-    def cloud(self):
-        return self.power
+    def power(self):
+        return self.cloud
+
+    def stop_modpacks(self) -> None:
+        self.calls.append("stop-modpacks")
+        if self.stop_error:
+            raise self.stop_error
 
 
 class FakeTransport:
@@ -105,13 +114,29 @@ class TerminalCliTests(unittest.TestCase):
 
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
+        service.stop_error = ModpackError("TAT failed")
         dispatch(["manager", "stop", "--force"], service)
-        self.assertEqual(service.power.calls, [("stop", True)])
+        self.assertEqual(service.calls, ["stop-modpacks"])
+        self.assertEqual(service.cloud.calls, ["status", ("stop", "RUNNING")])
+
+    def test_stop_failure_prevents_poweroff_by_default(self) -> None:
+        service = FakeService()
+        service.stop_error = ModpackError("TAT failed")
+        with patch("builtins.input", return_value="yes"), self.assertRaises(ModpackError):
+            dispatch(["manager", "stop"], service)
+        self.assertEqual(service.calls, ["stop-modpacks"])
+        self.assertEqual(service.cloud.calls, ["status"])
+
+    def test_pack_id_is_checked_before_remote_command(self) -> None:
+        service = FakeService()
+        with self.assertRaises(ModpackError):
+            dispatch(["pack", "status", "bad_name"], service)
+        self.assertFalse(service.calls)
 
 
-class CloudTests(unittest.TestCase):
-    def target(self) -> CloudTarget:
-        return CloudTarget("ap-test", "ins-test", "/srv/mcsp", "minecraft")
+class PowerTests(unittest.TestCase):
+    def target(self) -> PowerTarget:
+        return PowerTarget("ins-test")
 
     def test_start_is_idempotent_and_waits_for_running(self) -> None:
         states = iter(("STOPPED", "RUNNING"))
@@ -123,11 +148,11 @@ class CloudTests(unittest.TestCase):
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(states)}]}
             return {}
 
-        result = TencentCloud(self.target(), "id", "key", api_call=api, sleeper=lambda _: None).start()
+        result = TencentPower(self.target(), api, sleeper=lambda _: None).start()
         self.assertEqual(result.state, "RUNNING")
         self.assertEqual(actions, ["DescribeInstances", "StartInstances", "DescribeInstances"])
 
-    def test_stop_runs_tat_before_soft_poweroff(self) -> None:
+    def test_stop_only_handles_soft_poweroff(self) -> None:
         descriptions = iter(("RUNNING", "STOPPED"))
         actions: list[str] = []
 
@@ -135,36 +160,52 @@ class CloudTests(unittest.TestCase):
             actions.append(action)
             if action == "DescribeInstances":
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(descriptions)}]}
-            if action == "RunCommand":
-                return {"InvocationId": "inv-test"}
-            if action == "DescribeInvocationTasks":
-                return {"InvocationTaskSet": [{
-                    "InstanceId": "ins-test", "TaskStatus": "SUCCESS",
-                    "TaskResult": {"ExitCode": 0},
-                }]}
             return {}
 
-        result = TencentCloud(self.target(), "id", "key", api_call=api, sleeper=lambda _: None).stop()
+        power = TencentPower(self.target(), api, sleeper=lambda _: None)
+        current = power.status()
+        result = power.stop(current)
         self.assertEqual(result.state, "STOPPED")
-        self.assertEqual(actions, [
-            "DescribeInstances", "RunCommand", "DescribeInvocationTasks",
-            "StopInstances", "DescribeInstances",
-        ])
+        self.assertEqual(actions, ["DescribeInstances", "StopInstances", "DescribeInstances"])
 
-    def test_stop_does_not_poweroff_after_tat_failure_by_default(self) -> None:
+    def test_invalid_instance_state_does_not_poweroff(self) -> None:
         actions: list[str] = []
 
         def api(service, action, payload):
             actions.append(action)
             if action == "DescribeInstances":
-                return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": "RUNNING"}]}
-            if action == "RunCommand":
-                raise RuntimeError("denied")
+                return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": "REBOOTING"}]}
             return {}
 
-        with self.assertRaises(CloudError):
-            TencentCloud(self.target(), "id", "key", api_call=api).stop()
+        with self.assertRaises(PowerError):
+            TencentPower(self.target(), api).stop()
         self.assertNotIn("StopInstances", actions)
+
+
+class ModpackCloudTests(unittest.TestCase):
+    def test_stop_all_uses_tat(self) -> None:
+        actions: list[str] = []
+
+        def api(service, action, payload):
+            self.assertEqual(service, "tat")
+            actions.append(action)
+            if action == "RunCommand":
+                return {"InvocationId": "inv-test"}
+            return {"InvocationTaskSet": [{
+                "InstanceId": "ins-test", "TaskStatus": "SUCCESS",
+                "TaskResult": {"ExitCode": 0},
+            }]}
+
+        stop_all_via_tat(
+            api, "ins-test", "/srv/mcsp", "minecraft", sleeper=lambda _: None,
+        )
+        self.assertEqual(actions, ["RunCommand", "DescribeInvocationTasks"])
+
+    def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
+        self.assertEqual(validate_pack_id("Pack-01"), "Pack-01")
+        for invalid in ("pack_name", "pack.name", "../pack", "中文"):
+            with self.subTest(invalid=invalid), self.assertRaises(ModpackError):
+                validate_pack_id(invalid)
 
 
 class DeploymentTests(unittest.TestCase):
@@ -186,7 +227,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_manager_deploy_uploads_only_manager_section_and_preserves_runtime_data(self) -> None:
         transport = FakeTransport(self.archive)
-        TerminalService(self.config, transport=transport).deploy_manager()
+        DeploymentService(self.config, transport=transport).deploy_manager()
         config_upload = next(data for destination, data in transport.uploads if destination.endswith("/config.yml"))
         deployed = yaml.safe_load(config_upload)
         self.assertIn("modpack", deployed)
@@ -200,7 +241,8 @@ class DeploymentTests(unittest.TestCase):
 
     def test_pack_deploy_rejects_path_traversal_before_remote_access(self) -> None:
         transport = FakeTransport(self.archive)
-        service = TerminalService(self.config, transport=transport)
+        config = load_config(self.config)
+        service = ModpackService(config, transport=transport)
         with self.assertRaisesRegex(RuntimeError, "无效整合包 ID"):
             service.deploy_pack("../escape")
         self.assertFalse(transport.ssh_calls)

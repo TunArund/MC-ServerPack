@@ -79,3 +79,19 @@ def archive_tree(source: Path, *, exclude: set[str] | None = None) -> Path:
 
 def cleanup_archive(path: Path) -> None:
     shutil.rmtree(path.parent, ignore_errors=True)
+
+
+class Transport:
+    """Injectable SSH/SCP boundary used by deployment and modpack services."""
+
+    def ssh(self, destination: str, arguments: list[str], **kwargs):
+        return ssh(destination, arguments, **kwargs)
+
+    def scp(self, source: Path, destination: str) -> None:
+        scp(source, destination)
+
+    def archive(self, source: Path, exclude: set[str] | None = None) -> Path:
+        return archive_tree(source, exclude=exclude)
+
+    def cleanup(self, archive: Path) -> None:
+        cleanup_archive(archive)

@@ -15,6 +15,7 @@ except ModuleNotFoundError:  # Report a project-specific error from ``load``.
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_FILE = ROOT / "config.yml"
+ENV_FILE = ROOT / ".env"
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
 REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
@@ -22,6 +23,21 @@ REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 
 class ConfigError(RuntimeError):
     """The configuration cannot be used safely."""
+
+
+def load_env(path: Path = ENV_FILE) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise ConfigError(f"缺少 {path}；请从 .env.example 复制") from exc
+    values: dict[str, str] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
 
 
 @dataclass(frozen=True)

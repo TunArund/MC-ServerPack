@@ -10,7 +10,10 @@ from unittest.mock import patch
 
 import yaml
 
-from manager.lib.config import ConfigError, load_pack, normalize_persistent, parse_interval, render_compose
+from manager.lib.config import (
+    ConfigError, load_pack, normalize_persistent, parse_interval, render_compose,
+    validate_pack_id,
+)
 from manager.lib.docker import DockerClient
 from manager.lib.modpacks import ModpackManager
 
@@ -46,6 +49,12 @@ class ManagerFixture(unittest.TestCase):
 
 
 class PackConfigTests(ManagerFixture):
+    def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
+        self.assertEqual(validate_pack_id("Pack-01"), "Pack-01")
+        for invalid in ("pack_name", "pack.name", "../pack", "中文"):
+            with self.subTest(invalid=invalid), self.assertRaises(ConfigError):
+                validate_pack_id(invalid)
+
     def test_backup_interval_units(self) -> None:
         self.assertEqual(parse_interval("30m"), ("30m", 1800))
         self.assertEqual(parse_interval("6H"), ("6h", 21600))

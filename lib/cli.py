@@ -11,10 +11,72 @@ import argparse
 import sys
 from pathlib import Path
 
-from .cloud import CloudError
-from .config import CONFIG_FILE, ConfigError, load
-from .remote import CommandError
-from .terminal import TerminalError, TerminalService
+from .config import CONFIG_FILE, AppConfig, ConfigError, load, load_env
+from .deploy import DeployError, DeploymentService
+from .modpacks import ModpackError, ModpackService, stop_all_via_tat, validate_pack_id
+from .power import PowerError, PowerTarget, TencentPower
+from .remote import CommandError, Transport
+from .tencent import ApiCall, TencentApiError, create_api
+
+
+class CliServices:
+    """Wire CLI commands to focused services without owning domain behavior."""
+
+    def __init__(self, config_path: Path = CONFIG_FILE) -> None:
+        self.config_path = config_path
+        self.config: AppConfig = load(config_path)
+        self.transport = Transport()
+        self.deployment = DeploymentService(
+            config_path, config=self.config, transport=self.transport,
+        )
+        self.modpacks = ModpackService(self.config, transport=self.transport)
+        self._api_call: ApiCall | None = None
+
+    def check(self, target: str) -> None:
+        self.deployment.check(target)
+
+    def deploy_manager(self) -> None:
+        self.deployment.deploy_manager()
+
+    def deploy_monitor(self) -> None:
+        self.deployment.deploy_monitor()
+
+    def deploy_pack(self, pack_id: str, *, force: bool = False) -> None:
+        self.modpacks.deploy_pack(pack_id, force=force)
+
+    def create_pack(self, pack_id: str) -> Path:
+        return self.modpacks.create_pack(pack_id)
+
+    def remote_manager(self, arguments: list[str], *, tty: bool = False) -> None:
+        self.modpacks.remote_manager(arguments, tty=tty)
+
+    def _cloud_api(self) -> ApiCall:
+        if self._api_call is None:
+            manager = self.config.manager
+            if not manager.region or not manager.instance_id:
+                raise PowerError("manager.region 和 manager.instance-id 未配置")
+            values = load_env(self.config_path.parent / ".env")
+            self._api_call = create_api(
+                manager.region,
+                values.get("POWER_SECRET_ID", ""),
+                values.get("POWER_SECRET_KEY", ""),
+            )
+        return self._api_call
+
+    def power(self) -> TencentPower:
+        instance_id = self.config.manager.instance_id
+        if not instance_id:
+            raise PowerError("manager.instance-id 未配置")
+        return TencentPower(PowerTarget(instance_id), self._cloud_api())
+
+    def stop_modpacks(self) -> None:
+        manager = self.config.manager
+        if not manager.instance_id:
+            raise ModpackError("manager.instance-id 未配置")
+        stop_all_via_tat(
+            self._cloud_api(), manager.instance_id,
+            manager.endpoint.directory, manager.endpoint.user,
+        )
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -56,33 +118,33 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def dispatch(argv: list[str] | None = None, service: TerminalService | None = None) -> int:
+def dispatch(argv: list[str] | None = None, service: CliServices | None = None) -> int:
     args = make_parser().parse_args(argv)
     if args.module == "config" and args.command == "check":
         loaded = load(args.path or args.config)
         monitor = "启用" if loaded.monitor.enabled else "关闭"
         print(f"配置有效：manager={loaded.manager.endpoint.host}，monitor={monitor}")
         return 0
-    terminal = service or TerminalService(args.config)
+    services = service or CliServices(args.config)
     if args.module == "deploy":
         targets = ("manager", "monitor") if args.target == "all" else (args.target,)
         for target in targets:
             if args.check:
-                terminal.check(target)
+                services.check(target)
                 print(f"远端环境有效：{target}")
             elif target == "manager":
-                terminal.deploy_manager()
+                services.deploy_manager()
                 print("Manager 部署完成")
             else:
-                terminal.deploy_monitor()
+                services.deploy_monitor()
                 print("Monitor 部署完成")
         return 0
     if args.module == "manager":
-        cloud = terminal.cloud()
+        power = services.power()
         if args.action == "status":
-            result = cloud.status()
+            result = power.status()
         elif args.action == "start":
-            result = cloud.start()
+            result = power.start()
         else:
             if not args.force:
                 try:
@@ -92,17 +154,26 @@ def dispatch(argv: list[str] | None = None, service: TerminalService | None = No
                 if answer.strip().lower() != "yes":
                     print("已取消关机")
                     return 0
-            result = cloud.stop(continue_on_stop_failure=args.force)
+            current = power.status()
+            if current.state == "RUNNING":
+                try:
+                    services.stop_modpacks()
+                except (ModpackError, TencentApiError):
+                    if not args.force:
+                        raise
+            result = power.stop(current)
         suffix = f"，公网 IP={result.public_ip}" if result.public_ip else ""
         print(f"Manager 云主机：{result.state}{suffix}")
         return 0
     if args.module == "pack":
+        if hasattr(args, "pack_id"):
+            validate_pack_id(args.pack_id)
         if args.action == "create":
-            path = terminal.create_pack(args.pack_id)
+            path = services.create_pack(args.pack_id)
             print(f"已创建本地整合包：{path}")
             return 0
         if args.action == "deploy":
-            terminal.deploy_pack(args.pack_id, force=args.force)
+            services.deploy_pack(args.pack_id, force=args.force)
             print(f"整合包已部署：{args.pack_id}")
             return 0
         arguments = [args.action]
@@ -111,20 +182,20 @@ def dispatch(argv: list[str] | None = None, service: TerminalService | None = No
         tty = False
         if args.action == "logs":
             if args.lines < 0:
-                raise TerminalError("日志行数不能为负数")
+                raise ModpackError("日志行数不能为负数")
             arguments.extend(("--lines", str(args.lines)))
             if args.follow:
                 arguments.append("--follow")
                 tty = True
         elif args.action == "console":
             if not args.command:
-                raise TerminalError("控制台命令不能为空")
+                raise ModpackError("控制台命令不能为空")
             arguments.extend(args.command)
         elif args.action == "restore" and args.backup:
             arguments.append(args.backup)
         elif args.action == "remove" and args.force:
             arguments.append("--force")
-        terminal.remote_manager(arguments, tty=tty)
+        services.remote_manager(arguments, tty=tty)
         return 0
     return 0
 
@@ -132,7 +203,10 @@ def dispatch(argv: list[str] | None = None, service: TerminalService | None = No
 def main(argv: list[str] | None = None) -> int:
     try:
         return dispatch(argv)
-    except (CloudError, CommandError, ConfigError, TerminalError, OSError) as exc:
+    except (
+        CommandError, ConfigError, DeployError, ModpackError, PowerError,
+        TencentApiError, OSError,
+    ) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
 
