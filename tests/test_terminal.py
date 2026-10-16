@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
@@ -69,6 +69,10 @@ class FakeService:
         if self.stop_error:
             raise self.stop_error
 
+    def add_monitor_target(self, name: str) -> str:
+        self.calls.append(("add-monitor-target", name))
+        return "user-openid"
+
 
 class FakeTransport:
     def __init__(self, archive: Path) -> None:
@@ -77,10 +81,15 @@ class FakeTransport:
         self.uploads: list[tuple[str, bytes]] = []
         self.cleaned = False
         self.excluded: set[str] = set()
+        self.ssh_stdout: bytes = b""
 
     def ssh(self, target: str, arguments: list[str], **kwargs):
         self.ssh_calls.append((target, arguments, kwargs))
-        return subprocess.CompletedProcess(arguments, 1 if arguments[:2] == ["test", "-e"] else 0)
+        return subprocess.CompletedProcess(
+            arguments,
+            1 if arguments[:2] == ["test", "-e"] else 0,
+            stdout=self.ssh_stdout,
+        )
 
     def scp(self, source: Path, destination: str) -> None:
         self.uploads.append((destination, source.read_bytes()))
@@ -94,6 +103,35 @@ class FakeTransport:
 
 
 class TerminalCliTests(unittest.TestCase):
+    def test_monitor_add_target_defaults_to_owner(self) -> None:
+        service = FakeService()
+        self.assertEqual(dispatch(["monitor", "add-target"], service), 0)
+        self.assertEqual(service.calls, [("add-monitor-target", "owner")])
+
+    def test_monitor_add_target_discovers_updates_and_refreshes(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.yml"
+        config_path.write_text(
+            (Path(__file__).resolve().parents[1] / "config.yml.example").read_text(),
+            encoding="utf-8",
+        )
+        services = CliServices.__new__(CliServices)
+        services.config_path = config_path
+        services.deployment = Mock()
+        services.deployment.discover_monitor_user.return_value = "new-openid"
+        with patch("lib.cli.token_secrets.token_hex", return_value="a1b2"):
+            result = services.add_monitor_target("owner")
+        self.assertEqual(result, "new-openid")
+        services.deployment.discover_monitor_user.assert_called_once_with("a1b2")
+        services.deployment.refresh_monitor_config.assert_called_once_with()
+        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        owner = next(
+            item for item in document["monitor"]["qqbot"]["targets"]
+            if item["name"] == "owner"
+        )
+        self.assertEqual(owner["id"], "new-openid")
+
     def test_pack_arguments_are_forwarded_without_shell_joining(self) -> None:
         service = FakeService()
         self.assertEqual(dispatch(["pack", "console", "demo", "say", "hello world"], service), 0)
@@ -249,6 +287,29 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("schedule install", scripts)
         self.assertNotIn("modpacks", transport.excluded)
         self.assertTrue(transport.cleaned)
+
+    def test_monitor_user_discovery_parses_remote_openid(self) -> None:
+        document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+        document["monitor"] = {
+            "enabled": True,
+            "host": "monitor.example",
+            "user": "monitor",
+            "dir": "/srv/mcsp/monitor",
+            "manager": {
+                "power-api": {
+                    "provider": "tencent",
+                    "instance-region": "ap-test",
+                    "instance-id": "ins-test",
+                },
+            },
+        }
+        self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
+        transport = FakeTransport(self.archive)
+        transport.ssh_stdout = b"user_openid: discovered-user\n"
+        service = DeploymentService(self.config, transport=transport)
+        self.assertEqual(service.discover_monitor_user("a1b2"), "discovered-user")
+        command = " ".join(transport.ssh_calls[-1][1])
+        self.assertIn("./monitor.sh add-target a1b2", command)
 
     def test_pack_deploy_rejects_path_traversal_before_remote_access(self) -> None:
         transport = FakeTransport(self.archive)

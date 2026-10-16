@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets as token_secrets
 import signal
 import sys
@@ -111,16 +112,18 @@ async def main() -> None:
         await asyncio.gather(stop_waiter, *tasks, return_exceptions=True)
 
 
-async def get_user() -> None:
+async def add_target(code: str | None = None) -> None:
     credentials = qq_credentials()
     if credentials is None:
-        raise ConfigError("get-user 需要 QQBOT_SECRET_ID 与 QQBOT_SECRET_KEY")
-    code = token_secrets.token_hex(2)
+        raise ConfigError("add-target 需要 QQBOT_SECRET_ID 与 QQBOT_SECRET_KEY")
+    code = code or token_secrets.token_hex(2)
+    if not re.fullmatch(r"[0-9a-f]{4}", code):
+        raise ConfigError("验证码必须是四位小写十六进制字符")
     print(f"请向机器人发送：{code}", flush=True)
     try:
         user_openid = await discover_user(Network(*credentials), code)
     except asyncio.TimeoutError as exc:
-        raise ConfigError("等待验证消息超时，请重新执行 get-user") from exc
+        raise ConfigError("等待验证消息超时，请重新执行 add-target") from exc
     print(f"user_openid: {user_openid}")
 
 
@@ -128,10 +131,10 @@ def run() -> None:
     command = sys.argv[1:]
     if not command:
         asyncio.run(main())
-    elif command == ["get-user"]:
-        asyncio.run(get_user())
+    elif command[:1] == ["add-target"] and len(command) <= 2:
+        asyncio.run(add_target(command[1] if len(command) == 2 else None))
     else:
-        raise SystemExit("用法：python -m src.app [get-user]")
+        raise SystemExit("用法：python -m src.app [add-target [验证码]]")
 
 
 if __name__ == "__main__":

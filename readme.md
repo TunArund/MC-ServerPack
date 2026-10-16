@@ -69,6 +69,11 @@ cp .env.example .env
 ./mcsp.sh manager status
 ./mcsp.sh manager start
 ./mcsp.sh manager stop
+
+# 部署 Monitor 后验证 QQ 私聊，并更新名为 owner 的目标
+./mcsp.sh monitor add-target
+# 也可以指定其他目标名称
+./mcsp.sh monitor add-target backup-owner
 ```
 
 `manager stop` 会先通过 SSH 执行远端 `manager.sh stop-all`，成功后才调用电源 API；

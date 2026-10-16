@@ -8,10 +8,14 @@ should register a command only when its service implementation exists.
 from __future__ import annotations
 
 import argparse
+import secrets as token_secrets
 import sys
 from pathlib import Path
 
-from .config import CONFIG_FILE, AppConfig, ConfigError, load, load_env
+from .config import (
+    CONFIG_FILE, AppConfig, ConfigError, load, load_env,
+    upsert_monitor_user_target,
+)
 from .deploy import DeployError, DeploymentService
 from .modpacks import ModpackError, ModpackService, validate_pack_id
 from .power import Power, PowerError, PowerTarget, create_power, load_adapter
@@ -61,6 +65,14 @@ class CliServices:
     def stop_modpacks(self) -> None:
         self.modpacks.remote_manager(["stop-all"])
 
+    def add_monitor_target(self, name: str) -> str:
+        code = token_secrets.token_hex(2)
+        print(f"请向机器人发送：{code}", flush=True)
+        identifier = self.deployment.discover_monitor_user(code)
+        upsert_monitor_user_target(self.config_path, name, identifier)
+        self.deployment.refresh_monitor_config()
+        return identifier
+
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mcsp", description="Minecraft 服务端部署与管理")
@@ -76,6 +88,10 @@ def make_parser() -> argparse.ArgumentParser:
     manager = commands.add_parser("manager", help="管理 Manager 云主机电源")
     manager.add_argument("action", choices=("start", "stop", "status"))
     manager.add_argument("--force", action="store_true", help="停服失败时仍提交软关机")
+    monitor = commands.add_parser("monitor", help="管理 Monitor 与 QQ Bot")
+    monitor_commands = monitor.add_subparsers(dest="action", required=True)
+    add_target = monitor_commands.add_parser("add-target", help="验证并加入 QQ 单聊目标")
+    add_target.add_argument("name", nargs="?", default="owner")
     pack = commands.add_parser("pack", help="部署或远程管理整合包")
     pack_commands = pack.add_subparsers(dest="action", required=True)
     for action in ("create", "config", "start", "stop", "status", "backup"):
@@ -151,6 +167,10 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
             result = power.stop(current)
         suffix = f"，公网 IP={result.public_ip}" if result.public_ip else ""
         print(f"Manager 云主机：{result.state}{suffix}")
+        return 0
+    if args.module == "monitor" and args.action == "add-target":
+        identifier = services.add_monitor_target(args.name)
+        print(f"已更新 Monitor QQ 目标：{args.name} ({identifier})")
         return 0
     if args.module == "pack":
         if hasattr(args, "pack_id"):

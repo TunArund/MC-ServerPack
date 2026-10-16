@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -189,10 +190,44 @@ class DeploymentService:
         )
         if any(not values.get(key) for key in power_keys):
             raise DeployError(f"Monitor 电源 API 需要 {'/'.join(power_keys)}")
-        keys = ("POWER_SECRET_ID", "POWER_SECRET_KEY", "QQBOT_APP_ID", "QQBOT_APP_KEY")
+        keys = (
+            "POWER_SECRET_ID", "POWER_SECRET_KEY",
+            "QQBOT_SECRET_ID", "QQBOT_SECRET_KEY",
+        )
         content = "".join(f"{key}={values.get(key, '')}\n" for key in keys)
         self._upload_text(content, f"{destination}:{endpoint.directory}/.env", 0o600)
         self.transport.ssh(destination, ["chmod", "600", endpoint.directory + "/.env"])
         self.transport.ssh(destination, [
             "bash", "-lc", f"cd {remote.shell_join([endpoint.directory])} && docker compose up -d --build",
         ])
+
+    def discover_monitor_user(self, code: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{4}", code):
+            raise DeployError("QQ 验证码必须是四位小写十六进制字符")
+        endpoint = self._endpoint("monitor")
+        destination = self._destination(endpoint)
+        command = (
+            f"cd {remote.shell_join([endpoint.directory])} && "
+            f"./monitor.sh add-target {remote.shell_join([code])}"
+        )
+        result = self.transport.ssh(
+            destination, ["bash", "-lc", command], capture=True,
+        )
+        output = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) else (result.stdout or "")
+        matches = re.findall(r"^user_openid:\s*(\S+)\s*$", output, re.MULTILINE)
+        if len(matches) != 1:
+            raise DeployError("远端 Monitor 未返回唯一 user_openid")
+        return matches[0]
+
+    def refresh_monitor_config(self) -> None:
+        endpoint = self._endpoint("monitor")
+        destination = self._destination(endpoint)
+        self._upload_text(
+            render_runtime_section(self.config_path, "monitor"),
+            f"{destination}:{endpoint.directory}/config.yml",
+        )
+        command = (
+            f"cd {remote.shell_join([endpoint.directory])} && "
+            "docker compose up -d --force-recreate monitor"
+        )
+        self.transport.ssh(destination, ["bash", "-lc", command])

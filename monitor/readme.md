@@ -14,6 +14,16 @@ cp .env.example .env
 ./monitor.sh down
 ```
 
+QQ 单聊目标应从顶层终端验证并写回唯一配置源：
+
+```bash
+./mcsp.sh monitor add-target          # 更新 owner
+./mcsp.sh monitor add-target another  # 更新或新增 another
+```
+
+该命令生成随机四位验证码，远端 Monitor 只接受内容完全一致的 C2C 消息；验证后
+将 `user_openid` 写回 `monitor.qqbot.targets`，再刷新远端配置。
+
 `auto-start/start-at` 和 `auto-stop/stop-at` 分别控制每日定时开、关机。内部调度器
 每 30 秒检查一次；完成的事件记录在 `data/state.json`，API 临时失败会自动重试。
 重复关机以及 Manager 与 Monitor 同时关机按云 API 的幂等语义处理。

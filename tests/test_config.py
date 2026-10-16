@@ -6,7 +6,10 @@ from pathlib import Path
 
 import yaml
 
-from lib.config import ConfigError, load, render_runtime_section, runtime_section
+from lib.config import (
+    ConfigError, load, render_runtime_section, runtime_section,
+    upsert_monitor_user_target,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +110,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(monitor, runtime_section(source, "monitor"))
         self.assertEqual(manager_text, render_runtime_section(source, "manager"))
         self.assertEqual(monitor_text, render_runtime_section(source, "monitor"))
+
+    def test_user_target_is_updated_without_reformatting_config(self) -> None:
+        source = ROOT / "config.yml.example"
+        path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
+        original = path.read_text(encoding="utf-8")
+        upsert_monitor_user_target(path, "owner", "new-openid")
+        updated = path.read_text(encoding="utf-8")
+        self.assertEqual(updated, original.replace("id: aaa", "id: 'new-openid'", 1))
+        self.assertEqual(load(path).monitor.targets[0].identifier, "new-openid")
+
+    def test_user_target_is_added_when_name_does_not_exist(self) -> None:
+        source = ROOT / "config.yml.example"
+        path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
+        upsert_monitor_user_target(path, "backup-owner", "second-openid")
+        config = load(path)
+        added = next(item for item in config.monitor.targets if item.name == "backup-owner")
+        self.assertEqual(added.identifier, "second-openid")
 
 
 if __name__ == "__main__":
