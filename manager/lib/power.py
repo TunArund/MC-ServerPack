@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .config import MANAGER_ROOT, ManagerLimits
 
@@ -104,3 +106,95 @@ class TencentPower:
             "StopInstances", "--InstanceIds", json.dumps([self.instance_id]),
             "--StopType", "SOFT", "--StoppedMode", "STOP_CHARGING",
         )
+
+
+WebhookCall = Callable[[str, dict], dict]
+
+
+class WebhookPower:
+    def __init__(
+        self, settings: ManagerLimits, manager_root: Path = MANAGER_ROOT, *,
+        api_call: WebhookCall | None = None,
+    ) -> None:
+        if (
+            not settings.poweroff_enabled
+            or settings.power_provider != "webhook"
+            or not settings.power_url
+            or not settings.power_region
+            or not settings.power_instance_id
+        ):
+            raise PowerError("Webhook 云关机未启用或配置不完整")
+        values = load_env(manager_root / ".env")
+        self.token = os.environ.get("POWER_API_TOKEN", values.get("POWER_API_TOKEN", "")).strip()
+        if not self.token:
+            raise PowerError("缺少 POWER_API_TOKEN")
+        self.url = settings.power_url
+        self.region = settings.power_region
+        self.instance_id = settings.power_instance_id
+        self.api_call = api_call or self._http
+
+    def _http(self, action: str, payload: dict) -> dict:
+        request = Request(
+            self.url,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=60) as response:
+                content = response.read()
+        except HTTPError as exc:
+            detail = exc.read().decode(errors="replace").strip()[-500:]
+            raise PowerError(f"power-api {action} HTTP {exc.code}：{detail}") from exc
+        except (OSError, URLError) as exc:
+            raise PowerError(f"power-api {action} 请求失败：{exc}") from exc
+        if not content:
+            return {}
+        try:
+            reply = json.loads(content)
+        except (TypeError, ValueError) as exc:
+            raise PowerError(f"power-api {action} 返回无效 JSON") from exc
+        if not isinstance(reply, dict):
+            raise PowerError(f"power-api {action} 返回值必须是对象")
+        return reply
+
+    def api(self, action: str) -> dict:
+        payload = {
+            "action": action,
+            "instance-id": self.instance_id,
+            "instance-region": self.region,
+        }
+        try:
+            return self.api_call(action, payload)
+        except PowerError:
+            raise
+        except Exception as exc:
+            raise PowerError(f"power-api {action} 失败：{exc}") from exc
+
+    def state(self) -> str:
+        state = self.api("status").get("state")
+        if not isinstance(state, str) or not state:
+            raise PowerError("power-api status 缺少 state")
+        return state.upper()
+
+    def stop(self) -> None:
+        state = self.state()
+        if state in ("STOPPED", "STOPPING"):
+            return
+        if state != "RUNNING":
+            raise PowerError(f"实例处于 {state}，不能提交关机")
+        self.api("stop")
+
+
+def create_power(
+    settings: ManagerLimits, manager_root: Path = MANAGER_ROOT,
+):
+    if settings.power_provider == "tencent":
+        return TencentPower(settings, manager_root)
+    if settings.power_provider == "webhook":
+        return WebhookPower(settings, manager_root)
+    raise PowerError(f"不支持的 power-api provider：{settings.power_provider}")

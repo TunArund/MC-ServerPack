@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import re
-import shlex
 import shutil
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 from . import remote
 from .config import ROOT, AppConfig
-from .tencent import ApiCall, TencentApiError
 
 
 MANAGER_SOURCE = ROOT / "manager"
@@ -87,48 +82,3 @@ class ModpackService:
             encoding="utf-8",
         )
         return target
-
-
-def stop_all_via_tat(
-    api_call: ApiCall, instance_id: str, manager_dir: str, manager_user: str, *,
-    timeout: int = 240, sleeper: Callable[[float], None] = time.sleep,
-) -> None:
-    def api(action: str, payload: dict) -> dict:
-        try:
-            return api_call("tat", action, payload)
-        except (ModpackError, TencentApiError):
-            raise
-        except Exception as exc:
-            raise ModpackError(f"tat.{action} 失败：{exc}") from exc
-
-    command = f"cd {shlex.quote(manager_dir)} && ./manager.sh stop-all"
-    reply = api("RunCommand", {
-        "InstanceIds": [instance_id],
-        "Content": base64.b64encode(command.encode()).decode(),
-        "CommandType": "SHELL", "Username": manager_user,
-        "Timeout": timeout,
-    })
-    invocation = reply.get("InvocationId")
-    if not invocation:
-        raise ModpackError("TAT RunCommand 未返回 InvocationId")
-    deadline = time.monotonic() + timeout + 30
-    while True:
-        reply = api("DescribeInvocationTasks", {
-            "Filters": [{"Name": "invocation-id", "Values": [invocation]}],
-        })
-        tasks = [item for item in reply.get("InvocationTaskSet") or []
-                 if item.get("InstanceId") == instance_id]
-        if len(tasks) > 1:
-            raise ModpackError("TAT 返回多个目标任务")
-        if tasks:
-            task = tasks[0]
-            state = task.get("TaskStatus")
-            if state == "SUCCESS":
-                if (task.get("TaskResult") or {}).get("ExitCode") == 0:
-                    return
-                raise ModpackError("TAT stop-all 退出码异常")
-            if state in {"FAILED", "TIMEOUT", "TASK_TIMEOUT", "DELIVER_FAILED", "CANCELLED"}:
-                raise ModpackError(f"TAT stop-all 失败：{state}")
-        if time.monotonic() >= deadline:
-            raise ModpackError("TAT stop-all 查询超时")
-        sleeper(min(5, max(0, deadline - time.monotonic())))

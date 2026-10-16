@@ -42,8 +42,10 @@ class ManagerConfigTests(unittest.TestCase):
         document.update({
             "auto-stop": True,
             "stop-at": "23:05",
-            "region": "ap-shanghai",
-            "instance-id": "ins-test",
+            "power-api": {
+                "provider": "tencent", "instance-region": "ap-shanghai",
+                "instance-id": "ins-test", "url": None,
+            },
         })
         document["modpack"].update({
             "auto-stop": True,
@@ -59,16 +61,31 @@ class ManagerConfigTests(unittest.TestCase):
         self.assertEqual(settings.poweroff_at, "23:05")
         self.assertEqual(settings.power_region, "ap-shanghai")
         self.assertEqual(settings.power_instance_id, "ins-test")
+        self.assertEqual(settings.power_provider, "tencent")
 
     def test_poweroff_requires_auto_stop(self) -> None:
         document = self.minimum()
         document.update({
             "auto-stop": True,
-            "region": "ap-shanghai",
-            "instance-id": "ins-test",
+            "power-api": {
+                "provider": "tencent", "instance-region": "ap-shanghai",
+                "instance-id": "ins-test", "url": None,
+            },
         })
         with self.assertRaisesRegex(ConfigError, "需要 modpack.auto-stop=true"):
             load_limits(self.write(document))
+
+    def test_webhook_settings_are_parsed(self) -> None:
+        document = self.minimum()
+        document["auto-stop"] = True
+        document["modpack"]["auto-stop"] = True
+        document["power-api"] = {
+            "provider": "webhook", "instance-region": "local",
+            "instance-id": "manager", "url": "https://power.example/api",
+        }
+        settings = load_limits(self.write(document))
+        self.assertEqual(settings.power_provider, "webhook")
+        self.assertEqual(settings.power_url, "https://power.example/api")
 
     def test_schedule_rejects_invalid_clock(self) -> None:
         document = self.minimum()

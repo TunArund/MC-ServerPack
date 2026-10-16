@@ -3,8 +3,11 @@ host: monitoraddr
 user: monitoruser
 dir: /home/monitoruser/MC-ServerPack-monitor
 manager:
-  region: ap-nanjing
-  instance-id: ins-xxxxyyyy
+  power-api:
+    provider: tencent
+    instance-id: ins-xxxxyyyy
+    instance-region: ap-nanjing
+    url: null
   auto-start: true
   start-at: '19:55'
   auto-stop: true

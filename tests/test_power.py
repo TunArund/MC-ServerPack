@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from manager.lib.config import ManagerLimits
-from manager.lib.power import PowerError, TencentPower
+from manager.lib.power import PowerError, TencentPower, WebhookPower, create_power
 
 
 class FakeRunner:
@@ -58,6 +58,34 @@ class PowerTests(unittest.TestCase):
     def test_credentials_are_required(self) -> None:
         with patch.dict("os.environ", {}, clear=True), self.assertRaisesRegex(PowerError, "POWER_SECRET"):
             TencentPower(self.settings, self.root, FakeRunner(), executable="tccli")
+
+    def test_webhook_reads_fixed_token_and_uses_normalized_payload(self) -> None:
+        settings = ManagerLimits(
+            1, "4g", 4 * 1024**3, 30, 30,
+            poweroff_enabled=True, power_region="local", power_instance_id="manager",
+            power_provider="webhook", power_url="https://power.example/api",
+        )
+        calls: list[tuple[str, dict]] = []
+
+        def api(action, payload):
+            calls.append((action, payload))
+            return {"state": "RUNNING"} if action == "status" else {}
+
+        with patch.dict("os.environ", {"POWER_API_TOKEN": "token"}):
+            WebhookPower(settings, self.root, api_call=api).stop()
+        self.assertEqual([action for action, _ in calls], ["status", "stop"])
+        self.assertEqual(calls[0][1], {
+            "action": "status", "instance-id": "manager", "instance-region": "local",
+        })
+
+    def test_factory_selects_webhook_provider(self) -> None:
+        settings = ManagerLimits(
+            1, "4g", 4 * 1024**3, 30, 30,
+            poweroff_enabled=True, power_region="local", power_instance_id="manager",
+            power_provider="webhook", power_url="https://power.example/api",
+        )
+        with patch.dict("os.environ", {"POWER_API_TOKEN": "token"}):
+            self.assertIsInstance(create_power(settings, self.root), WebhookPower)
 
 
 if __name__ == "__main__":

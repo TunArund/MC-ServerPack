@@ -13,8 +13,8 @@ from pathlib import Path
 
 from .config import CONFIG_FILE, AppConfig, ConfigError, load, load_env
 from .deploy import DeployError, DeploymentService
-from .modpacks import ModpackError, ModpackService, stop_all_via_tat, validate_pack_id
-from .power import PowerError, PowerTarget, TencentPower
+from .modpacks import ModpackError, ModpackService, validate_pack_id
+from .power import PowerError, PowerTarget, TencentPower, WebhookPower
 from .remote import CommandError, Transport
 from .tencent import ApiCall, TencentApiError, create_api
 
@@ -52,31 +52,31 @@ class CliServices:
 
     def _cloud_api(self) -> ApiCall:
         if self._api_call is None:
-            manager = self.config.manager
-            if not manager.region or not manager.instance_id:
-                raise PowerError("manager.region 和 manager.instance-id 未配置")
+            power = self.config.manager.power_api
+            if not power or power.provider != "tencent":
+                raise PowerError("manager.power-api 未配置腾讯云 provider")
             values = load_env(self.config_path.parent / ".env")
             self._api_call = create_api(
-                manager.region,
+                power.instance_region,
                 values.get("POWER_SECRET_ID", ""),
                 values.get("POWER_SECRET_KEY", ""),
             )
         return self._api_call
 
-    def power(self) -> TencentPower:
-        instance_id = self.config.manager.instance_id
-        if not instance_id:
-            raise PowerError("manager.instance-id 未配置")
-        return TencentPower(PowerTarget(instance_id), self._cloud_api())
+    def power(self) -> TencentPower | WebhookPower:
+        power = self.config.manager.power_api
+        if not power:
+            raise PowerError("manager.power-api 未配置")
+        target = PowerTarget(power.instance_id, power.instance_region)
+        if power.provider == "tencent":
+            return TencentPower(target, self._cloud_api())
+        values = load_env(self.config_path.parent / ".env")
+        return WebhookPower(
+            target, power.url or "", values.get("POWER_API_TOKEN", ""),
+        )
 
     def stop_modpacks(self) -> None:
-        manager = self.config.manager
-        if not manager.instance_id:
-            raise ModpackError("manager.instance-id 未配置")
-        stop_all_via_tat(
-            self._cloud_api(), manager.instance_id,
-            manager.endpoint.directory, manager.endpoint.user,
-        )
+        self.modpacks.remote_manager(["stop-all"])
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -158,7 +158,7 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
             if current.state == "RUNNING":
                 try:
                     services.stop_modpacks()
-                except (ModpackError, TencentApiError):
+                except (CommandError, ModpackError, TencentApiError):
                     if not args.force:
                         raise
             result = power.stop(current)

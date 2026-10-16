@@ -49,7 +49,19 @@ class ConfigTests(unittest.TestCase):
             "dir": "/srv/monitor",
             "manager": {},
         }
-        with self.assertRaisesRegex(ConfigError, "monitor.manager.region"):
+        with self.assertRaisesRegex(ConfigError, "monitor.manager.power-api"):
+            load(self.write(document))
+
+    def test_webhook_requires_http_url(self) -> None:
+        document = self.minimum()
+        document["manager"]["auto-stop"] = True
+        document["manager"]["stop-at"] = "23:05"
+        document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})
+        document["manager"]["power-api"] = {
+            "provider": "webhook", "instance-id": "manager",
+            "instance-region": "local", "url": "file:///tmp/power",
+        }
+        with self.assertRaisesRegex(ConfigError, "HTTP\(S\) URL"):
             load(self.write(document))
 
     def test_enabled_schedule_requires_time(self) -> None:

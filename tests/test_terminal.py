@@ -9,12 +9,12 @@ from unittest.mock import patch
 
 import yaml
 
-from lib.cli import dispatch
+from lib.cli import CliServices, dispatch
 from lib.config import load as load_config
 from lib.deploy import DeploymentService
-from lib.modpacks import ModpackError, ModpackService, stop_all_via_tat, validate_pack_id
-from lib.power import InstanceStatus, PowerError, PowerTarget, TencentPower
-from lib.remote import archive_tree, cleanup_archive, shell_join
+from lib.modpacks import ModpackError, ModpackService, validate_pack_id
+from lib.power import InstanceStatus, PowerError, PowerTarget, TencentPower, WebhookPower
+from lib.remote import CommandError, archive_tree, cleanup_archive, shell_join
 
 
 class FakeCloud:
@@ -114,15 +114,15 @@ class TerminalCliTests(unittest.TestCase):
 
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
-        service.stop_error = ModpackError("TAT failed")
+        service.stop_error = CommandError("SSH failed")
         dispatch(["manager", "stop", "--force"], service)
         self.assertEqual(service.calls, ["stop-modpacks"])
         self.assertEqual(service.cloud.calls, ["status", ("stop", "RUNNING")])
 
     def test_stop_failure_prevents_poweroff_by_default(self) -> None:
         service = FakeService()
-        service.stop_error = ModpackError("TAT failed")
-        with patch("builtins.input", return_value="yes"), self.assertRaises(ModpackError):
+        service.stop_error = CommandError("SSH failed")
+        with patch("builtins.input", return_value="yes"), self.assertRaises(CommandError):
             dispatch(["manager", "stop"], service)
         self.assertEqual(service.calls, ["stop-modpacks"])
         self.assertEqual(service.cloud.calls, ["status"])
@@ -181,31 +181,29 @@ class PowerTests(unittest.TestCase):
             TencentPower(self.target(), api).stop()
         self.assertNotIn("StopInstances", actions)
 
-
-class ModpackCloudTests(unittest.TestCase):
-    def test_stop_all_uses_tat(self) -> None:
-        actions: list[str] = []
-
-        def api(service, action, payload):
-            self.assertEqual(service, "tat")
-            actions.append(action)
-            if action == "RunCommand":
-                return {"InvocationId": "inv-test"}
-            return {"InvocationTaskSet": [{
-                "InstanceId": "ins-test", "TaskStatus": "SUCCESS",
-                "TaskResult": {"ExitCode": 0},
-            }]}
-
-        stop_all_via_tat(
-            api, "ins-test", "/srv/mcsp", "minecraft", sleeper=lambda _: None,
-        )
-        self.assertEqual(actions, ["RunCommand", "DescribeInvocationTasks"])
-
     def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
         self.assertEqual(validate_pack_id("Pack-01"), "Pack-01")
         for invalid in ("pack_name", "pack.name", "../pack", "中文"):
             with self.subTest(invalid=invalid), self.assertRaises(ModpackError):
                 validate_pack_id(invalid)
+
+    def test_webhook_uses_normalized_contract(self) -> None:
+        replies = iter(({"state": "stopped"}, {}, {"state": "RUNNING", "public-ip": "203.0.113.2"}))
+        calls: list[tuple[str, dict]] = []
+
+        def api(action, payload):
+            calls.append((action, payload))
+            return next(replies)
+
+        result = WebhookPower(
+            PowerTarget("manager", "local"), "https://power.example/api", "token",
+            api_call=api, sleeper=lambda _: None,
+        ).start()
+        self.assertEqual(result, InstanceStatus("RUNNING", "203.0.113.2"))
+        self.assertEqual([action for action, _ in calls], ["status", "start", "status"])
+        self.assertEqual(calls[0][1], {
+            "action": "status", "instance-id": "manager", "instance-region": "local",
+        })
 
 
 class DeploymentTests(unittest.TestCase):
@@ -217,8 +215,12 @@ class DeploymentTests(unittest.TestCase):
         self.config.write_text(yaml.safe_dump({
             "manager": {
                 "host": "manager.example", "user": "minecraft", "dir": "/srv/mcsp/manager",
-                "auto-stop": False, "stop-at": "23:05", "region": "ap-test",
-                "instance-id": "ins-test", "modpack": {"auto-stop": False, "java": [17], "mem-limit": "4g"},
+                "auto-stop": False, "stop-at": "23:05",
+                "power-api": {
+                    "provider": "tencent", "instance-region": "ap-test",
+                    "instance-id": "ins-test", "url": None,
+                },
+                "modpack": {"auto-stop": False, "java": [17], "mem-limit": "4g"},
             },
             "monitor": {"enabled": False}, "cos": {"enabled": False},
         }), encoding="utf-8")
@@ -246,6 +248,31 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "无效整合包 ID"):
             service.deploy_pack("../escape")
         self.assertFalse(transport.ssh_calls)
+
+    def test_cli_selects_webhook_and_reads_fixed_env_key(self) -> None:
+        document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+        document["manager"]["power-api"] = {
+            "provider": "webhook", "instance-id": "manager",
+            "instance-region": "local", "url": "https://power.example/api",
+        }
+        self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
+        (self.root / ".env").write_text("POWER_API_TOKEN=secret\n", encoding="utf-8")
+        self.assertIsInstance(CliServices(self.config).power(), WebhookPower)
+
+    def test_manager_deploy_selects_webhook_secret(self) -> None:
+        document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+        document["manager"].update({
+            "auto-stop": True,
+            "power-api": {
+                "provider": "webhook", "instance-id": "manager",
+                "instance-region": "local", "url": "https://power.example/api",
+            },
+        })
+        document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})
+        self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
+        (self.root / ".env").write_text("POWER_API_TOKEN=secret\n", encoding="utf-8")
+        service = DeploymentService(self.config, transport=FakeTransport(self.archive))
+        self.assertEqual(service._manager_env(), "POWER_API_TOKEN=secret\n")
 
     def test_shell_join_quotes_untrusted_console_text(self) -> None:
         self.assertEqual(shell_join(["console", "demo", "say $(id)"]), "console demo 'say $(id)'")

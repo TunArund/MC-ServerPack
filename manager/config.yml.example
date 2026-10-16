@@ -3,8 +3,11 @@ user: manageruser
 dir: /home/manageruser/MC-ServerPack-manager
 auto-stop: false
 stop-at: '23:05'
-region: ap-nanjing
-instance-id: ins-xxxxyyyy
+power-api:
+  provider: tencent
+  instance-id: ins-xxxxyyyy
+  instance-region: ap-nanjing
+  url: null
 modpack:
   auto-stop: false
   stop-at: '23:00'

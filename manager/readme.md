@@ -109,8 +109,11 @@ Manager 本机 `config.yml` 的 `modpack` 配置整合包停服，顶层 `auto-s
 ```yaml
 auto-stop: true
 stop-at: '23:05'
-region: ap-nanjing
-instance-id: ins-xxxxyyyy
+power-api:
+  provider: tencent
+  instance-id: ins-xxxxyyyy
+  instance-region: ap-nanjing
+  url: null
 modpack:
   auto-stop: true
   stop-at: '23:00'
@@ -123,7 +126,8 @@ modpack:
 成功动作写入 `.schedule-state.json`，同一天不会重复执行。进入停服窗口后不会再开始
 新的备份。
 
-云关机使用腾讯云 `tccli`。先安装依赖并填写密钥文件：
+`power-api.provider=tencent` 使用腾讯云 `tccli`；`provider=webhook` 使用通用 HTTP
+接口。先安装依赖并填写密钥文件：
 
 ```bash
 python3 -m venv .venv
@@ -131,9 +135,11 @@ python3 -m venv .venv
 cp .env.example .env
 ```
 
-`.env` 中只需要 `POWER_SECRET_ID` 与 `POWER_SECRET_KEY`，该文件不会进入 Git。
+腾讯云从 `.env` 读取 `POWER_SECRET_ID` 与 `POWER_SECRET_KEY`；Webhook 固定读取
+`POWER_API_TOKEN`，该文件不会进入 Git。Webhook 的请求与状态响应契约见项目
+`readme.md` 的“电源 API”。
 调用前会先查询实例状态；已停止或正在停止时视为成功，运行中实例使用软关机并选择
-关机不收费模式。建议云子账号只授予目标实例查询和关机所需的最小权限。
+关机不收费模式（腾讯云）。建议云子账号只授予目标实例查询和关机所需的最小权限。
 
 修改配置后可先手工执行 `./manager.sh schedule run` 验证。它不会提前触发尚未到期的
 停服动作；确认无误后再运行 `schedule install`。`schedule remove` 只移除这一条聚合任务。

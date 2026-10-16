@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from .archive import list_backups
 from .config import MANAGER_ROOT, ManagerLimits, PackSpec
-from .power import TencentPower
+from .power import create_power
 
 
 ZONE = ZoneInfo("Asia/Shanghai")
@@ -193,7 +193,7 @@ def _run_backups(manager, now_timestamp: float, report: ScheduleReport) -> None:
 
 def run_all(
     manager, now: datetime | None = None,
-    power_factory: Callable[..., TencentPower] = TencentPower,
+    power_factory: Callable[..., object] = create_power,
 ) -> ScheduleReport:
     current = datetime.now(ZONE) if now is None else now.astimezone(ZONE)
     report = ScheduleReport()

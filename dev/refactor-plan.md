@@ -10,7 +10,7 @@
 - Manager：管理本机整合包、Docker 容器、备份、优雅停服和自身的定时关机。
 - Monitor：独立管理远端云主机电源、定时值守、告警和 QQ 入口。
 
-不允许运行时之间直接 import；交互只通过 SSH/TAT、云 API 和稳定的命令行契约。
+不允许运行时之间直接 import；交互只通过 SSH、云 API 和稳定的命令行契约。
 
 ## 命令语义
 
@@ -40,10 +40,11 @@ manager.sh stop-all
 manager.sh schedule run|install|remove
 ```
 
-Monitor 手动关机时通过 TAT 调用 `manager.sh stop-all`，无论停服是否成功都继续请求云关机，并对风险告警。
+Terminal 手动关机时通过 SSH 调用 `manager.sh stop-all`；默认仅在停服成功后请求云关机，
+用户显式指定 `--force` 时才允许忽略停服失败。
 
 Manager 的调度闭环已经具备：单 cron 聚合检查、每包独立周期备份、分阶段关服广播、
-全量优雅停服、截止窗口内重试，以及可选的幂等腾讯云关机。调度状态按日期持久化，
+全量优雅停服、截止窗口内重试，以及可选的幂等云关机。调度状态按日期持久化，
 跨午夜截止窗口仍归属前一天的停服事件。
 
 ## 唯一调度所有者
@@ -67,7 +68,8 @@ Terminal 在线，也不读取对方的配置文件。
 4. Terminal 部署：已实现环境检查、保留运行数据的源码同步、独立配置/最小密钥分发、
    整合包上传、远程 Manager 命令，以及先停服后软关机的云电源控制。
    Terminal 内部由 `cli.py` 解析和编排，`deploy.py` 负责部署，`modpacks.py` 负责整合包及
-   TAT 停服，`power.py` 只负责实例电源，`remote.py` 负责 SSH/SCP，`tencent.py` 隔离 SDK。
+   SSH 停服，`power.py` 只负责实例电源，`remote.py` 负责 SSH/SCP，`tencent.py` 隔离 SDK。
+   电源层支持内置腾讯云和规范化 Webhook，密钥只从各运行时自己的 `.env` 读取。
 5. Monitor：先做纯时间线和云电源状态机，再接 QQ；云 API 必须可注入假实现离线测试。
 6. 发布与切换：干净环境安装测试、真机开停演练、备份恢复演练，然后才将 H 设为主工程。
 

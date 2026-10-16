@@ -70,7 +70,7 @@ cp .env.example .env
 ./mcsp.sh manager stop
 ```
 
-`manager stop` 会先通过腾讯云 TAT 执行远端 `manager.sh stop-all`，成功后才提交软关机；
+`manager stop` 会先通过 SSH 执行远端 `manager.sh stop-all`，成功后才调用电源 API；
 只有显式使用 `--force` 才允许停服失败后继续关机。详细 Manager 命令见
 [manager/readme.md](./manager/readme.md#manager-命令)。
 ## 1.账号
@@ -106,6 +106,30 @@ spec.md 当前文档
 # 定时开关机
 ## monitor
 
+## 电源 API
+
+Manager 和 Monitor 各自通过 `power-api` 配置目标实例。内置 `tencent` 与通用
+`webhook` 两种 provider：
+
+```yaml
+power-api:
+  provider: webhook
+  instance-id: minecraft-manager
+  instance-region: local
+  url: https://example.com/mcsp/power
+```
+
+Webhook 使用 `POST`，固定从 `.env` 读取 `POWER_API_TOKEN` 并作为 Bearer Token。
+请求 JSON 包含 `action`（`status`、`start` 或 `stop`）、`instance-id` 和
+`instance-region`。`status` 必须返回规范化状态：
+
+```json
+{"state": "RUNNING", "public-ip": "203.0.113.1"}
+```
+
+`public-ip` 可省略；`start`、`stop` 可返回空对象。状态使用
+`RUNNING`、`STARTING`、`STOPPING`、`STOPPED`。
+
 ## 腾讯云编程子用户
 https://console.cloud.tencent.com/cam
 新建用户-快速创建
@@ -119,9 +143,7 @@ https://console.cloud.tencent.com/cam
       "action": [
         "cvm:DescribeInstances",
         "cvm:StartInstances",
-        "cvm:StopInstances",
-        "tat:RunCommand",
-        "tat:DescribeInvocationTasks"
+        "cvm:StopInstances"
       ],
       "effect": "allow",
       "resource": [
@@ -136,12 +158,5 @@ https://console.cloud.tencent.com/cam
 点击用户名-API密钥-新建密钥
 成功获取POWER_SECRET_ID POWER_SECRET_KEY
 # TODO
-- 重构中。Manager 已完成生命周期、资源保护、备份恢复、聚合调度、定时停服和可选云关机；
-- Terminal 已完成 Manager 部署、整合包上传与远程命令、腾讯云电源控制；Monitor 部署器
-  已具备，但会在 Monitor 本体完成前拒绝部署空壳；
-- Monitor 仍只有目录骨架，电源状态机、告警和 QQ 入口尚未实现；
-- 发布构建、干净环境安装和新旧工程切换尚未完成。未实现功能不会返回假成功。
-
-- 兼容不同API
-目前仅支持调用腾讯云API，新增配置自定义API
+- 重构中。 参考 dev/refactor-plan
 - 实现cos

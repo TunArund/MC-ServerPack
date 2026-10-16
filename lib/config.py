@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 try:
     import yaml
@@ -48,6 +49,14 @@ class Endpoint:
 
 
 @dataclass(frozen=True)
+class PowerApiConfig:
+    provider: str
+    instance_id: str
+    instance_region: str
+    url: str | None = None
+
+
+@dataclass(frozen=True)
 class ModpackDefaults:
     auto_stop: bool
     stop_at: str
@@ -64,8 +73,7 @@ class ManagerConfig:
     endpoint: Endpoint
     auto_stop: bool
     stop_at: str | None
-    region: str | None
-    instance_id: str | None
+    power_api: PowerApiConfig | None
     modpack: ModpackDefaults
 
 
@@ -88,6 +96,7 @@ class MonitorConfig:
     enabled: bool
     endpoint: Endpoint | None
     manager: MonitorSchedule
+    power_api: PowerApiConfig | None
     targets: tuple[QQTarget, ...]
     admins: tuple[str, ...]
 
@@ -166,6 +175,26 @@ def _endpoint(section: dict[str, Any], field: str) -> Endpoint:
     )
 
 
+def _power_api(section: object, field: str, *, required: bool) -> PowerApiConfig | None:
+    if section is None and not required:
+        return None
+    power = _mapping(section, field)
+    provider = _text(power.get("provider"), f"{field}.provider").lower()
+    if provider not in ("tencent", "webhook"):
+        raise ConfigError(f"{field}.provider 只能是 tencent 或 webhook")
+    instance_id = _text(power.get("instance-id"), f"{field}.instance-id")
+    region = _text(power.get("instance-region"), f"{field}.instance-region")
+    url_value = power.get("url")
+    url = _text(url_value, f"{field}.url") if url_value is not None else None
+    if provider == "webhook":
+        if not url:
+            raise ConfigError(f"{field}.url 在 provider=webhook 时不能为空")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ConfigError(f"{field}.url 必须是 HTTP(S) URL")
+    return PowerApiConfig(provider, instance_id, region, url)
+
+
 def _read_root(path: str | Path) -> dict[str, Any]:
     if yaml is None:
         raise ConfigError("缺少 PyYAML；请先安装项目依赖")
@@ -203,12 +232,9 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
     manager_endpoint = _endpoint(manager_raw, "manager")
     manager_auto_stop = _boolean(manager_raw.get("auto-stop"), "manager.auto-stop", default=False)
     manager_stop_at = _optional_clock(manager_raw, manager_auto_stop, "stop-at", "manager.stop-at")
-    region_value = manager_raw.get("region")
-    instance_value = manager_raw.get("instance-id")
-    region = _text(region_value, "manager.region") if region_value is not None else None
-    instance_id = _text(instance_value, "manager.instance-id") if instance_value is not None else None
-    if manager_auto_stop and (not region or not instance_id):
-        raise ConfigError("manager.auto-stop 需要 manager.region 和 manager.instance-id")
+    manager_power = _power_api(
+        manager_raw.get("power-api"), "manager.power-api", required=manager_auto_stop,
+    )
 
     modpack_raw = _mapping(manager_raw.get("modpack"), "manager.modpack")
     pack_auto_stop = _boolean(modpack_raw.get("auto-stop"), "manager.modpack.auto-stop", default=False)
@@ -243,17 +269,16 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
     monitor_manager_raw = _mapping(monitor_raw.get("manager"), "monitor.manager", optional=True)
     auto_start = _boolean(monitor_manager_raw.get("auto-start"), "monitor.manager.auto-start", default=False)
     auto_stop = _boolean(monitor_manager_raw.get("auto-stop"), "monitor.manager.auto-stop", default=False)
-    monitor_region = monitor_manager_raw.get("region")
-    monitor_instance = monitor_manager_raw.get("instance-id")
+    monitor_power = _power_api(
+        monitor_manager_raw.get("power-api"), "monitor.manager.power-api",
+        required=monitor_enabled,
+    )
     monitor_schedule = MonitorSchedule(
         auto_start,
         _optional_clock(monitor_manager_raw, auto_start, "start-at", "monitor.manager.start-at"),
         auto_stop,
         _optional_clock(monitor_manager_raw, auto_stop, "stop-at", "monitor.manager.stop-at"),
     )
-    if monitor_enabled:
-        _text(monitor_region, "monitor.manager.region")
-        _text(monitor_instance, "monitor.manager.instance-id")
     qqbot = _mapping(monitor_raw.get("qqbot"), "monitor.qqbot", optional=True)
     targets_raw = qqbot.get("targets", [])
     admins_raw = qqbot.get("admins", [])
@@ -267,7 +292,10 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
             raise ConfigError(f"monitor.qqbot.targets[{index}].type 只能是 user 或 group")
         targets.append(QQTarget(kind, _text(target.get("id"), f"monitor.qqbot.targets[{index}].id")))
     admins = tuple(_text(value, f"monitor.qqbot.admins[{index}]") for index, value in enumerate(admins_raw))
-    monitor = MonitorConfig(monitor_enabled, monitor_endpoint, monitor_schedule, tuple(targets), admins)
+    monitor = MonitorConfig(
+        monitor_enabled, monitor_endpoint, monitor_schedule, monitor_power,
+        tuple(targets), admins,
+    )
 
     cos_raw = _mapping(root.get("cos"), "cos", optional=True)
     cos_enabled = _boolean(cos_raw.get("enabled"), "cos.enabled", default=False)
@@ -279,7 +307,7 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
         _positive_int(cos_raw.get("expire", 3600), "cos.expire"),
     )
     return AppConfig(
-        ManagerConfig(manager_endpoint, manager_auto_stop, manager_stop_at, region, instance_id, modpack),
+        ManagerConfig(manager_endpoint, manager_auto_stop, manager_stop_at, manager_power, modpack),
         monitor,
         cos,
     )
