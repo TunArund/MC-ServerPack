@@ -1,67 +1,36 @@
-"""QQ Bot Markdown menu, keyboard and response templates."""
+"""Load and render QQ Bot text templates."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from pathlib import Path
 
 
-@dataclass(frozen=True)
-class Message:
-    content: str
-    markdown: bool = False
-    keyboard: dict | None = None
+TEMPLATE_FILE = Path(__file__).with_name("message.json")
 
 
-TEMPLATES = {
-    "menu": "# MC Server Pack\n\n云主机状态：**{state}**\n\n请选择电源操作：",
-    "permission": "只有配置中的管理员可以执行电源操作。",
-    "confirm": "关机将直接请求云主机软关机。请在 60 秒内点击「确认关机」。",
-    "confirm-expired": "没有待确认的关机请求，请先点击「关机」。",
-    "working": "正在{action}，请稍候。",
-    "done": "{action}请求已提交，当前状态：{state}",
-    "error": "{action}失败：{reason}",
-}
+def _load() -> dict[str, str]:
+    try:
+        value = json.loads(TEMPLATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"QQ 消息模板读取失败：{exc}") from exc
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(text, str)
+        for key, text in value.items()
+    ):
+        raise RuntimeError("QQ 消息模板必须是字符串对象")
+    return value
 
 
-def _button(identifier: str, command: str) -> dict:
-    return {
-        "id": identifier,
-        "render_data": {
-            "label": command,
-            "visited_label": command,
-            "style": 1,
-        },
-        "action": {
-            "type": 2,
-            "permission": {"type": 2},
-            "data": command,
-            "enter": True,
-            "unsupport_tips": f"请直接发送「{command}」",
-        },
-    }
+TEMPLATES = _load()
 
 
-def menu_keyboard() -> dict:
-    return {
-        "content": {
-            "rows": [{
-                "buttons": [
-                    _button("power-start", "开机"),
-                    _button("power-stop", "关机"),
-                    _button("power-stop-confirm", "确认关机"),
-                ],
-            }],
-        },
-    }
-
-
-def menu(state: str) -> Message:
-    return Message(
-        TEMPLATES["menu"].format(state=state),
-        markdown=True,
-        keyboard=menu_keyboard(),
-    )
-
-
-def text(name: str, **values: object) -> Message:
-    return Message(TEMPLATES[name].format(**values))
+def render(name: str, **values: object) -> str:
+    try:
+        template = TEMPLATES[name]
+    except KeyError as exc:
+        raise RuntimeError(f"缺少 QQ 消息模板：{name}") from exc
+    try:
+        return template.format(**values)
+    except KeyError as exc:
+        raise RuntimeError(f"QQ 消息模板 {name} 缺少参数：{exc.args[0]}") from exc

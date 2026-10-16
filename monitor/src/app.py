@@ -48,17 +48,6 @@ async def main() -> None:
         secrets(),
         wait_after_action=False,
     )
-    monitor = MonitorService(
-        PowerSchedule(
-            config.schedule.auto_start,
-            config.schedule.start_at,
-            config.schedule.auto_stop,
-            config.schedule.stop_at,
-        ),
-        power,
-        StateStore(DATA_DIR / "state.json"),
-        heartbeat=DATA_DIR / "heartbeat",
-    )
     credentials = qq_credentials()
     bot = None
     if credentials:
@@ -72,6 +61,18 @@ async def main() -> None:
             ),
             AsyncPower(power),
         )
+    monitor = MonitorService(
+        PowerSchedule(
+            config.schedule.auto_start,
+            config.schedule.start_at,
+            config.schedule.auto_stop,
+            config.schedule.stop_at,
+        ),
+        power,
+        StateStore(DATA_DIR / "state.json"),
+        heartbeat=DATA_DIR / "heartbeat",
+        alert=bot.alert if bot else None,
+    )
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     for name in (signal.SIGTERM, signal.SIGINT):

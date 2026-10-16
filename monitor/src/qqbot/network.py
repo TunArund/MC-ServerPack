@@ -10,9 +10,9 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
-from .message import Message
-from .targets import Incoming
+from .targets import Incoming, Target
 
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
@@ -25,6 +25,13 @@ class NetworkError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class Outgoing:
+    content: str
+    markdown: bool = False
+    keyboard: dict | None = None
+
+
 class Network:
     def __init__(self, app_id: str, app_key: str) -> None:
         if not app_id or not app_key:
@@ -34,6 +41,7 @@ class Network:
         self._token = ""
         self._expires_at = 0.0
         self._token_lock = asyncio.Lock()
+        self.ready = asyncio.Event()
 
     @staticmethod
     def _request(
@@ -86,27 +94,53 @@ class Network:
             self._expires_at = time.time() + expires
             return token
 
-    async def reply(self, incoming: Incoming, message: Message, *, sequence: int = 1) -> None:
-        path = "users" if incoming.target.kind == "user" else "groups"
+    @staticmethod
+    def _body(
+        message: Outgoing, *, message_id: str | None = None, sequence: int = 1,
+    ) -> dict:
         body: dict = {
             "msg_type": 2 if message.markdown else 0,
-            "msg_id": incoming.message_id,
-            "msg_seq": sequence,
         }
+        if message_id:
+            body.update(msg_id=message_id, msg_seq=sequence)
         if message.markdown:
             body.update(content=" ", markdown={"content": message.content})
         else:
             body["content"] = message.content
         if message.keyboard:
             body["keyboard"] = message.keyboard
+        return body
+
+    async def _send(
+        self, target: Target, message: Outgoing, *,
+        message_id: str | None = None, sequence: int = 1,
+    ) -> None:
         token = await self.token()
         await asyncio.to_thread(
             self._request,
             "POST",
-            f"{API_URL}/v2/{path}/{incoming.target.identifier}/messages",
-            body,
+            self._endpoint(target),
+            self._body(message, message_id=message_id, sequence=sequence),
             {"Authorization": f"QQBot {token}"},
         )
+
+    @staticmethod
+    def _endpoint(target: Target) -> str:
+        path = "users" if target.kind == "user" else "groups"
+        return f"{API_URL}/v2/{path}/{target.identifier}/messages"
+
+    async def reply(self, incoming: Incoming, message: Outgoing, *, sequence: int = 1) -> None:
+        await self._send(
+            incoming.target, message,
+            message_id=incoming.message_id, sequence=sequence,
+        )
+
+    async def push(self, target: Target, message: Outgoing) -> None:
+        try:
+            await asyncio.wait_for(self.ready.wait(), timeout=30)
+        except asyncio.TimeoutError as exc:
+            raise NetworkError("QQ WebSocket 尚未就绪，不能主动告警") from exc
+        await self._send(target, message)
 
     async def gateway(self) -> str:
         token = await self.token()
@@ -145,6 +179,7 @@ class Network:
                     **{header_name: headers},
                 ) as socket:
                     backoff = 5
+                    self.ready.clear()
                     sequence: int | None = None
                     heartbeat: asyncio.Task | None = None
 
@@ -159,6 +194,8 @@ class Network:
                             if isinstance(event.get("s"), int):
                                 sequence = event["s"]
                             operation = event.get("op")
+                            if operation == 0 and event.get("t") in ("READY", "RESUMED"):
+                                self.ready.set()
                             if operation == 10:
                                 if heartbeat:
                                     heartbeat.cancel()
@@ -179,6 +216,7 @@ class Network:
                             elif operation in (7, 9):
                                 break
                     finally:
+                        self.ready.clear()
                         if heartbeat:
                             heartbeat.cancel()
             except asyncio.CancelledError:

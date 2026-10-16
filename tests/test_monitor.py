@@ -150,6 +150,30 @@ class MonitorServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report.executed)
         self.assertTrue(self.state.contains("2026-10-16:stop"))
 
+    async def test_problem_is_deduplicated_and_recovery_is_reported(self) -> None:
+        alerts: list[str | None] = []
+
+        async def alert(problem: str | None) -> None:
+            alerts.append(problem)
+
+        service = MonitorService(
+            self.schedule, FakePower("RUNNING"), self.state, alert=alert,
+        )
+        await service._set_problem("API 暂时不可用")
+        await service._set_problem("API 暂时不可用")
+        await service._set_problem(None)
+        await service._set_problem(None)
+        self.assertEqual(alerts, ["API 暂时不可用", None])
+
+    def test_state_mismatch_is_reported_after_processed_event(self) -> None:
+        event = latest_event(datetime(2026, 10, 16, 20, 0, tzinfo=ZONE), self.schedule)
+        report = type("Report", (), {
+            "event": event,
+            "executed": False,
+            "status": InstanceStatus("STOPPED"),
+        })()
+        self.assertIn("定时开机", MonitorService._problem(report))
+
 
 if __name__ == "__main__":
     unittest.main()

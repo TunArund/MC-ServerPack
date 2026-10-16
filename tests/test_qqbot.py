@@ -3,17 +3,22 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from monitor.src.qqbot.message import menu, menu_keyboard
-from monitor.src.qqbot.qqbot import QQBot
+from monitor.src.qqbot.message import render
+from monitor.src.qqbot.network import Network, Outgoing
+from monitor.src.qqbot.qqbot import QQBot, menu, menu_keyboard
 from monitor.src.qqbot.targets import Target, TargetPolicy, incoming
 
 
 class FakeNetwork:
     def __init__(self) -> None:
         self.replies: list[tuple[object, object, int]] = []
+        self.pushes: list[tuple[object, object]] = []
 
     async def reply(self, received, message, *, sequence: int = 1) -> None:
         self.replies.append((received, message, sequence))
+
+    async def push(self, target, message) -> None:
+        self.pushes.append((target, message))
 
 
 class FakePower:
@@ -46,6 +51,10 @@ def group_event(message_id: str, sender: str, content: str) -> dict:
 
 
 class MessageTests(unittest.TestCase):
+    def test_external_template_is_rendered(self) -> None:
+        self.assertEqual(render("done", action="开机", state="RUNNING"),
+                         "开机请求已提交，当前状态：RUNNING")
+
     def test_menu_is_markdown_with_only_requested_buttons(self) -> None:
         result = menu("RUNNING")
         labels = [
@@ -61,6 +70,20 @@ class MessageTests(unittest.TestCase):
             labels,
         )
 
+    def test_active_message_has_no_reply_fields(self) -> None:
+        body = Network._body(Outgoing("告警"))
+        self.assertEqual(body, {"msg_type": 0, "content": "告警"})
+        reply = Network._body(Outgoing("回复"), message_id="m1", sequence=2)
+        self.assertEqual(reply["msg_id"], "m1")
+        self.assertEqual(reply["msg_seq"], 2)
+
+    def test_direct_message_uses_user_endpoint(self) -> None:
+        self.assertTrue(
+            Network._endpoint(Target("user", "owner")).endswith(
+                "/v2/users/owner/messages",
+            ),
+        )
+
 
 class TargetTests(unittest.TestCase):
     def test_group_event_is_normalized_and_mention_is_removed(self) -> None:
@@ -74,11 +97,13 @@ class TargetTests(unittest.TestCase):
 
 
 class QQBotTests(unittest.IsolatedAsyncioTestCase):
-    def make_bot(self, *, clock=lambda: 100.0):
+    def make_bot(self, *, clock=lambda: 100.0, alert_window: float = 0):
         network = FakeNetwork()
         power = FakePower()
         policy = TargetPolicy((Target("group", "group-a"),), ("admin-a",))
-        return QQBot(network, policy, power, clock=clock), network, power
+        return QQBot(
+            network, policy, power, clock=clock, alert_window=alert_window,
+        ), network, power
 
     async def test_menu_queries_status_and_returns_keyboard(self) -> None:
         bot, network, power = self.make_bot()
@@ -109,6 +134,24 @@ class QQBotTests(unittest.IsolatedAsyncioTestCase):
         await bot.handle("GROUP_AT_MESSAGE_CREATE", group_event("m2", "admin-a", "确认关机"))
         self.assertEqual(power.calls, [])
         self.assertIn("没有待确认", network.replies[-1][1].content)
+
+    async def test_alerts_are_aggregated_and_pushed_to_each_target(self) -> None:
+        bot, network, _ = self.make_bot()
+        await bot.alert("电源状态异常")
+        await bot.alert("电源状态异常")
+        await bot.alert("API 暂时不可用")
+        await bot.flush_alerts()
+        self.assertEqual(len(network.pushes), 1)
+        target, outgoing = network.pushes[0]
+        self.assertEqual(target, Target("group", "group-a"))
+        self.assertIn("电源状态异常（2 次）", outgoing.content)
+        self.assertIn("API 暂时不可用", outgoing.content)
+
+    async def test_recovery_uses_external_template(self) -> None:
+        bot, network, _ = self.make_bot()
+        await bot.alert(None)
+        await bot.flush_alerts()
+        self.assertIn("恢复正常", network.pushes[0][1].content)
 
 
 if __name__ == "__main__":

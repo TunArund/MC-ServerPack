@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,11 +28,14 @@ class MonitorService:
     def __init__(
         self, schedule: PowerSchedule, power, state: StateStore,
         *, heartbeat: Path | None = None,
+        alert: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
         self.schedule = schedule
         self.power = power
         self.state = state
         self.heartbeat = heartbeat
+        self.alert = alert
+        self.last_problem: str | None = None
         self.operation_lock = asyncio.Lock()
 
     async def run_once(self, now: datetime | None = None) -> TickReport:
@@ -67,16 +71,43 @@ class MonitorService:
         self.heartbeat.parent.mkdir(parents=True, exist_ok=True)
         self.heartbeat.touch()
 
+    @staticmethod
+    def _problem(report: TickReport) -> str | None:
+        if report.event is None or report.executed:
+            return None
+        expected = (
+            ("RUNNING", "STARTING")
+            if report.event.action == "start"
+            else ("STOPPED", "STOPPING")
+        )
+        if report.status.state in expected:
+            return None
+        action = "开机" if report.event.action == "start" else "关机"
+        return f"定时{action}后实例状态异常：{report.status.state}"
+
+    async def _set_problem(self, problem: str | None) -> None:
+        if problem == self.last_problem:
+            return
+        recovered = problem is None and self.last_problem is not None
+        self.last_problem = problem
+        if self.alert is not None and (problem is not None or recovered):
+            try:
+                await self.alert(problem)
+            except Exception:
+                LOGGER.exception("提交主动告警失败")
+
     async def run(self, stopped: asyncio.Event, poll_seconds: int = POLL_SECONDS) -> None:
         while not stopped.is_set():
             try:
                 report = await self.run_once()
+                await self._set_problem(self._problem(report))
                 if report.executed and report.event:
                     LOGGER.info("已提交定时%s；实例原状态=%s", report.event.action, report.status.state)
                 else:
                     LOGGER.debug("实例状态=%s", report.status.state)
-            except Exception:
+            except Exception as exc:
                 LOGGER.exception("Monitor 检查失败，将在下一周期重试")
+                await self._set_problem(f"Monitor 检查失败：{exc}")
             finally:
                 try:
                     self._touch_heartbeat()
