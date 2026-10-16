@@ -14,7 +14,7 @@ from pathlib import Path
 from .config import CONFIG_FILE, AppConfig, ConfigError, load, load_env
 from .deploy import DeployError, DeploymentService
 from .modpacks import ModpackError, ModpackService, validate_pack_id
-from .power import PowerError, PowerTarget, TencentPower, WebhookPower
+from .power import Power, PowerError, PowerTarget, tencent_adapter, webhook_adapter
 from .remote import CommandError, Transport
 from .tencent import ApiCall, TencentApiError, create_api
 
@@ -63,17 +63,17 @@ class CliServices:
             )
         return self._api_call
 
-    def power(self) -> TencentPower | WebhookPower:
+    def power(self) -> Power:
         power = self.config.manager.power_api
         if not power:
             raise PowerError("manager.power-api 未配置")
         target = PowerTarget(power.instance_id, power.instance_region)
         if power.provider == "tencent":
-            return TencentPower(target, self._cloud_api())
+            return Power(tencent_adapter(target, self._cloud_api()))
         values = load_env(self.config_path.parent / ".env")
-        return WebhookPower(
-            target, power.url or "", values.get("POWER_API_TOKEN", ""),
-        )
+        return Power(webhook_adapter(
+            target, power.url or "", values.get("POWER_SECRET_KEY", ""),
+        ))
 
     def stop_modpacks(self) -> None:
         self.modpacks.remote_manager(["stop-all"])

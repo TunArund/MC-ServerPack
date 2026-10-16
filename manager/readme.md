@@ -135,8 +135,9 @@ python3 -m venv .venv
 cp .env.example .env
 ```
 
-腾讯云从 `.env` 读取 `POWER_SECRET_ID` 与 `POWER_SECRET_KEY`；Webhook 固定读取
-`POWER_API_TOKEN`，该文件不会进入 Git。Webhook 的请求与状态响应契约见项目
+腾讯云从 `.env` 读取 `POWER_SECRET_ID` 与 `POWER_SECRET_KEY`；Webhook 将
+`POWER_SECRET_KEY` 作为 Bearer Token，只有一个 Token 时 `POWER_SECRET_ID` 留空。
+该文件不会进入 Git。Webhook 的请求与状态响应契约见项目
 `readme.md` 的“电源 API”。
 调用前会先查询实例状态；已停止或正在停止时视为成功，运行中实例使用软关机并选择
 关机不收费模式（腾讯云）。建议云子账号只授予目标实例查询和关机所需的最小权限。

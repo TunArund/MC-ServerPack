@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from manager.lib.config import ManagerLimits
-from manager.lib.power import PowerError, TencentPower, WebhookPower, create_power
+from manager.lib.power import (
+    Power, PowerError, create_power, tencent_adapter, webhook_adapter,
+)
 
 
 class FakeRunner:
@@ -46,18 +48,22 @@ class PowerTests(unittest.TestCase):
     def test_running_instance_uses_billing_safe_soft_stop(self) -> None:
         runner = FakeRunner()
         with patch.dict("os.environ", {"POWER_SECRET_ID": "id", "POWER_SECRET_KEY": "key"}):
-            TencentPower(self.settings, self.root, runner, executable="tccli").stop()
+            Power(tencent_adapter(
+                self.settings, self.root, runner, executable="tccli",
+            )).stop()
         self.assertEqual(runner.actions, ["DescribeInstances", "StopInstances"])
 
     def test_stopped_instance_is_idempotent(self) -> None:
         runner = FakeRunner("STOPPED")
         with patch.dict("os.environ", {"POWER_SECRET_ID": "id", "POWER_SECRET_KEY": "key"}):
-            TencentPower(self.settings, self.root, runner, executable="tccli").stop()
+            Power(tencent_adapter(
+                self.settings, self.root, runner, executable="tccli",
+            )).stop()
         self.assertEqual(runner.actions, ["DescribeInstances"])
 
     def test_credentials_are_required(self) -> None:
         with patch.dict("os.environ", {}, clear=True), self.assertRaisesRegex(PowerError, "POWER_SECRET"):
-            TencentPower(self.settings, self.root, FakeRunner(), executable="tccli")
+            tencent_adapter(self.settings, self.root, FakeRunner(), executable="tccli")
 
     def test_webhook_reads_fixed_token_and_uses_normalized_payload(self) -> None:
         settings = ManagerLimits(
@@ -71,8 +77,8 @@ class PowerTests(unittest.TestCase):
             calls.append((action, payload))
             return {"state": "RUNNING"} if action == "status" else {}
 
-        with patch.dict("os.environ", {"POWER_API_TOKEN": "token"}):
-            WebhookPower(settings, self.root, api_call=api).stop()
+        with patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}):
+            Power(webhook_adapter(settings, self.root, api_call=api)).stop()
         self.assertEqual([action for action, _ in calls], ["status", "stop"])
         self.assertEqual(calls[0][1], {
             "action": "status", "instance-id": "manager", "instance-region": "local",
@@ -84,8 +90,8 @@ class PowerTests(unittest.TestCase):
             poweroff_enabled=True, power_region="local", power_instance_id="manager",
             power_provider="webhook", power_url="https://power.example/api",
         )
-        with patch.dict("os.environ", {"POWER_API_TOKEN": "token"}):
-            self.assertIsInstance(create_power(settings, self.root), WebhookPower)
+        with patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}):
+            self.assertIsInstance(create_power(settings, self.root), Power)
 
 
 if __name__ == "__main__":

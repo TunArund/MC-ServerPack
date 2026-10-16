@@ -119,9 +119,24 @@ power-api:
   url: https://example.com/mcsp/power
 ```
 
-Webhook 使用 `POST`，固定从 `.env` 读取 `POWER_API_TOKEN` 并作为 Bearer Token。
+Webhook 使用 `POST`，固定从 `.env` 读取 `POWER_SECRET_KEY` 并作为 Bearer Token；
+只有一个 Token 时将它填入 `POWER_SECRET_KEY`，`POWER_SECRET_ID` 留空。
 请求 JSON 包含 `action`（`status`、`start` 或 `stop`）、`instance-id` 和
 `instance-region`。`status` 必须返回规范化状态：
+
+等价的 `curl` 调用如下，启动或关机只需将 `status` 改为 `start` 或 `stop`：
+
+```bash
+curl --request POST 'https://example.com/mcsp/power' \
+  --header "Authorization: Bearer ${POWER_SECRET_KEY}" \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "action": "status",
+    "instance-id": "minecraft-manager",
+    "instance-region": "local"
+  }'
+```
 
 ```json
 {"state": "RUNNING", "public-ip": "203.0.113.1"}

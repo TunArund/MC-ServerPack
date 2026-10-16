@@ -69,7 +69,8 @@ Terminal 在线，也不读取对方的配置文件。
    整合包上传、远程 Manager 命令，以及先停服后软关机的云电源控制。
    Terminal 内部由 `cli.py` 解析和编排，`deploy.py` 负责部署，`modpacks.py` 负责整合包及
    SSH 停服，`power.py` 只负责实例电源，`remote.py` 负责 SSH/SCP，`tencent.py` 隔离 SDK。
-   电源层支持内置腾讯云和规范化 Webhook，密钥只从各运行时自己的 `.env` 读取。
+   电源层使用一套状态机并通过适配器支持腾讯云和规范化 Webhook；密钥只从各运行时
+   自己的 `.env` 读取，单 Token Webhook 将 Token 放在 `POWER_SECRET_KEY`。
 5. Monitor：先做纯时间线和云电源状态机，再接 QQ；云 API 必须可注入假实现离线测试。
 6. 发布与切换：干净环境安装测试、真机开停演练、备份恢复演练，然后才将 H 设为主工程。
 

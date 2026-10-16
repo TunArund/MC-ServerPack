@@ -1,4 +1,4 @@
-"""Manager cloud-instance power operations."""
+"""Provider-neutral cloud-instance power state machine and API adapters."""
 
 from __future__ import annotations
 
@@ -28,32 +28,24 @@ class InstanceStatus:
     public_ip: str = ""
 
 
-class TencentPower:
+PowerCall = Callable[[str], InstanceStatus | None]
+WebhookCall = Callable[[str, dict], dict]
+
+
+class Power:
+    """Shared start/stop/status behavior independent of the cloud API."""
+
     def __init__(
-        self, target: PowerTarget, api_call: ApiCall, *,
-        sleeper: Callable[[float], None] = time.sleep,
+        self, api_call: PowerCall, *, sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.target = target
         self.api_call = api_call
         self.sleeper = sleeper
 
-    def api(self, action: str, payload: dict) -> dict:
-        try:
-            return self.api_call("cvm", action, payload)
-        except (PowerError, TencentApiError):
-            raise
-        except Exception as exc:
-            raise PowerError(f"cvm.{action} 失败：{exc}") from exc
-
     def status(self) -> InstanceStatus:
-        reply = self.api("DescribeInstances", {"InstanceIds": [self.target.instance_id]})
-        instances = reply.get("InstanceSet") or []
-        if len(instances) != 1 or instances[0].get("InstanceId") != self.target.instance_id:
-            raise PowerError("DescribeInstances 未返回唯一目标实例")
-        state = instances[0].get("InstanceState")
-        if not isinstance(state, str) or not state:
-            raise PowerError("DescribeInstances 缺少实例状态")
-        return InstanceStatus(state, (instances[0].get("PublicIpAddresses") or [""])[0])
+        result = self.api_call("status")
+        if not isinstance(result, InstanceStatus):
+            raise PowerError("电源 API status 未返回实例状态")
+        return result
 
     def wait(self, expected: str, seconds: int) -> InstanceStatus:
         deadline = time.monotonic() + seconds
@@ -68,7 +60,7 @@ class TencentPower:
     def start(self) -> InstanceStatus:
         current = self.status()
         if current.state == "STOPPED":
-            self.api("StartInstances", {"InstanceIds": [self.target.instance_id]})
+            self.api_call("start")
         elif current.state not in ("RUNNING", "STARTING"):
             raise PowerError(f"实例处于 {current.state}，不能开机")
         return self.wait("RUNNING", 180)
@@ -78,42 +70,57 @@ class TencentPower:
         if current.state == "STOPPED":
             return current
         if current.state == "RUNNING":
-            self.api("StopInstances", {
-                "InstanceIds": [self.target.instance_id],
-                "StopType": "SOFT", "StoppedMode": "STOP_CHARGING",
-            })
+            self.api_call("stop")
         elif current.state != "STOPPING":
             raise PowerError(f"实例处于 {current.state}，不能关机")
         return self.wait("STOPPED", 360)
 
 
-WebhookCall = Callable[[str, dict], dict]
+def tencent_adapter(target: PowerTarget, api_call: ApiCall) -> PowerCall:
+    def call(action: str) -> InstanceStatus | None:
+        actions = {
+            "status": ("DescribeInstances", {"InstanceIds": [target.instance_id]}),
+            "start": ("StartInstances", {"InstanceIds": [target.instance_id]}),
+            "stop": ("StopInstances", {
+                "InstanceIds": [target.instance_id],
+                "StopType": "SOFT", "StoppedMode": "STOP_CHARGING",
+            }),
+        }
+        api_action, payload = actions[action]
+        try:
+            reply = api_call("cvm", api_action, payload)
+        except (PowerError, TencentApiError):
+            raise
+        except Exception as exc:
+            raise PowerError(f"cvm.{api_action} 失败：{exc}") from exc
+        if action != "status":
+            return None
+        instances = reply.get("InstanceSet") or []
+        if len(instances) != 1 or instances[0].get("InstanceId") != target.instance_id:
+            raise PowerError("DescribeInstances 未返回唯一目标实例")
+        state = instances[0].get("InstanceState")
+        if not isinstance(state, str) or not state:
+            raise PowerError("DescribeInstances 缺少实例状态")
+        return InstanceStatus(state, (instances[0].get("PublicIpAddresses") or [""])[0])
+
+    return call
 
 
-class WebhookPower:
-    """Provider-neutral HTTP power API with a normalized JSON contract."""
+def webhook_adapter(
+    target: PowerTarget, url: str, secret_key: str, *,
+    api_call: WebhookCall | None = None,
+) -> PowerCall:
+    if not url:
+        raise PowerError("power-api.url 未配置")
+    if not secret_key:
+        raise PowerError("Webhook 需要 POWER_SECRET_KEY")
 
-    def __init__(
-        self, target: PowerTarget, url: str, token: str, *,
-        api_call: WebhookCall | None = None,
-        sleeper: Callable[[float], None] = time.sleep,
-    ) -> None:
-        if not url:
-            raise PowerError("power-api.url 未配置")
-        if not token:
-            raise PowerError("缺少 POWER_API_TOKEN")
-        self.target = target
-        self.url = url
-        self.token = token
-        self.api_call = api_call or self._http
-        self.sleeper = sleeper
-
-    def _http(self, action: str, payload: dict) -> dict:
+    def http(action: str, payload: dict) -> dict:
         request = Request(
-            self.url,
+            url,
             data=json.dumps(payload).encode(),
             headers={
-                "Authorization": f"Bearer {self.token}",
+                "Authorization": f"Bearer {secret_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
@@ -137,21 +144,22 @@ class WebhookPower:
             raise PowerError(f"power-api {action} 返回值必须是对象")
         return result
 
-    def api(self, action: str) -> dict:
+    raw_call = api_call or http
+
+    def call(action: str) -> InstanceStatus | None:
         payload = {
             "action": action,
-            "instance-id": self.target.instance_id,
-            "instance-region": self.target.instance_region,
+            "instance-id": target.instance_id,
+            "instance-region": target.instance_region,
         }
         try:
-            return self.api_call(action, payload)
+            reply = raw_call(action, payload)
         except PowerError:
             raise
         except Exception as exc:
             raise PowerError(f"power-api {action} 失败：{exc}") from exc
-
-    def status(self) -> InstanceStatus:
-        reply = self.api("status")
+        if action != "status":
+            return None
         state = reply.get("state")
         if not isinstance(state, str) or not state:
             raise PowerError("power-api status 缺少 state")
@@ -160,30 +168,4 @@ class WebhookPower:
             raise PowerError("power-api status 的 public-ip 必须是字符串")
         return InstanceStatus(state.upper(), public_ip)
 
-    def wait(self, expected: str, seconds: int) -> InstanceStatus:
-        deadline = time.monotonic() + seconds
-        while True:
-            current = self.status()
-            if current.state == expected:
-                return current
-            if time.monotonic() >= deadline:
-                raise PowerError(f"等待 {expected} 超时；当前为 {current.state}")
-            self.sleeper(min(5, max(0, deadline - time.monotonic())))
-
-    def start(self) -> InstanceStatus:
-        current = self.status()
-        if current.state == "STOPPED":
-            self.api("start")
-        elif current.state not in ("RUNNING", "STARTING"):
-            raise PowerError(f"实例处于 {current.state}，不能开机")
-        return self.wait("RUNNING", 180)
-
-    def stop(self, current: InstanceStatus | None = None) -> InstanceStatus:
-        current = current or self.status()
-        if current.state == "STOPPED":
-            return current
-        if current.state == "RUNNING":
-            self.api("stop")
-        elif current.state != "STOPPING":
-            raise PowerError(f"实例处于 {current.state}，不能关机")
-        return self.wait("STOPPED", 360)
+    return call

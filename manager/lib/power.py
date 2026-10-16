@@ -1,4 +1,4 @@
-"""Idempotent Tencent Cloud power-off operation for the Manager host."""
+"""Provider-neutral power-off state machine and Manager-side API adapters."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ class PowerError(RuntimeError):
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+PowerCall = Callable[[str], str | None]
+WebhookCall = Callable[[str, dict], dict]
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -38,40 +40,56 @@ def load_env(path: Path) -> dict[str, str]:
     return values
 
 
-class TencentPower:
-    def __init__(
-        self, settings: ManagerLimits, manager_root: Path = MANAGER_ROOT,
-        runner: Runner = subprocess.run, executable: str | None = None,
-    ) -> None:
-        if not settings.poweroff_enabled or not settings.power_region or not settings.power_instance_id:
-            raise PowerError("云关机未启用或配置不完整")
-        self.region = settings.power_region
-        self.instance_id = settings.power_instance_id
-        self.manager_root = manager_root
-        self.runner = runner
-        bundled = manager_root / ".venv/bin/tccli"
-        self.executable = executable or (str(bundled) if bundled.is_file() else shutil.which("tccli"))
-        if not self.executable:
-            raise PowerError("缺少 tccli；请安装 manager/requirements.txt")
-        secrets = load_env(manager_root / ".env")
-        secret_id = os.environ.get("POWER_SECRET_ID", secrets.get("POWER_SECRET_ID", "")).strip()
-        secret_key = os.environ.get("POWER_SECRET_KEY", secrets.get("POWER_SECRET_KEY", "")).strip()
-        if not secret_id or not secret_key:
-            raise PowerError("缺少 POWER_SECRET_ID/POWER_SECRET_KEY")
-        self.environment = os.environ.copy()
-        self.environment.update({
-            "TENCENTCLOUD_SECRET_ID": secret_id,
-            "TENCENTCLOUD_SECRET_KEY": secret_key,
-        })
+class Power:
+    """Shared idempotent power-off behavior independent of the provider."""
 
-    def api(self, action: str, *arguments: str) -> dict:
+    def __init__(self, api_call: PowerCall) -> None:
+        self.api_call = api_call
+
+    def state(self) -> str:
+        state = self.api_call("status")
+        if not isinstance(state, str) or not state:
+            raise PowerError("电源 API status 未返回实例状态")
+        return state.upper()
+
+    def stop(self) -> None:
+        state = self.state()
+        if state in ("STOPPED", "STOPPING"):
+            return
+        if state != "RUNNING":
+            raise PowerError(f"实例处于 {state}，不能提交关机")
+        self.api_call("stop")
+
+
+def tencent_adapter(
+    settings: ManagerLimits, manager_root: Path = MANAGER_ROOT,
+    runner: Runner = subprocess.run, executable: str | None = None,
+) -> PowerCall:
+    if not settings.poweroff_enabled or not settings.power_region or not settings.power_instance_id:
+        raise PowerError("云关机未启用或配置不完整")
+    bundled = manager_root / ".venv/bin/tccli"
+    command_path = executable or (str(bundled) if bundled.is_file() else shutil.which("tccli"))
+    if not command_path:
+        raise PowerError("缺少 tccli；请安装 manager/requirements.txt")
+    values = load_env(manager_root / ".env")
+    secret_id = os.environ.get("POWER_SECRET_ID", values.get("POWER_SECRET_ID", "")).strip()
+    secret_key = os.environ.get("POWER_SECRET_KEY", values.get("POWER_SECRET_KEY", "")).strip()
+    if not secret_id or not secret_key:
+        raise PowerError("缺少 POWER_SECRET_ID/POWER_SECRET_KEY")
+    environment = os.environ.copy()
+    environment.update({
+        "TENCENTCLOUD_SECRET_ID": secret_id,
+        "TENCENTCLOUD_SECRET_KEY": secret_key,
+    })
+
+    def api(action: str, *arguments: str) -> dict:
         command = [
-            self.executable, "cvm", action, *arguments,
-            "--region", self.region, "--output", "json",
+            command_path, "cvm", action, *arguments,
+            "--region", settings.power_region, "--output", "json",
         ]
         try:
-            result = self.runner(
-                command, cwd=self.manager_root, env=self.environment, text=True,
+            result = runner(
+                command, cwd=manager_root, env=environment, text=True,
                 capture_output=True, timeout=60, check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -86,59 +104,51 @@ class TencentPower:
             raise PowerError(f"{action} 返回错误：{response['Error']}")
         return response
 
-    def state(self) -> str:
-        response = self.api("DescribeInstances", "--InstanceIds", json.dumps([self.instance_id]))
-        instances = response.get("InstanceSet") or []
-        if len(instances) != 1 or instances[0].get("InstanceId") != self.instance_id:
-            raise PowerError("DescribeInstances 未返回唯一目标实例")
-        state = instances[0].get("InstanceState")
-        if not isinstance(state, str) or not state:
-            raise PowerError("DescribeInstances 缺少实例状态")
-        return state
-
-    def stop(self) -> None:
-        state = self.state()
-        if state in ("STOPPED", "STOPPING"):
-            return
-        if state != "RUNNING":
-            raise PowerError(f"实例处于 {state}，不能提交关机")
-        self.api(
-            "StopInstances", "--InstanceIds", json.dumps([self.instance_id]),
+    def call(action: str) -> str | None:
+        if action == "status":
+            response = api(
+                "DescribeInstances", "--InstanceIds",
+                json.dumps([settings.power_instance_id]),
+            )
+            instances = response.get("InstanceSet") or []
+            if len(instances) != 1 or instances[0].get("InstanceId") != settings.power_instance_id:
+                raise PowerError("DescribeInstances 未返回唯一目标实例")
+            state = instances[0].get("InstanceState")
+            if not isinstance(state, str) or not state:
+                raise PowerError("DescribeInstances 缺少实例状态")
+            return state
+        api(
+            "StopInstances", "--InstanceIds", json.dumps([settings.power_instance_id]),
             "--StopType", "SOFT", "--StoppedMode", "STOP_CHARGING",
         )
+        return None
+
+    return call
 
 
-WebhookCall = Callable[[str, dict], dict]
+def webhook_adapter(
+    settings: ManagerLimits, manager_root: Path = MANAGER_ROOT, *,
+    api_call: WebhookCall | None = None,
+) -> PowerCall:
+    if (
+        not settings.poweroff_enabled
+        or settings.power_provider != "webhook"
+        or not settings.power_url
+        or not settings.power_region
+        or not settings.power_instance_id
+    ):
+        raise PowerError("Webhook 云关机未启用或配置不完整")
+    values = load_env(manager_root / ".env")
+    secret_key = os.environ.get("POWER_SECRET_KEY", values.get("POWER_SECRET_KEY", "")).strip()
+    if not secret_key:
+        raise PowerError("Webhook 需要 POWER_SECRET_KEY")
 
-
-class WebhookPower:
-    def __init__(
-        self, settings: ManagerLimits, manager_root: Path = MANAGER_ROOT, *,
-        api_call: WebhookCall | None = None,
-    ) -> None:
-        if (
-            not settings.poweroff_enabled
-            or settings.power_provider != "webhook"
-            or not settings.power_url
-            or not settings.power_region
-            or not settings.power_instance_id
-        ):
-            raise PowerError("Webhook 云关机未启用或配置不完整")
-        values = load_env(manager_root / ".env")
-        self.token = os.environ.get("POWER_API_TOKEN", values.get("POWER_API_TOKEN", "")).strip()
-        if not self.token:
-            raise PowerError("缺少 POWER_API_TOKEN")
-        self.url = settings.power_url
-        self.region = settings.power_region
-        self.instance_id = settings.power_instance_id
-        self.api_call = api_call or self._http
-
-    def _http(self, action: str, payload: dict) -> dict:
+    def http(action: str, payload: dict) -> dict:
         request = Request(
-            self.url,
+            settings.power_url,
             data=json.dumps(payload).encode(),
             headers={
-                "Authorization": f"Bearer {self.token}",
+                "Authorization": f"Bearer {secret_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
@@ -162,39 +172,33 @@ class WebhookPower:
             raise PowerError(f"power-api {action} 返回值必须是对象")
         return reply
 
-    def api(self, action: str) -> dict:
+    raw_call = api_call or http
+
+    def call(action: str) -> str | None:
         payload = {
             "action": action,
-            "instance-id": self.instance_id,
-            "instance-region": self.region,
+            "instance-id": settings.power_instance_id,
+            "instance-region": settings.power_region,
         }
         try:
-            return self.api_call(action, payload)
+            reply = raw_call(action, payload)
         except PowerError:
             raise
         except Exception as exc:
             raise PowerError(f"power-api {action} 失败：{exc}") from exc
-
-    def state(self) -> str:
-        state = self.api("status").get("state")
+        if action != "status":
+            return None
+        state = reply.get("state")
         if not isinstance(state, str) or not state:
             raise PowerError("power-api status 缺少 state")
-        return state.upper()
+        return state
 
-    def stop(self) -> None:
-        state = self.state()
-        if state in ("STOPPED", "STOPPING"):
-            return
-        if state != "RUNNING":
-            raise PowerError(f"实例处于 {state}，不能提交关机")
-        self.api("stop")
+    return call
 
 
-def create_power(
-    settings: ManagerLimits, manager_root: Path = MANAGER_ROOT,
-):
+def create_power(settings: ManagerLimits, manager_root: Path = MANAGER_ROOT) -> Power:
     if settings.power_provider == "tencent":
-        return TencentPower(settings, manager_root)
+        return Power(tencent_adapter(settings, manager_root))
     if settings.power_provider == "webhook":
-        return WebhookPower(settings, manager_root)
+        return Power(webhook_adapter(settings, manager_root))
     raise PowerError(f"不支持的 power-api provider：{settings.power_provider}")

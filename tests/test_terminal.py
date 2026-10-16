@@ -13,7 +13,10 @@ from lib.cli import CliServices, dispatch
 from lib.config import load as load_config
 from lib.deploy import DeploymentService
 from lib.modpacks import ModpackError, ModpackService, validate_pack_id
-from lib.power import InstanceStatus, PowerError, PowerTarget, TencentPower, WebhookPower
+from lib.power import (
+    InstanceStatus, Power, PowerError, PowerTarget, tencent_adapter,
+    webhook_adapter,
+)
 from lib.remote import CommandError, archive_tree, cleanup_archive, shell_join
 
 
@@ -148,7 +151,9 @@ class PowerTests(unittest.TestCase):
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(states)}]}
             return {}
 
-        result = TencentPower(self.target(), api, sleeper=lambda _: None).start()
+        result = Power(
+            tencent_adapter(self.target(), api), sleeper=lambda _: None,
+        ).start()
         self.assertEqual(result.state, "RUNNING")
         self.assertEqual(actions, ["DescribeInstances", "StartInstances", "DescribeInstances"])
 
@@ -162,7 +167,7 @@ class PowerTests(unittest.TestCase):
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(descriptions)}]}
             return {}
 
-        power = TencentPower(self.target(), api, sleeper=lambda _: None)
+        power = Power(tencent_adapter(self.target(), api), sleeper=lambda _: None)
         current = power.status()
         result = power.stop(current)
         self.assertEqual(result.state, "STOPPED")
@@ -178,7 +183,7 @@ class PowerTests(unittest.TestCase):
             return {}
 
         with self.assertRaises(PowerError):
-            TencentPower(self.target(), api).stop()
+            Power(tencent_adapter(self.target(), api)).stop()
         self.assertNotIn("StopInstances", actions)
 
     def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
@@ -195,10 +200,10 @@ class PowerTests(unittest.TestCase):
             calls.append((action, payload))
             return next(replies)
 
-        result = WebhookPower(
+        result = Power(webhook_adapter(
             PowerTarget("manager", "local"), "https://power.example/api", "token",
-            api_call=api, sleeper=lambda _: None,
-        ).start()
+            api_call=api,
+        ), sleeper=lambda _: None).start()
         self.assertEqual(result, InstanceStatus("RUNNING", "203.0.113.2"))
         self.assertEqual([action for action, _ in calls], ["status", "start", "status"])
         self.assertEqual(calls[0][1], {
@@ -256,8 +261,8 @@ class DeploymentTests(unittest.TestCase):
             "instance-region": "local", "url": "https://power.example/api",
         }
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
-        (self.root / ".env").write_text("POWER_API_TOKEN=secret\n", encoding="utf-8")
-        self.assertIsInstance(CliServices(self.config).power(), WebhookPower)
+        (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
+        self.assertIsInstance(CliServices(self.config).power(), Power)
 
     def test_manager_deploy_selects_webhook_secret(self) -> None:
         document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
@@ -270,9 +275,12 @@ class DeploymentTests(unittest.TestCase):
         })
         document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
-        (self.root / ".env").write_text("POWER_API_TOKEN=secret\n", encoding="utf-8")
+        (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
         service = DeploymentService(self.config, transport=FakeTransport(self.archive))
-        self.assertEqual(service._manager_env(), "POWER_API_TOKEN=secret\n")
+        self.assertEqual(
+            service._manager_env(),
+            "POWER_SECRET_ID=\nPOWER_SECRET_KEY=secret\n",
+        )
 
     def test_shell_join_quotes_untrusted_console_text(self) -> None:
         self.assertEqual(shell_join(["console", "demo", "say $(id)"]), "console demo 'say $(id)'")

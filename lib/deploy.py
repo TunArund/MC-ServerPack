@@ -138,13 +138,14 @@ class DeploymentService:
         if not power:
             raise DeployError("Manager 自动关机需要 power-api")
         values = load_env(self.env_path)
-        keys = (
+        required = (
             ("POWER_SECRET_ID", "POWER_SECRET_KEY")
-            if power.provider == "tencent" else ("POWER_API_TOKEN",)
+            if power.provider == "tencent" else ("POWER_SECRET_KEY",)
         )
-        if any(not values.get(key) for key in keys):
-            raise DeployError(f"Manager 自动关机需要 {'/'.join(keys)}")
-        return "".join(f"{key}={values[key]}\n" for key in keys)
+        if any(not values.get(key) for key in required):
+            raise DeployError(f"Manager 自动关机需要 {'/'.join(required)}")
+        keys = ("POWER_SECRET_ID", "POWER_SECRET_KEY")
+        return "".join(f"{key}={values.get(key, '')}\n" for key in keys)
 
     def deploy_manager(self) -> None:
         endpoint = self.config.manager.endpoint
@@ -184,11 +185,11 @@ class DeploymentService:
         power = self.config.monitor.power_api
         power_keys = (
             ("POWER_SECRET_ID", "POWER_SECRET_KEY")
-            if power and power.provider == "tencent" else ("POWER_API_TOKEN",)
+            if power and power.provider == "tencent" else ("POWER_SECRET_KEY",)
         )
         if any(not values.get(key) for key in power_keys):
             raise DeployError(f"Monitor 电源 API 需要 {'/'.join(power_keys)}")
-        keys = (*power_keys, "QQBOT_APP_ID", "QQBOT_APP_KEY")
+        keys = ("POWER_SECRET_ID", "POWER_SECRET_KEY", "QQBOT_APP_ID", "QQBOT_APP_KEY")
         content = "".join(f"{key}={values.get(key, '')}\n" for key in keys)
         self._upload_text(content, f"{destination}:{endpoint.directory}/.env", 0o600)
         self.transport.ssh(destination, ["chmod", "600", endpoint.directory + "/.env"])
