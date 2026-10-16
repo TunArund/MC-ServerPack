@@ -9,10 +9,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from ..config import ScheduleConfig
-
-
 ZONE = ZoneInfo("Asia/Shanghai")
+
+
+@dataclass(frozen=True)
+class PowerSchedule:
+    auto_start: bool
+    start_at: str | None
+    auto_stop: bool
+    stop_at: str | None
 
 
 @dataclass(frozen=True)
@@ -27,7 +32,7 @@ def _at(local: datetime, clock: str) -> datetime:
     return local.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def latest_event(now: datetime, schedule: ScheduleConfig) -> PowerEvent | None:
+def latest_event(now: datetime, schedule: PowerSchedule) -> PowerEvent | None:
     """Return the most recent enabled event, including yesterday for catch-up."""
     local = now.astimezone(ZONE)
     candidates: list[PowerEvent] = []

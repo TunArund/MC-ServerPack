@@ -46,6 +46,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(modules, ["__init__.py", "app.py", "config.py"])
         self.assertFalse((ROOT / "monitor/src/state.py").exists())
 
+    def test_monitor_domain_does_not_import_global_config(self) -> None:
+        for path in (ROOT / "monitor/src/monitor").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    self.assertLess(node.level, 2, f"{path}: global config must be injected")
+
     def test_provider_implementations_do_not_import_power_state_machine(self) -> None:
         for directory in (
             ROOT / "lib/providers", ROOT / "manager/lib/providers",

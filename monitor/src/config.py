@@ -35,9 +35,22 @@ class ScheduleConfig:
 
 
 @dataclass(frozen=True)
+class QQTargetConfig:
+    kind: str
+    identifier: str
+
+
+@dataclass(frozen=True)
+class QQBotConfig:
+    targets: tuple[QQTargetConfig, ...]
+    admins: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class MonitorConfig:
     power_api: PowerApiConfig
     schedule: ScheduleConfig
+    qqbot: QQBotConfig = QQBotConfig((), ())
 
 
 def _mapping(value: object, field: str) -> dict:
@@ -94,6 +107,29 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     stop_at = _optional_clock(manager, auto_stop, "stop-at", "manager.stop-at")
     if auto_start and auto_stop and start_at == stop_at:
         raise ConfigError("manager.start-at 与 manager.stop-at 不能相同")
+    qqbot_raw = root.get("qqbot")
+    qqbot = {} if qqbot_raw is None else _mapping(qqbot_raw, "qqbot")
+    targets_raw = qqbot.get("targets", [])
+    admins_raw = qqbot.get("admins", [])
+    if not isinstance(targets_raw, list) or not isinstance(admins_raw, list):
+        raise ConfigError("qqbot.targets/admins 必须是数组")
+    targets: list[QQTargetConfig] = []
+    for index, raw in enumerate(targets_raw):
+        target = _mapping(raw, f"qqbot.targets[{index}]")
+        kind = target.get("type")
+        if kind not in ("user", "group"):
+            raise ConfigError(f"qqbot.targets[{index}].type 只能是 user 或 group")
+        targets.append(QQTargetConfig(
+            kind, _text(target.get("id"), f"qqbot.targets[{index}].id"),
+        ))
+    if len(set(targets)) != len(targets):
+        raise ConfigError("qqbot.targets 不能重复")
+    admins = tuple(
+        _text(value, f"qqbot.admins[{index}]")
+        for index, value in enumerate(admins_raw)
+    )
+    if len(set(admins)) != len(admins):
+        raise ConfigError("qqbot.admins 不能重复")
     return MonitorConfig(
         PowerApiConfig(
             provider,
@@ -101,6 +137,7 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
             _text(power.get("instance-region"), "manager.power-api.instance-region"),
         ),
         ScheduleConfig(auto_start, start_at, auto_stop, stop_at),
+        QQBotConfig(tuple(targets), admins),
     )
 
 
@@ -109,3 +146,13 @@ def secrets() -> dict[str, str]:
         "POWER_SECRET_ID": os.environ.get("POWER_SECRET_ID", "").strip(),
         "POWER_SECRET_KEY": os.environ.get("POWER_SECRET_KEY", "").strip(),
     }
+
+
+def qq_credentials() -> tuple[str, str] | None:
+    app_id = os.environ.get("QQBOT_APP_ID", "").strip()
+    app_key = os.environ.get("QQBOT_APP_KEY", "").strip()
+    if not app_id and not app_key:
+        return None
+    if not app_id or not app_key:
+        raise ConfigError("QQBOT_APP_ID 与 QQBOT_APP_KEY 必须同时配置")
+    return app_id, app_key

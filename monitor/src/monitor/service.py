@@ -8,9 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from ..config import MonitorConfig
 from .power import InstanceStatus, PowerError
-from .schedule import ZONE, PowerEvent, StateStore, latest_event
+from .schedule import ZONE, PowerEvent, PowerSchedule, StateStore, latest_event
 
 
 LOGGER = logging.getLogger(__name__)
@@ -26,10 +25,10 @@ class TickReport:
 
 class MonitorService:
     def __init__(
-        self, config: MonitorConfig, power, state: StateStore,
+        self, schedule: PowerSchedule, power, state: StateStore,
         *, heartbeat: Path | None = None,
     ) -> None:
-        self.config = config
+        self.schedule = schedule
         self.power = power
         self.state = state
         self.heartbeat = heartbeat
@@ -37,7 +36,7 @@ class MonitorService:
 
     async def run_once(self, now: datetime | None = None) -> TickReport:
         current_time = datetime.now(ZONE) if now is None else now.astimezone(ZONE)
-        event = latest_event(current_time, self.config.schedule)
+        event = latest_event(current_time, self.schedule)
         async with self.operation_lock:
             status = self.power.status()
             if event is None or self.state.contains(event.key):
