@@ -13,9 +13,20 @@ manager:
   stop-at: '23:05'
 qqbot:
   targets:
-  - type: user
+  - name: owner
+    type: user
     id: aaa
-  - type: group
+  - name: players
+    type: group
     id: bbb
   admins:
   - aaa
+  alerts:
+    check-failed:
+    - owner
+    state-mismatch:
+    - owner
+    - players
+    recovered:
+    - owner
+    - players

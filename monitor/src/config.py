@@ -13,6 +13,8 @@ import yaml
 CONFIG_FILE = Path(os.environ.get("MCSP_CONFIG", "/app/config.yml"))
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+TARGET_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
+ALERT_KINDS = ("check-failed", "state-mismatch", "recovered")
 
 
 class ConfigError(RuntimeError):
@@ -36,21 +38,29 @@ class ScheduleConfig:
 
 @dataclass(frozen=True)
 class QQTargetConfig:
+    name: str
     kind: str
     identifier: str
+
+
+@dataclass(frozen=True)
+class QQAlertConfig:
+    kind: str
+    targets: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class QQBotConfig:
     targets: tuple[QQTargetConfig, ...]
     admins: tuple[str, ...]
+    alerts: tuple[QQAlertConfig, ...]
 
 
 @dataclass(frozen=True)
 class MonitorConfig:
     power_api: PowerApiConfig
     schedule: ScheduleConfig
-    qqbot: QQBotConfig = QQBotConfig((), ())
+    qqbot: QQBotConfig = QQBotConfig((), (), ())
 
 
 def _mapping(value: object, field: str) -> dict:
@@ -111,25 +121,59 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     qqbot = {} if qqbot_raw is None else _mapping(qqbot_raw, "qqbot")
     targets_raw = qqbot.get("targets", [])
     admins_raw = qqbot.get("admins", [])
-    if not isinstance(targets_raw, list) or not isinstance(admins_raw, list):
-        raise ConfigError("qqbot.targets/admins 必须是数组")
+    alerts_raw = qqbot.get("alerts", {})
+    if (
+        not isinstance(targets_raw, list)
+        or not isinstance(admins_raw, list)
+        or not isinstance(alerts_raw, dict)
+    ):
+        raise ConfigError("qqbot.targets/admins 必须是数组，alerts 必须是对象")
     targets: list[QQTargetConfig] = []
     for index, raw in enumerate(targets_raw):
         target = _mapping(raw, f"qqbot.targets[{index}]")
+        name = _text(target.get("name"), f"qqbot.targets[{index}].name")
+        if not TARGET_NAME_RE.fullmatch(name):
+            raise ConfigError(
+                f"qqbot.targets[{index}].name 仅允许大小写字母、数字和减号"
+            )
         kind = target.get("type")
         if kind not in ("user", "group"):
             raise ConfigError(f"qqbot.targets[{index}].type 只能是 user 或 group")
         targets.append(QQTargetConfig(
-            kind, _text(target.get("id"), f"qqbot.targets[{index}].id"),
+            name, kind, _text(target.get("id"), f"qqbot.targets[{index}].id"),
         ))
-    if len(set(targets)) != len(targets):
-        raise ConfigError("qqbot.targets 不能重复")
+    names = {target.name for target in targets}
+    if len(names) != len(targets):
+        raise ConfigError("qqbot.targets.name 不能重复")
+    identities = {(target.kind, target.identifier) for target in targets}
+    if len(identities) != len(targets):
+        raise ConfigError("qqbot.targets 的 type/id 不能重复")
     admins = tuple(
         _text(value, f"qqbot.admins[{index}]")
         for index, value in enumerate(admins_raw)
     )
     if len(set(admins)) != len(admins):
         raise ConfigError("qqbot.admins 不能重复")
+    unknown_kinds = set(alerts_raw) - set(ALERT_KINDS)
+    if unknown_kinds:
+        raise ConfigError(f"qqbot.alerts 包含未知告警类型：{sorted(unknown_kinds)[0]}")
+    alerts: list[QQAlertConfig] = []
+    for kind in ALERT_KINDS:
+        route = alerts_raw.get(kind, [])
+        if not isinstance(route, list):
+            raise ConfigError(f"qqbot.alerts.{kind} 必须是目标名称数组")
+        route_names = tuple(
+            _text(value, f"qqbot.alerts.{kind}[{index}]")
+            for index, value in enumerate(route)
+        )
+        if len(set(route_names)) != len(route_names):
+            raise ConfigError(f"qqbot.alerts.{kind} 不能包含重复目标")
+        unknown_targets = set(route_names) - names
+        if unknown_targets:
+            raise ConfigError(
+                f"qqbot.alerts.{kind} 引用了未知目标：{sorted(unknown_targets)[0]}"
+            )
+        alerts.append(QQAlertConfig(kind, route_names))
     return MonitorConfig(
         PowerApiConfig(
             provider,
@@ -137,7 +181,7 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
             _text(power.get("instance-region"), "manager.power-api.instance-region"),
         ),
         ScheduleConfig(auto_start, start_at, auto_stop, stop_at),
-        QQBotConfig(tuple(targets), admins),
+        QQBotConfig(tuple(targets), admins, tuple(alerts)),
     )
 
 

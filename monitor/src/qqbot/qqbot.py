@@ -66,7 +66,7 @@ class QQBot:
         self.alert_window = alert_window
         self.seen: OrderedDict[str, None] = OrderedDict()
         self.pending_stop: dict[tuple[str, str, str], float] = {}
-        self.alerts: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
+        self.alerts: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=1000)
 
     async def run(self, stopped: asyncio.Event) -> None:
         network = asyncio.create_task(self.network.serve(self.handle, stopped))
@@ -85,13 +85,14 @@ class QQBot:
             alerts.cancel()
             await asyncio.gather(network, alerts, return_exceptions=True)
 
-    async def alert(self, problem: str | None) -> None:
-        """Queue a problem, or a recovery notification when problem is None."""
-        content = problem if problem is not None else message.render("recovered")
+    async def alert(self, kind: str, content: str) -> None:
+        """Queue a typed alert for its configured targets."""
+        if kind == "recovered":
+            content = message.render("recovered")
         try:
-            self.alerts.put_nowait(content)
+            self.alerts.put_nowait((kind, content))
         except asyncio.QueueFull:
-            LOGGER.error("QQ 告警队列已满，丢弃告警：%s", content)
+            LOGGER.error("QQ 告警队列已满，丢弃 %s 告警：%s", kind, content)
 
     async def serve_alerts(self) -> None:
         while True:
@@ -101,15 +102,22 @@ class QQBot:
         first = await self.alerts.get()
         if self.alert_window:
             await asyncio.sleep(self.alert_window)
-        contents = [first]
+        alerts = [first]
         while not self.alerts.empty():
-            contents.append(self.alerts.get_nowait())
-        lines = []
-        for content, count in Counter(contents).items():
-            suffix = f"（{count} 次）" if count > 1 else ""
-            lines.append(f"- {content}{suffix}")
-        outgoing = Outgoing(message.render("alert", alerts="\n".join(lines)))
-        for target in sorted(self.policy.targets, key=lambda item: (item.kind, item.identifier)):
+            alerts.append(self.alerts.get_nowait())
+        targets = set().union(*(
+            self.policy.alert_targets(kind) for kind, _ in alerts
+        ))
+        for target in sorted(targets, key=lambda item: (item.kind, item.identifier)):
+            contents = [
+                content for kind, content in alerts
+                if target in self.policy.alert_targets(kind)
+            ]
+            lines = []
+            for content, count in Counter(contents).items():
+                suffix = f"（{count} 次）" if count > 1 else ""
+                lines.append(f"- {content}{suffix}")
+            outgoing = Outgoing(message.render("alert", alerts="\n".join(lines)))
             try:
                 await self.network.push(target, outgoing)
             except Exception:

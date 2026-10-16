@@ -20,6 +20,8 @@ TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
 REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+TARGET_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
+ALERT_KINDS = ("check-failed", "state-mismatch", "recovered")
 
 
 class ConfigError(RuntimeError):
@@ -86,8 +88,15 @@ class MonitorSchedule:
 
 @dataclass(frozen=True)
 class QQTarget:
+    name: str
     kind: str
     identifier: str
+
+
+@dataclass(frozen=True)
+class QQAlertRoute:
+    kind: str
+    targets: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -98,6 +107,7 @@ class MonitorConfig:
     power_api: PowerApiConfig | None
     targets: tuple[QQTarget, ...]
     admins: tuple[str, ...]
+    alerts: tuple[QQAlertRoute, ...]
 
 
 @dataclass(frozen=True)
@@ -273,19 +283,63 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
     qqbot = _mapping(monitor_raw.get("qqbot"), "monitor.qqbot", optional=True)
     targets_raw = qqbot.get("targets", [])
     admins_raw = qqbot.get("admins", [])
-    if not isinstance(targets_raw, list) or not isinstance(admins_raw, list):
-        raise ConfigError("monitor.qqbot.targets/admins 必须是数组")
+    alerts_raw = qqbot.get("alerts", {})
+    if (
+        not isinstance(targets_raw, list)
+        or not isinstance(admins_raw, list)
+        or not isinstance(alerts_raw, dict)
+    ):
+        raise ConfigError(
+            "monitor.qqbot.targets/admins 必须是数组，alerts 必须是对象"
+        )
     targets: list[QQTarget] = []
     for index, item in enumerate(targets_raw):
         target = _mapping(item, f"monitor.qqbot.targets[{index}]")
+        name = _text(target.get("name"), f"monitor.qqbot.targets[{index}].name")
+        if not TARGET_NAME_RE.fullmatch(name):
+            raise ConfigError(
+                f"monitor.qqbot.targets[{index}].name 仅允许大小写字母、数字和减号"
+            )
         kind = target.get("type")
         if kind not in ("user", "group"):
             raise ConfigError(f"monitor.qqbot.targets[{index}].type 只能是 user 或 group")
-        targets.append(QQTarget(kind, _text(target.get("id"), f"monitor.qqbot.targets[{index}].id")))
+        targets.append(QQTarget(
+            name, kind,
+            _text(target.get("id"), f"monitor.qqbot.targets[{index}].id"),
+        ))
+    names = {target.name for target in targets}
+    if len(names) != len(targets):
+        raise ConfigError("monitor.qqbot.targets.name 不能重复")
+    identities = {(target.kind, target.identifier) for target in targets}
+    if len(identities) != len(targets):
+        raise ConfigError("monitor.qqbot.targets 的 type/id 不能重复")
     admins = tuple(_text(value, f"monitor.qqbot.admins[{index}]") for index, value in enumerate(admins_raw))
+    unknown_kinds = set(alerts_raw) - set(ALERT_KINDS)
+    if unknown_kinds:
+        raise ConfigError(
+            f"monitor.qqbot.alerts 包含未知告警类型：{sorted(unknown_kinds)[0]}"
+        )
+    alerts: list[QQAlertRoute] = []
+    for kind in ALERT_KINDS:
+        route = alerts_raw.get(kind, [])
+        if not isinstance(route, list):
+            raise ConfigError(f"monitor.qqbot.alerts.{kind} 必须是目标名称数组")
+        route_names = tuple(
+            _text(value, f"monitor.qqbot.alerts.{kind}[{index}]")
+            for index, value in enumerate(route)
+        )
+        if len(set(route_names)) != len(route_names):
+            raise ConfigError(f"monitor.qqbot.alerts.{kind} 不能包含重复目标")
+        unknown_targets = set(route_names) - names
+        if unknown_targets:
+            raise ConfigError(
+                f"monitor.qqbot.alerts.{kind} 引用了未知目标："
+                f"{sorted(unknown_targets)[0]}"
+            )
+        alerts.append(QQAlertRoute(kind, route_names))
     monitor = MonitorConfig(
         monitor_enabled, monitor_endpoint, monitor_schedule, monitor_power,
-        tuple(targets), admins,
+        tuple(targets), admins, tuple(alerts),
     )
 
     cos_raw = _mapping(root.get("cos"), "cos", optional=True)

@@ -100,7 +100,14 @@ class QQBotTests(unittest.IsolatedAsyncioTestCase):
     def make_bot(self, *, clock=lambda: 100.0, alert_window: float = 0):
         network = FakeNetwork()
         power = FakePower()
-        policy = TargetPolicy((Target("group", "group-a"),), ("admin-a",))
+        group = Target("group", "group-a")
+        policy = TargetPolicy(
+            (group,), ("admin-a",),
+            {
+                "check-failed": frozenset((group,)),
+                "recovered": frozenset((group,)),
+            },
+        )
         return QQBot(
             network, policy, power, clock=clock, alert_window=alert_window,
         ), network, power
@@ -137,9 +144,9 @@ class QQBotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_alerts_are_aggregated_and_pushed_to_each_target(self) -> None:
         bot, network, _ = self.make_bot()
-        await bot.alert("电源状态异常")
-        await bot.alert("电源状态异常")
-        await bot.alert("API 暂时不可用")
+        await bot.alert("check-failed", "电源状态异常")
+        await bot.alert("check-failed", "电源状态异常")
+        await bot.alert("check-failed", "API 暂时不可用")
         await bot.flush_alerts()
         self.assertEqual(len(network.pushes), 1)
         target, outgoing = network.pushes[0]
@@ -149,9 +156,40 @@ class QQBotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recovery_uses_external_template(self) -> None:
         bot, network, _ = self.make_bot()
-        await bot.alert(None)
+        await bot.alert("recovered", "")
         await bot.flush_alerts()
         self.assertIn("恢复正常", network.pushes[0][1].content)
+
+    async def test_each_alert_kind_uses_only_its_configured_targets(self) -> None:
+        network = FakeNetwork()
+        owner = Target("user", "owner")
+        players = Target("group", "players")
+        policy = TargetPolicy(
+            (owner, players), ("owner",),
+            {
+                "check-failed": frozenset((owner,)),
+                "state-mismatch": frozenset((players,)),
+            },
+        )
+        bot = QQBot(network, policy, FakePower(), alert_window=0)
+        await bot.alert("check-failed", "API 失败")
+        await bot.alert("state-mismatch", "状态不符")
+        await bot.flush_alerts()
+        sent = {target: outgoing.content for target, outgoing in network.pushes}
+        self.assertIn("API 失败", sent[owner])
+        self.assertNotIn("状态不符", sent[owner])
+        self.assertIn("状态不符", sent[players])
+        self.assertNotIn("API 失败", sent[players])
+
+    async def test_target_without_alert_route_is_not_notified(self) -> None:
+        network = FakeNetwork()
+        target = Target("group", "players")
+        bot = QQBot(
+            network, TargetPolicy((target,), (), {}), FakePower(), alert_window=0,
+        )
+        await bot.alert("check-failed", "API 失败")
+        await bot.flush_alerts()
+        self.assertEqual(network.pushes, [])
 
 
 if __name__ == "__main__":

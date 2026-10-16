@@ -41,13 +41,20 @@ monitor:
     stop-at: '23:05'   # 关机时间
   qqbot:
     targets:
-    - type: user
+    - name: owner
+      type: user
       id: aaa
     # 只有群主才能邀请机器人进群
-    - type: group
+    - name: players
+      type: group
       id: bbb
     admins:
     - aaa
+    # API/调度执行失败、状态与日程不符、故障恢复
+    alerts:
+      check-failed: [owner]
+      state-mismatch: [owner, players]
+      recovered: [owner, players]
 
 # 可选的对象存储，开启后可配置云端备份（当网盘用）
 cos:

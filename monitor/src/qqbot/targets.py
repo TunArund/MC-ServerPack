@@ -24,15 +24,22 @@ class Incoming:
 
 
 class TargetPolicy:
-    def __init__(self, targets: tuple[Target, ...], admins: tuple[str, ...]) -> None:
+    def __init__(
+        self, targets: tuple[Target, ...], admins: tuple[str, ...],
+        alert_routes: dict[str, frozenset[Target]] | None = None,
+    ) -> None:
         self.targets = frozenset(targets)
         self.admins = frozenset(admins)
+        self.alert_routes = alert_routes or {}
 
     def allows(self, incoming: Incoming) -> bool:
         return incoming.target in self.targets
 
     def is_admin(self, incoming: Incoming) -> bool:
         return incoming.sender_id in self.admins
+
+    def alert_targets(self, kind: str) -> frozenset[Target]:
+        return self.alert_routes.get(kind, frozenset())
 
 
 def command_text(content: str) -> str:

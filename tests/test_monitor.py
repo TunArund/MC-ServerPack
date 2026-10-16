@@ -76,12 +76,36 @@ class MonitorConfigTests(unittest.TestCase):
             "auto-start": False,
             "auto-stop": False,
         }, {
-            "targets": [{"type": "group", "id": "group-a"}],
+            "targets": [{"name": "players", "type": "group", "id": "group-a"}],
             "admins": ["user-a"],
+            "alerts": {
+                "check-failed": ["players"],
+                "state-mismatch": [],
+                "recovered": ["players"],
+            },
         }))
+        self.assertEqual(config.qqbot.targets[0].name, "players")
         self.assertEqual(config.qqbot.targets[0].kind, "group")
         self.assertEqual(config.qqbot.targets[0].identifier, "group-a")
         self.assertEqual(config.qqbot.admins, ("user-a",))
+        self.assertEqual(
+            next(route for route in config.qqbot.alerts if route.kind == "check-failed").targets,
+            ("players",),
+        )
+
+    def test_qq_alert_route_must_reference_named_target(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "未知目标"):
+            load(self.write({
+                "power-api": {
+                    "provider": "tencent", "instance-id": "ins-test",
+                    "instance-region": "ap-test",
+                },
+                "auto-start": False,
+                "auto-stop": False,
+            }, {
+                "targets": [{"name": "owner", "type": "user", "id": "user-a"}],
+                "alerts": {"check-failed": ["missing"]},
+            }))
 
     def test_equal_enabled_event_times_are_rejected(self) -> None:
         with self.assertRaisesRegex(ConfigError, "不能相同"):
@@ -164,19 +188,20 @@ class MonitorServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.state.contains("2026-10-16:stop"))
 
     async def test_problem_is_deduplicated_and_recovery_is_reported(self) -> None:
-        alerts: list[str | None] = []
+        alerts: list[tuple[str, str]] = []
 
-        async def alert(problem: str | None) -> None:
-            alerts.append(problem)
+        async def alert(kind: str, content: str) -> None:
+            alerts.append((kind, content))
 
         service = MonitorService(
             self.schedule, FakePower("RUNNING"), self.state, alert=alert,
         )
-        await service._set_problem("API 暂时不可用")
-        await service._set_problem("API 暂时不可用")
+        problem = ("check-failed", "API 暂时不可用")
+        await service._set_problem(problem)
+        await service._set_problem(problem)
         await service._set_problem(None)
         await service._set_problem(None)
-        self.assertEqual(alerts, ["API 暂时不可用", None])
+        self.assertEqual(alerts, [problem, ("recovered", "")])
 
     def test_state_mismatch_is_reported_after_processed_event(self) -> None:
         event = latest_event(datetime(2026, 10, 16, 20, 0, tzinfo=ZONE), self.schedule)
@@ -185,7 +210,9 @@ class MonitorServiceTests(unittest.IsolatedAsyncioTestCase):
             "executed": False,
             "status": InstanceStatus("STOPPED"),
         })()
-        self.assertIn("定时开机", MonitorService._problem(report))
+        kind, content = MonitorService._problem(report)
+        self.assertEqual(kind, "state-mismatch")
+        self.assertIn("定时开机", content)
 
 
 if __name__ == "__main__":

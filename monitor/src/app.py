@@ -53,11 +53,19 @@ async def main() -> None:
     if credentials:
         if not config.qqbot.targets:
             raise ConfigError("启用 QQ Bot 时至少需要一个 qqbot.targets")
+        targets = {
+            item.name: Target(item.kind, item.identifier)
+            for item in config.qqbot.targets
+        }
         bot = QQBot(
             Network(*credentials),
             TargetPolicy(
-                tuple(Target(item.kind, item.identifier) for item in config.qqbot.targets),
+                tuple(targets.values()),
                 config.qqbot.admins,
+                {
+                    route.kind: frozenset(targets[name] for name in route.targets)
+                    for route in config.qqbot.alerts
+                },
             ),
             AsyncPower(power),
         )

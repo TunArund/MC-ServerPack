@@ -15,6 +15,7 @@ from .schedule import ZONE, PowerEvent, PowerSchedule, StateStore, latest_event
 
 LOGGER = logging.getLogger(__name__)
 POLL_SECONDS = 30
+Problem = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -28,14 +29,14 @@ class MonitorService:
     def __init__(
         self, schedule: PowerSchedule, power, state: StateStore,
         *, heartbeat: Path | None = None,
-        alert: Callable[[str | None], Awaitable[None]] | None = None,
+        alert: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self.schedule = schedule
         self.power = power
         self.state = state
         self.heartbeat = heartbeat
         self.alert = alert
-        self.last_problem: str | None = None
+        self.last_problem: Problem | None = None
         self.operation_lock = asyncio.Lock()
 
     async def run_once(self, now: datetime | None = None) -> TickReport:
@@ -72,7 +73,7 @@ class MonitorService:
         self.heartbeat.touch()
 
     @staticmethod
-    def _problem(report: TickReport) -> str | None:
+    def _problem(report: TickReport) -> Problem | None:
         if report.event is None or report.executed:
             return None
         expected = (
@@ -83,16 +84,22 @@ class MonitorService:
         if report.status.state in expected:
             return None
         action = "开机" if report.event.action == "start" else "关机"
-        return f"定时{action}后实例状态异常：{report.status.state}"
+        return (
+            "state-mismatch",
+            f"定时{action}后实例状态异常：{report.status.state}",
+        )
 
-    async def _set_problem(self, problem: str | None) -> None:
+    async def _set_problem(self, problem: Problem | None) -> None:
         if problem == self.last_problem:
             return
         recovered = problem is None and self.last_problem is not None
         self.last_problem = problem
         if self.alert is not None and (problem is not None or recovered):
             try:
-                await self.alert(problem)
+                if problem is None:
+                    await self.alert("recovered", "")
+                else:
+                    await self.alert(*problem)
             except Exception:
                 LOGGER.exception("提交主动告警失败")
 
@@ -107,7 +114,7 @@ class MonitorService:
                     LOGGER.debug("实例状态=%s", report.status.state)
             except Exception as exc:
                 LOGGER.exception("Monitor 检查失败，将在下一周期重试")
-                await self._set_problem(f"Monitor 检查失败：{exc}")
+                await self._set_problem(("check-failed", f"Monitor 检查失败：{exc}"))
             finally:
                 try:
                     self._touch_heartbeat()
