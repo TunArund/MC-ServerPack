@@ -149,10 +149,10 @@ def secrets() -> dict[str, str]:
 
 
 def qq_credentials() -> tuple[str, str] | None:
-    app_id = os.environ.get("QQBOT_APP_ID", "").strip()
-    app_key = os.environ.get("QQBOT_APP_KEY", "").strip()
+    app_id = os.environ.get("QQBOT_SECRET_ID", "").strip()
+    app_key = os.environ.get("QQBOT_SECRET_KEY", "").strip()
     if not app_id and not app_key:
         return None
     if not app_id or not app_key:
-        raise ConfigError("QQBOT_APP_ID 与 QQBOT_APP_KEY 必须同时配置")
+        raise ConfigError("QQBOT_SECRET_ID 与 QQBOT_SECRET_KEY 必须同时配置")
     return app_id, app_key

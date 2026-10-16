@@ -4,11 +4,12 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import yaml
 
-from monitor.src.config import ConfigError, load
+from monitor.src.config import ConfigError, load, qq_credentials
 from monitor.src.monitor.power import InstanceStatus, PowerError
 from monitor.src.monitor.schedule import PowerSchedule, StateStore, latest_event
 from monitor.src.monitor.service import MonitorService
@@ -92,6 +93,18 @@ class MonitorConfigTests(unittest.TestCase):
                 "auto-start": True, "start-at": "20:00",
                 "auto-stop": True, "stop-at": "20:00",
             }))
+
+    def test_qq_credentials_use_existing_secret_names(self) -> None:
+        with patch.dict("os.environ", {
+            "QQBOT_SECRET_ID": "app-id",
+            "QQBOT_SECRET_KEY": "app-key",
+        }, clear=True):
+            self.assertEqual(qq_credentials(), ("app-id", "app-key"))
+
+    def test_partial_qq_credentials_are_rejected(self) -> None:
+        with patch.dict("os.environ", {"QQBOT_SECRET_ID": "app-id"}, clear=True):
+            with self.assertRaisesRegex(ConfigError, "必须同时配置"):
+                qq_credentials()
 
 
 class MonitorScheduleTests(unittest.TestCase):

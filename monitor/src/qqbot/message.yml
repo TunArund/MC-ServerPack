@@ -1,0 +1,16 @@
+menu: |-
+  # MC Server Pack
+
+  云主机状态：**{state}**
+
+  请选择电源操作：
+permission: 只有配置中的管理员可以执行电源操作。
+confirm: 关机将直接请求云主机软关机。请在 60 秒内点击「确认关机」。
+confirm-expired: 没有待确认的关机请求，请先点击「关机」。
+working: 正在{action}，请稍候。
+done: '{action}请求已提交，当前状态：{state}'
+error: '{action}失败：{reason}'
+alert: |-
+  MC Server Pack 告警
+  {alerts}
+recovered: 云主机电源检查已恢复正常。
