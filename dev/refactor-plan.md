@@ -68,10 +68,12 @@ Terminal 在线，也不读取对方的配置文件。
 4. Terminal 部署：已实现环境检查、保留运行数据的源码同步、独立配置/最小密钥分发、
    整合包上传、远程 Manager 命令，以及先停服后软关机的云电源控制。
    Terminal 内部由 `cli.py` 解析和编排，`deploy.py` 负责部署，`modpacks.py` 负责整合包及
-   SSH 停服，`power.py` 只负责实例电源，`remote.py` 负责 SSH/SCP，`tencent.py` 隔离 SDK。
-   Terminal 与 Manager 使用内容完全相同的 `power.py` 状态机，分别由同层 `tencent.py`
-   适配腾讯云、`providers.py` 组装配置和密钥；单 Token Webhook 将 Token 放在
-   `POWER_SECRET_KEY`。边界测试会阻止两份 `power.py` 产生差异。
+   SSH 停服，`power.py` 只负责实例电源状态机，`remote.py` 负责 SSH/SCP。
+   Terminal 与 Manager 使用内容完全相同的 `power.py`。`power.py` 按 ID 从 `providers`发现
+   `<provider>_api.py`，腾讯云 SDK 实现自包含在 `tencent_api.py`，并校验
+   `status/start/stop` 接口；`Power` 持有实例信息和 AK/SK 并在调用时传给适配器，
+   适配器不反向依赖 `power.py`。单 Token 放在 `POWER_SECRET_KEY`。边界测试会阻止
+   两份 `power.py` 产生差异。
 5. Monitor：先做纯时间线和云电源状态机，再接 QQ；云 API 必须可注入假实现离线测试。
 6. 发布与切换：干净环境安装测试、真机开停演练、备份恢复演练，然后才将 H 设为主工程。
 

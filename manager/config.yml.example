@@ -7,7 +7,6 @@ power-api:
   provider: tencent
   instance-id: ins-xxxxyyyy
   instance-region: ap-nanjing
-  url: null
 modpack:
   auto-stop: false
   stop-at: '23:00'

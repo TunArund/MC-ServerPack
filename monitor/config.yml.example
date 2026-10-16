@@ -7,7 +7,6 @@ manager:
     provider: tencent
     instance-id: ins-xxxxyyyy
     instance-region: ap-nanjing
-    url: null
   auto-start: true
   start-at: '19:55'
   auto-stop: true

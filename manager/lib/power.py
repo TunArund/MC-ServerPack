@@ -1,13 +1,20 @@
-"""Provider-neutral cloud-instance power state machine and API adapters."""
+"""Provider-neutral cloud-instance power state machine."""
 
 from __future__ import annotations
 
-import json
+import importlib.util
+import inspect
+import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from pathlib import Path
+from types import ModuleType
+
+
+PROVIDERS_DIR = Path(__file__).resolve().parent / "providers"
+PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 
 
 class PowerError(RuntimeError):
@@ -26,26 +33,76 @@ class InstanceStatus:
     public_ip: str = ""
 
 
-PowerCall = Callable[[str], InstanceStatus | None]
-WebhookCall = Callable[[str, dict], dict]
+def load_adapter(provider: str, *, providers_dir: Path = PROVIDERS_DIR) -> ModuleType:
+    if not PROVIDER_ID_RE.fullmatch(provider):
+        raise PowerError("无效 provider ID；仅允许大小写字母、数字和减号")
+    source = providers_dir / f"{provider}_api.py"
+    if not source.is_file():
+        raise PowerError(f"未找到 provider：{source.name}")
+    module_name = f"{__package__}.providers._loaded_{provider.replace('-', '_')}_api"
+    spec = importlib.util.spec_from_file_location(module_name, source)
+    if spec is None or spec.loader is None:
+        raise PowerError(f"provider 无法加载：{source.name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        sys.modules.pop(module_name, None)
+        raise PowerError(f"provider 加载失败：{source.name}：{exc}") from exc
+    for action in ("status", "start", "stop"):
+        function = getattr(module, action, None)
+        if not callable(function):
+            raise PowerError(f"provider {source.name} 未提供 {action}")
+        try:
+            signature = inspect.signature(function)
+            signature.bind("instance", "region", "id", "key")
+        except (TypeError, ValueError) as exc:
+            raise PowerError(f"provider {source.name} 的 {action} 接口不正确") from exc
+        if tuple(signature.parameters) != ("instance_id", "region", "secret_id", "secret_key"):
+            raise PowerError(f"provider {source.name} 的 {action} 参数名不正确")
+    return module
 
 
 class Power:
-    """Shared start/stop/status behavior independent of the cloud API."""
+    """Own credentials and shared state transitions; delegate API calls only."""
 
     def __init__(
-        self, api_call: PowerCall, *, sleeper: Callable[[float], None] = time.sleep,
+        self, adapter: ModuleType, target: PowerTarget, secret_id: str,
+        secret_key: str, *,
+        sleeper: Callable[[float], None] = time.sleep,
         wait_after_action: bool = True,
     ) -> None:
-        self.api_call = api_call
+        self.adapter = adapter
+        self.target = target
+        self.secret_id = secret_id
+        self.secret_key = secret_key
         self.sleeper = sleeper
         self.wait_after_action = wait_after_action
 
+    def api(self, action: str) -> dict:
+        try:
+            reply = getattr(self.adapter, action)(
+                self.target.instance_id, self.target.instance_region,
+                self.secret_id, self.secret_key,
+            )
+        except PowerError:
+            raise
+        except Exception as exc:
+            raise PowerError(f"power-api {action} 失败：{exc}") from exc
+        if not isinstance(reply, dict):
+            raise PowerError(f"power-api {action} 返回值必须是对象")
+        return reply
+
     def status(self) -> InstanceStatus:
-        result = self.api_call("status")
-        if not isinstance(result, InstanceStatus):
-            raise PowerError("电源 API status 未返回实例状态")
-        return result
+        reply = self.api("status")
+        state = reply.get("state")
+        if not isinstance(state, str) or not state:
+            raise PowerError("power-api status 缺少 state")
+        public_ip = reply.get("public-ip", "")
+        if not isinstance(public_ip, str):
+            raise PowerError("power-api status 的 public-ip 必须是字符串")
+        return InstanceStatus(state.upper(), public_ip)
 
     def wait(self, expected: str, seconds: int) -> InstanceStatus:
         deadline = time.monotonic() + seconds
@@ -60,7 +117,7 @@ class Power:
     def start(self) -> InstanceStatus:
         current = self.status()
         if current.state == "STOPPED":
-            self.api_call("start")
+            self.api("start")
             if not self.wait_after_action:
                 return InstanceStatus("STARTING", current.public_ip)
         elif current.state not in ("RUNNING", "STARTING"):
@@ -72,7 +129,7 @@ class Power:
         if current.state == "STOPPED":
             return current
         if current.state == "RUNNING":
-            self.api_call("stop")
+            self.api("stop")
             if not self.wait_after_action:
                 return InstanceStatus("STOPPING", current.public_ip)
         elif current.state != "STOPPING":
@@ -80,66 +137,13 @@ class Power:
         return self.wait("STOPPED", 360)
 
 
-def webhook_adapter(
-    target: PowerTarget, url: str, secret_key: str, *,
-    api_call: WebhookCall | None = None,
-) -> PowerCall:
-    if not url:
-        raise PowerError("power-api.url 未配置")
-    if not secret_key:
-        raise PowerError("Webhook 需要 POWER_SECRET_KEY")
-
-    def http(action: str, payload: dict) -> dict:
-        request = Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {secret_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=60) as response:
-                content = response.read()
-        except HTTPError as exc:
-            detail = exc.read().decode(errors="replace").strip()[-500:]
-            raise PowerError(f"power-api {action} HTTP {exc.code}：{detail}") from exc
-        except (OSError, URLError) as exc:
-            raise PowerError(f"power-api {action} 请求失败：{exc}") from exc
-        if not content:
-            return {}
-        try:
-            result = json.loads(content)
-        except (TypeError, ValueError) as exc:
-            raise PowerError(f"power-api {action} 返回无效 JSON") from exc
-        if not isinstance(result, dict):
-            raise PowerError(f"power-api {action} 返回值必须是对象")
-        return result
-
-    raw_call = api_call or http
-
-    def call(action: str) -> InstanceStatus | None:
-        payload = {
-            "action": action,
-            "instance-id": target.instance_id,
-            "instance-region": target.instance_region,
-        }
-        try:
-            reply = raw_call(action, payload)
-        except PowerError:
-            raise
-        except Exception as exc:
-            raise PowerError(f"power-api {action} 失败：{exc}") from exc
-        if action != "status":
-            return None
-        state = reply.get("state")
-        if not isinstance(state, str) or not state:
-            raise PowerError("power-api status 缺少 state")
-        public_ip = reply.get("public-ip", "")
-        if not isinstance(public_ip, str):
-            raise PowerError("power-api status 的 public-ip 必须是字符串")
-        return InstanceStatus(state.upper(), public_ip)
-
-    return call
+def create_power(
+    provider: str, target: PowerTarget, secrets: dict[str, str],
+    *, wait_after_action: bool = True,
+) -> Power:
+    return Power(
+        load_adapter(provider), target,
+        secrets.get("POWER_SECRET_ID", ""),
+        secrets.get("POWER_SECRET_KEY", ""),
+        wait_after_action=wait_after_action,
+    )

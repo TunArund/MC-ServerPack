@@ -15,6 +15,14 @@ class RuntimeBoundaryTests(unittest.TestCase):
             (ROOT / "manager/lib/power.py").read_bytes(),
         )
 
+    def test_shared_provider_implementations_are_identical(self) -> None:
+        for name in ("tencent_api.py", "example_api.py"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    (ROOT / "lib/providers" / name).read_bytes(),
+                    (ROOT / "manager/lib/providers" / name).read_bytes(),
+                )
+
     def test_no_cross_runtime_imports(self) -> None:
         forbidden = {
             "lib": ("manager", "monitor"),
@@ -33,6 +41,18 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             imports.append(node.module)
                     for name in imports:
                         self.assertFalse(name.startswith(prefixes), f"{path}: cross-runtime import {name}")
+
+    def test_provider_implementations_do_not_import_power_state_machine(self) -> None:
+        for directory in (ROOT / "lib/providers", ROOT / "manager/lib/providers"):
+            for path in directory.glob("*_api.py"):
+                with self.subTest(path=path):
+                    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.ImportFrom) and node.module:
+                            self.assertFalse(
+                                node.module.endswith("power"),
+                                f"{path}: provider must not import power.py",
+                            )
 
 
 if __name__ == "__main__":

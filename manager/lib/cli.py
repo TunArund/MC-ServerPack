@@ -9,6 +9,7 @@ from .archive import ArchiveError
 from .config import ConfigError
 from .docker import DockerError
 from .modpacks import ModpackError, ModpackManager
+from .power import load_adapter
 from . import schedule
 
 
@@ -42,6 +43,8 @@ def dispatch(argv: list[str] | None = None, manager: ModpackManager | None = Non
     service = manager or ModpackManager()
     if args.action == "schedule":
         if args.command == "install":
+            if service.limits.poweroff_enabled:
+                load_adapter(service.limits.power_provider)
             schedule.install(service.manager_root)
             print("已安装 Manager 用户级调度任务")
             return 0

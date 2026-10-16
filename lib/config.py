@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urlparse
 
 try:
     import yaml
@@ -20,6 +19,7 @@ ENV_FILE = ROOT / ".env"
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
 REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
+PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 
 
 class ConfigError(RuntimeError):
@@ -53,7 +53,6 @@ class PowerApiConfig:
     provider: str
     instance_id: str
     instance_region: str
-    url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -179,20 +178,12 @@ def _power_api(section: object, field: str, *, required: bool) -> PowerApiConfig
     if section is None and not required:
         return None
     power = _mapping(section, field)
-    provider = _text(power.get("provider"), f"{field}.provider").lower()
-    if provider not in ("tencent", "webhook"):
-        raise ConfigError(f"{field}.provider 只能是 tencent 或 webhook")
     instance_id = _text(power.get("instance-id"), f"{field}.instance-id")
     region = _text(power.get("instance-region"), f"{field}.instance-region")
-    url_value = power.get("url")
-    url = _text(url_value, f"{field}.url") if url_value is not None else None
-    if provider == "webhook":
-        if not url:
-            raise ConfigError(f"{field}.url 在 provider=webhook 时不能为空")
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ConfigError(f"{field}.url 必须是 HTTP(S) URL")
-    return PowerApiConfig(provider, instance_id, region, url)
+    provider = _text(power.get("provider"), f"{field}.provider")
+    if not PROVIDER_ID_RE.fullmatch(provider):
+        raise ConfigError(f"{field}.provider 仅允许大小写字母、数字和减号")
+    return PowerApiConfig(provider, instance_id, region)
 
 
 def _read_root(path: str | Path) -> dict[str, Any]:

@@ -52,16 +52,16 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "monitor.manager.power-api"):
             load(self.write(document))
 
-    def test_webhook_requires_http_url(self) -> None:
+    def test_provider_rejects_unsafe_id(self) -> None:
         document = self.minimum()
         document["manager"]["auto-stop"] = True
         document["manager"]["stop-at"] = "23:05"
         document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})
         document["manager"]["power-api"] = {
-            "provider": "webhook", "instance-id": "manager",
-            "instance-region": "local", "url": "file:///tmp/power",
+            "provider": "../power", "instance-id": "manager",
+            "instance-region": "local",
         }
-        with self.assertRaisesRegex(ConfigError, "HTTP\(S\) URL"):
+        with self.assertRaisesRegex(ConfigError, "字母、数字和减号"):
             load(self.write(document))
 
     def test_enabled_schedule_requires_time(self) -> None:

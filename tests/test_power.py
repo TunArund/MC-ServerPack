@@ -5,12 +5,13 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from manager.lib.config import ManagerLimits
-from manager.lib.power import Power, PowerError, PowerTarget, webhook_adapter
-from manager.lib.providers import create_power
-from manager.lib.tencent import tencent_adapter
+from manager.lib.power import Power, PowerError, PowerTarget, load_adapter
+from manager.lib.providers import tencent_api
+from manager.lib.schedule import create_power
 
 
 class FakeRunner:
@@ -46,53 +47,83 @@ class PowerTests(unittest.TestCase):
         )
         self.target = PowerTarget("ins-test", "ap-test")
 
+    def tencent(self, runner: FakeRunner, secret_id: str = "id", secret_key: str = "key") -> Power:
+        def api(action: str, payload: dict) -> dict:
+            runner.actions.append(action)
+            if action == "DescribeInstances":
+                return {"InstanceSet": [{
+                    "InstanceId": "ins-test", "InstanceState": runner.state,
+                }]}
+            if action == "StopInstances":
+                self.assertEqual(payload["StopType"], "SOFT")
+                self.assertEqual(payload["StoppedMode"], "STOP_CHARGING")
+            return {}
+        patcher = patch.object(tencent_api, "_create_api", return_value=api)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return Power(tencent_api, self.target, secret_id, secret_key, wait_after_action=False)
+
     def test_running_instance_uses_billing_safe_soft_stop(self) -> None:
         runner = FakeRunner()
-        Power(tencent_adapter(
-            self.target, "id", "key", manager_root=self.root,
-            runner=runner, executable="tccli",
-        ), wait_after_action=False).stop()
+        self.tencent(runner).stop()
         self.assertEqual(runner.actions, ["DescribeInstances", "StopInstances"])
 
     def test_stopped_instance_is_idempotent(self) -> None:
         runner = FakeRunner("STOPPED")
-        Power(tencent_adapter(
-            self.target, "id", "key", manager_root=self.root,
-            runner=runner, executable="tccli",
-        ), wait_after_action=False).stop()
+        self.tencent(runner).stop()
         self.assertEqual(runner.actions, ["DescribeInstances"])
 
     def test_credentials_are_required(self) -> None:
         with patch.dict("os.environ", {}, clear=True), self.assertRaisesRegex(PowerError, "POWER_SECRET"):
-            tencent_adapter(
-                self.target, "", "", manager_root=self.root,
-                runner=FakeRunner(), executable="tccli",
-            )
+            Power(tencent_api, self.target, "", "").status()
 
     def test_webhook_reads_fixed_token_and_uses_normalized_payload(self) -> None:
-        calls: list[tuple[str, dict]] = []
+        calls: list[tuple[str, str, str, str, str]] = []
 
-        def api(action, payload):
-            calls.append((action, payload))
-            return {"state": "RUNNING"} if action == "status" else {}
+        def function(action: str):
+            def call(instance: str, region: str, secret_id: str, secret_key: str):
+                calls.append((action, instance, region, secret_id, secret_key))
+                return {"state": "RUNNING"} if action == "status" else {}
+            return call
 
-        Power(webhook_adapter(
-            PowerTarget("manager", "local"), "https://power.example/api", "token",
-            api_call=api,
-        ), wait_after_action=False).stop()
-        self.assertEqual([action for action, _ in calls], ["status", "stop"])
-        self.assertEqual(calls[0][1], {
-            "action": "status", "instance-id": "manager", "instance-region": "local",
-        })
+        adapter = SimpleNamespace(**{action: function(action) for action in ("status", "start", "stop")})
+        Power(
+            adapter, PowerTarget("manager", "local"), "", "token",
+            wait_after_action=False,
+        ).stop()
+        self.assertEqual([item[0] for item in calls], ["status", "stop"])
+        self.assertEqual(calls[0], ("status", "manager", "local", "", "token"))
 
-    def test_factory_selects_webhook_provider(self) -> None:
+    def test_factory_selects_custom_adapter(self) -> None:
         settings = ManagerLimits(
             1, "4g", 4 * 1024**3, 30, 30,
             poweroff_enabled=True, power_region="local", power_instance_id="manager",
-            power_provider="webhook", power_url="https://power.example/api",
+            power_provider="xxxaaa",
         )
-        with patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}):
+        with (
+            patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}),
+            patch("manager.lib.power.load_adapter", return_value=SimpleNamespace()),
+        ):
             self.assertIsInstance(create_power(settings, self.root), Power)
+
+    def test_provider_is_discovered_and_interface_is_checked(self) -> None:
+        providers = self.root / "providers"
+        providers.mkdir()
+        (providers / "xxxaaa_api.py").write_text(
+            "def status(instance_id, region, secret_id, secret_key): return {'state': 'RUNNING'}\n"
+            "def start(instance_id, region, secret_id, secret_key): return {}\n"
+            "def stop(instance_id, region, secret_id, secret_key): return {}\n",
+            encoding="utf-8",
+        )
+        adapter = load_adapter("xxxaaa", providers_dir=providers)
+        self.assertEqual(adapter.status("i", "r", "", "token"), {"state": "RUNNING"})
+
+    def test_provider_requires_all_actions(self) -> None:
+        providers = self.root / "providers"
+        providers.mkdir()
+        (providers / "broken_api.py").write_text("VALUE = 1\n", encoding="utf-8")
+        with self.assertRaisesRegex(PowerError, "status"):
+            load_adapter("broken", providers_dir=providers)
 
 
 if __name__ == "__main__":

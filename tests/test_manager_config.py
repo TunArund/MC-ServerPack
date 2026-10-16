@@ -44,7 +44,7 @@ class ManagerConfigTests(unittest.TestCase):
             "stop-at": "23:05",
             "power-api": {
                 "provider": "tencent", "instance-region": "ap-shanghai",
-                "instance-id": "ins-test", "url": None,
+                "instance-id": "ins-test",
             },
         })
         document["modpack"].update({
@@ -69,23 +69,33 @@ class ManagerConfigTests(unittest.TestCase):
             "auto-stop": True,
             "power-api": {
                 "provider": "tencent", "instance-region": "ap-shanghai",
-                "instance-id": "ins-test", "url": None,
+                "instance-id": "ins-test",
             },
         })
         with self.assertRaisesRegex(ConfigError, "需要 modpack.auto-stop=true"):
             load_limits(self.write(document))
 
-    def test_webhook_settings_are_parsed(self) -> None:
+    def test_custom_adapter_settings_are_parsed(self) -> None:
         document = self.minimum()
         document["auto-stop"] = True
         document["modpack"]["auto-stop"] = True
         document["power-api"] = {
-            "provider": "webhook", "instance-region": "local",
-            "instance-id": "manager", "url": "https://power.example/api",
+            "provider": "xxxaaa", "instance-region": "local",
+            "instance-id": "manager",
         }
         settings = load_limits(self.write(document))
-        self.assertEqual(settings.power_provider, "webhook")
-        self.assertEqual(settings.power_url, "https://power.example/api")
+        self.assertEqual(settings.power_provider, "xxxaaa")
+
+    def test_provider_rejects_unsafe_id(self) -> None:
+        document = self.minimum()
+        document["auto-stop"] = True
+        document["modpack"]["auto-stop"] = True
+        document["power-api"] = {
+            "provider": "../power", "instance-region": "local",
+            "instance-id": "manager",
+        }
+        with self.assertRaisesRegex(ConfigError, "字母、数字和减号"):
+            load_limits(self.write(document))
 
     def test_schedule_rejects_invalid_clock(self) -> None:
         document = self.minimum()

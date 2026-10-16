@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
@@ -13,11 +14,9 @@ from lib.cli import CliServices, dispatch
 from lib.config import load as load_config
 from lib.deploy import DeploymentService
 from lib.modpacks import ModpackError, ModpackService, validate_pack_id
-from lib.power import (
-    InstanceStatus, Power, PowerError, PowerTarget, webhook_adapter,
-)
+from lib.power import InstanceStatus, Power, PowerError, PowerTarget
+from lib.providers import tencent_api
 from lib.remote import CommandError, archive_tree, cleanup_archive, shell_join
-from lib.tencent import tencent_adapter
 
 
 class FakeCloud:
@@ -141,20 +140,23 @@ class PowerTests(unittest.TestCase):
     def target(self) -> PowerTarget:
         return PowerTarget("ins-test")
 
+    def tencent(self, api, *, sleeper=lambda _: None) -> Power:
+        patcher = patch.object(tencent_api, "_create_api", return_value=api)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return Power(tencent_api, self.target(), "id", "key", sleeper=sleeper)
+
     def test_start_is_idempotent_and_waits_for_running(self) -> None:
         states = iter(("STOPPED", "RUNNING"))
         actions: list[str] = []
 
-        def api(service, action, payload):
+        def api(action, payload):
             actions.append(action)
             if action == "DescribeInstances":
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(states)}]}
             return {}
 
-        result = Power(
-            tencent_adapter(self.target(), "id", "key", api_call=api),
-            sleeper=lambda _: None,
-        ).start()
+        result = self.tencent(api).start()
         self.assertEqual(result.state, "RUNNING")
         self.assertEqual(actions, ["DescribeInstances", "StartInstances", "DescribeInstances"])
 
@@ -162,16 +164,13 @@ class PowerTests(unittest.TestCase):
         descriptions = iter(("RUNNING", "STOPPED"))
         actions: list[str] = []
 
-        def api(service, action, payload):
+        def api(action, payload):
             actions.append(action)
             if action == "DescribeInstances":
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(descriptions)}]}
             return {}
 
-        power = Power(
-            tencent_adapter(self.target(), "id", "key", api_call=api),
-            sleeper=lambda _: None,
-        )
+        power = self.tencent(api)
         current = power.status()
         result = power.stop(current)
         self.assertEqual(result.state, "STOPPED")
@@ -180,16 +179,14 @@ class PowerTests(unittest.TestCase):
     def test_invalid_instance_state_does_not_poweroff(self) -> None:
         actions: list[str] = []
 
-        def api(service, action, payload):
+        def api(action, payload):
             actions.append(action)
             if action == "DescribeInstances":
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": "REBOOTING"}]}
             return {}
 
         with self.assertRaises(PowerError):
-            Power(tencent_adapter(
-                self.target(), "id", "key", api_call=api,
-            )).stop()
+            self.tencent(api).stop()
         self.assertNotIn("StopInstances", actions)
 
     def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
@@ -200,21 +197,22 @@ class PowerTests(unittest.TestCase):
 
     def test_webhook_uses_normalized_contract(self) -> None:
         replies = iter(({"state": "stopped"}, {}, {"state": "RUNNING", "public-ip": "203.0.113.2"}))
-        calls: list[tuple[str, dict]] = []
+        calls: list[tuple[str, str, str, str, str]] = []
 
-        def api(action, payload):
-            calls.append((action, payload))
-            return next(replies)
+        def function(action: str):
+            def call(instance: str, region: str, secret_id: str, secret_key: str):
+                calls.append((action, instance, region, secret_id, secret_key))
+                return next(replies)
+            return call
 
-        result = Power(webhook_adapter(
-            PowerTarget("manager", "local"), "https://power.example/api", "token",
-            api_call=api,
-        ), sleeper=lambda _: None).start()
+        adapter = SimpleNamespace(**{action: function(action) for action in ("status", "start", "stop")})
+        result = Power(
+            adapter, PowerTarget("manager", "local"), "", "token",
+            sleeper=lambda _: None,
+        ).start()
         self.assertEqual(result, InstanceStatus("RUNNING", "203.0.113.2"))
-        self.assertEqual([action for action, _ in calls], ["status", "start", "status"])
-        self.assertEqual(calls[0][1], {
-            "action": "status", "instance-id": "manager", "instance-region": "local",
-        })
+        self.assertEqual([item[0] for item in calls], ["status", "start", "status"])
+        self.assertEqual(calls[0], ("status", "manager", "local", "", "token"))
 
 
 class DeploymentTests(unittest.TestCase):
@@ -229,7 +227,7 @@ class DeploymentTests(unittest.TestCase):
                 "auto-stop": False, "stop-at": "23:05",
                 "power-api": {
                     "provider": "tencent", "instance-region": "ap-test",
-                    "instance-id": "ins-test", "url": None,
+                    "instance-id": "ins-test",
                 },
                 "modpack": {"auto-stop": False, "java": [17], "mem-limit": "4g"},
             },
@@ -260,23 +258,24 @@ class DeploymentTests(unittest.TestCase):
             service.deploy_pack("../escape")
         self.assertFalse(transport.ssh_calls)
 
-    def test_cli_selects_webhook_and_reads_fixed_env_key(self) -> None:
+    def test_cli_selects_custom_adapter_and_reads_fixed_env_key(self) -> None:
         document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
         document["manager"]["power-api"] = {
-            "provider": "webhook", "instance-id": "manager",
-            "instance-region": "local", "url": "https://power.example/api",
+            "provider": "xxxaaa", "instance-id": "manager",
+            "instance-region": "local",
         }
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
-        self.assertIsInstance(CliServices(self.config).power(), Power)
+        with patch("lib.power.load_adapter", return_value=SimpleNamespace()):
+            self.assertIsInstance(CliServices(self.config).power(), Power)
 
-    def test_manager_deploy_selects_webhook_secret(self) -> None:
+    def test_manager_deploy_selects_custom_adapter_secret(self) -> None:
         document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
         document["manager"].update({
             "auto-stop": True,
             "power-api": {
-                "provider": "webhook", "instance-id": "manager",
-                "instance-region": "local", "url": "https://power.example/api",
+                "provider": "xxxaaa", "instance-id": "manager",
+                "instance-region": "local",
             },
         })
         document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})

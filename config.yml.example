@@ -10,7 +10,6 @@ manager:
     provider: tencent
     instance-id: ins-xxxxyyyy
     instance-region: ap-nanjing
-    url: null
   modpack:
     # 定时停止全部整合包；应早于云主机关机时间
     auto-stop: false
@@ -34,7 +33,6 @@ monitor:
       provider: tencent
       instance-id: ins-xxxxyyyy
       instance-region: ap-nanjing
-      url: null
     # 定时开机
     auto-start: true
     start-at: '19:55'  # 开机时间

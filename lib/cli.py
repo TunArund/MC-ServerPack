@@ -14,10 +14,8 @@ from pathlib import Path
 from .config import CONFIG_FILE, AppConfig, ConfigError, load, load_env
 from .deploy import DeployError, DeploymentService
 from .modpacks import ModpackError, ModpackService, validate_pack_id
-from .power import Power, PowerError
-from .providers import create_power
+from .power import Power, PowerError, PowerTarget, create_power, load_adapter
 from .remote import CommandError, Transport
-from .tencent import TencentApiError
 
 
 class CliServices:
@@ -54,7 +52,11 @@ class CliServices:
         settings = self.config.manager.power_api
         if not settings:
             raise PowerError("manager.power-api 未配置")
-        return create_power(settings, load_env(self.config_path.parent / ".env"))
+        return create_power(
+            settings.provider,
+            PowerTarget(settings.instance_id, settings.instance_region),
+            load_env(self.config_path.parent / ".env"),
+        )
 
     def stop_modpacks(self) -> None:
         self.modpacks.remote_manager(["stop-all"])
@@ -103,6 +105,10 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
     args = make_parser().parse_args(argv)
     if args.module == "config" and args.command == "check":
         loaded = load(args.path or args.config)
+        configured = [loaded.manager.power_api, loaded.monitor.power_api]
+        for power_api in configured:
+            if power_api:
+                load_adapter(power_api.provider)
         monitor = "启用" if loaded.monitor.enabled else "关闭"
         print(f"配置有效：manager={loaded.manager.endpoint.host}，monitor={monitor}")
         return 0
@@ -139,7 +145,7 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
             if current.state == "RUNNING":
                 try:
                     services.stop_modpacks()
-                except (CommandError, ModpackError, TencentApiError):
+                except (CommandError, ModpackError):
                     if not args.force:
                         raise
             result = power.stop(current)
@@ -186,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         return dispatch(argv)
     except (
         CommandError, ConfigError, DeployError, ModpackError, PowerError,
-        TencentApiError, OSError,
+        OSError,
     ) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2

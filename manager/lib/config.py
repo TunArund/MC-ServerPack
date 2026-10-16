@@ -20,6 +20,7 @@ PACK_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
+PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 DEFAULT_COMMAND = ("bash", "./run.sh", "nogui")
 
 
@@ -70,7 +71,6 @@ class ManagerLimits:
     power_instance_id: str | None = None
     poweroff_at: str = "23:05"
     power_provider: str = "tencent"
-    power_url: str | None = None
 
 
 def validate_pack_id(pack_id: str) -> str:
@@ -154,27 +154,26 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
     schedule_enabled = _boolean(modpack.get("auto-stop"), "modpack.auto-stop")
     poweroff_enabled = _boolean(document.get("auto-stop"), "auto-stop")
     power = document.get("power-api")
-    provider = "tencent"
     region = None
     instance_id = None
-    power_url = None
+    provider = "tencent"
     if poweroff_enabled:
         if not schedule_enabled:
             raise ConfigError("auto-stop 需要 modpack.auto-stop=true")
         if not isinstance(power, dict):
             raise ConfigError("云关机需要 power-api")
-        provider = power.get("provider")
         region = power.get("instance-region")
         instance_id = power.get("instance-id")
-        power_url = power.get("url")
-        if provider not in ("tencent", "webhook"):
-            raise ConfigError("power-api.provider 只能是 tencent 或 webhook")
+        provider = power.get("provider")
         if not isinstance(region, str) or not region.strip():
             raise ConfigError("power-api.instance-region 必须是非空字符串")
         if not isinstance(instance_id, str) or not instance_id.strip():
             raise ConfigError("power-api.instance-id 必须是非空字符串")
-        if provider == "webhook" and (not isinstance(power_url, str) or not power_url.startswith(("http://", "https://"))):
-            raise ConfigError("provider=webhook 时 power-api.url 必须是 HTTP(S) URL")
+        if not isinstance(provider, str) or not provider.strip():
+            raise ConfigError("power-api.provider 必须是非空 provider ID")
+        provider = provider.strip()
+        if not PROVIDER_ID_RE.fullmatch(provider):
+            raise ConfigError("power-api.provider 仅允许大小写字母、数字和减号")
     return ManagerLimits(
         _positive_integer(modpack.get("max-running", 1), "modpack.max-running"),
         memory,
@@ -191,7 +190,6 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
         instance_id.strip() if isinstance(instance_id, str) else None,
         _clock(document.get("stop-at", "23:05"), "stop-at"),
         provider,
-        power_url.strip() if isinstance(power_url, str) and power_url.strip() else None,
     )
 
 

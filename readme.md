@@ -84,14 +84,16 @@ zip、tar.gz都行，支持从url下载
 整合包 ID 仅允许大小写英文字母、数字和减号（`A-Z`、`a-z`、`0-9`、`-`）。
 # 详情
 ## 目录结构
-/lib/{cli.py,config.py,deploy.py,modpacks.py,power.py,providers.py,remote.py,tencent.py}
+/lib/{cli.py,config.py,deploy.py,modpacks.py,power.py,remote.py,providers/}
+/lib/providers/{tencent_api.py,example_api.py}
 
 /mc.{sh,exe}
 /{config.yml,.env,README.md}
 配置、密钥、说明
 
 /manager/{readme.md,manager.sh,lib/,runtime/,modpacks/}
-lib/{archive.py,cli.py,config.py,docker.py,modpacks.py,power.py,providers.py,schedule.py,tencent.py}
+lib/{archive.py,cli.py,config.py,docker.py,modpacks.py,power.py,schedule.py,providers/}
+lib/providers/{tencent_api.py,example_api.py}
 runtime/{java{8,17,21}.dockerfile,entrypoint.sh}
 modpacks/template/{src/,data/,backups/,config.yml}
 
@@ -108,18 +110,24 @@ spec.md 当前文档
 
 ## 电源 API
 
-Manager 和 Monitor 各自通过 `power-api` 配置目标实例。内置 `tencent` 与通用
-`webhook` 两种 provider：
+Manager 和 Monitor 各自通过 `power-api` 配置目标实例。`provider` 是适配器 ID，
+仅允许大小写字母、数字和减号。例如 `provider: xxxaaa` 会自动寻找
+`providers/xxxaaa_api.py`；`tencent` 是内置的腾讯云适配器：
 
 ```yaml
 power-api:
-  provider: webhook
+  provider: xxxaaa
   instance-id: minecraft-manager
   instance-region: local
-  url: https://example.com/mcsp/power
 ```
 
-Webhook 使用 `POST`，固定从 `.env` 读取 `POWER_SECRET_KEY` 并作为 Bearer Token；
+自定义 provider 必须实现 `status`、`start`、`stop` 三个函数，每个函数的签名为
+`(instance_id, region, secret_id, secret_key) -> dict`。加载时会检查文件、
+必要函数和参数签名；`Power` 负责传入实例信息与 AK/SK，provider 不依赖
+`power.py`。可复制 `example_api.py` 为 `xxxaaa_api.py`，URL 与厂商签名逻辑都写在该文件内。
+
+`example_api.py` 展示的转接口使用 `POST`，从 `.env` 读取的
+`POWER_SECRET_KEY` 会作为 Bearer Token；
 只有一个 Token 时将它填入 `POWER_SECRET_KEY`，`POWER_SECRET_ID` 留空。
 请求 JSON 包含 `action`（`status`、`start` 或 `stop`）、`instance-id` 和
 `instance-region`。`status` 必须返回规范化状态：

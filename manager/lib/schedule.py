@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from .archive import list_backups
 from .config import MANAGER_ROOT, ManagerLimits, PackSpec
-from .providers import create_power
+from .power import PowerError, PowerTarget, create_power as build_power
 
 
 ZONE = ZoneInfo("Asia/Shanghai")
@@ -28,6 +28,37 @@ STATE_FILE = ".schedule-state.json"
 
 class ScheduleError(RuntimeError):
     pass
+
+
+def create_power(settings: ManagerLimits, manager_root: Path = MANAGER_ROOT):
+    if (
+        not settings.poweroff_enabled
+        or not settings.power_instance_id
+        or not settings.power_region
+    ):
+        raise PowerError("云关机未启用或配置不完整")
+    secrets: dict[str, str] = {}
+    try:
+        lines = (manager_root / ".env").read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    except OSError as exc:
+        raise PowerError(f"无法读取 {manager_root / '.env'}：{exc}") from exc
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        secrets[key.strip()] = value.strip().strip("\"'")
+    for key in ("POWER_SECRET_ID", "POWER_SECRET_KEY"):
+        if key in os.environ:
+            secrets[key] = os.environ[key].strip()
+    return build_power(
+        settings.power_provider,
+        PowerTarget(settings.power_instance_id, settings.power_region),
+        secrets,
+        wait_after_action=False,
+    )
 
 
 @dataclass
