@@ -49,12 +49,12 @@ monitor:
       type: group
       id: bbb
     admins:
-    - aaa
+    - owner
     # API/调度执行失败、状态与日程不符、故障恢复
     alerts:
       check-failed: [owner]
-      state-mismatch: [owner, players]
-      recovered: [owner, players]
+      state-mismatch: [owner]
+      recovered: [owner]
 
 # 可选的对象存储，开启后可配置云端备份（当网盘用）
 cos:

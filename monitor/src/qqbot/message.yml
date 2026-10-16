@@ -14,3 +14,4 @@ alert: |-
   MC Server Pack 告警
   {alerts}
 recovered: 云主机电源检查已恢复正常。
+verified: 验证成功，可以返回 Monitor 终端查看 user_openid。

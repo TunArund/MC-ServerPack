@@ -154,6 +154,13 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     )
     if len(set(admins)) != len(admins):
         raise ConfigError("qqbot.admins 不能重复")
+    unknown_admins = set(admins) - names
+    if unknown_admins:
+        raise ConfigError(f"qqbot.admins 引用了未知目标：{sorted(unknown_admins)[0]}")
+    target_by_name = {target.name: target for target in targets}
+    non_user_admins = [name for name in admins if target_by_name[name].kind != "user"]
+    if non_user_admins:
+        raise ConfigError(f"qqbot.admins 只能引用 user 目标：{non_user_admins[0]}")
     unknown_kinds = set(alerts_raw) - set(ALERT_KINDS)
     if unknown_kinds:
         raise ConfigError(f"qqbot.alerts 包含未知告警类型：{sorted(unknown_kinds)[0]}")

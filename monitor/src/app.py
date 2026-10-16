@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets as token_secrets
 import signal
+import sys
 from pathlib import Path
 
 from .config import CONFIG_FILE, ConfigError, load, qq_credentials, secrets
@@ -13,7 +15,7 @@ from .monitor.power import PowerTarget, create_power
 from .monitor.schedule import PowerSchedule, StateStore
 from .monitor.service import MonitorService
 from .qqbot.network import Network
-from .qqbot.qqbot import QQBot
+from .qqbot.qqbot import QQBot, discover_user
 from .qqbot.targets import Target, TargetPolicy
 
 
@@ -61,7 +63,7 @@ async def main() -> None:
             Network(*credentials),
             TargetPolicy(
                 tuple(targets.values()),
-                config.qqbot.admins,
+                tuple(targets[name].identifier for name in config.qqbot.admins),
                 {
                     route.kind: frozenset(targets[name] for name in route.targets)
                     for route in config.qqbot.alerts
@@ -109,5 +111,28 @@ async def main() -> None:
         await asyncio.gather(stop_waiter, *tasks, return_exceptions=True)
 
 
+async def get_user() -> None:
+    credentials = qq_credentials()
+    if credentials is None:
+        raise ConfigError("get-user 需要 QQBOT_SECRET_ID 与 QQBOT_SECRET_KEY")
+    code = token_secrets.token_hex(2)
+    print(f"请向机器人发送：{code}", flush=True)
+    try:
+        user_openid = await discover_user(Network(*credentials), code)
+    except asyncio.TimeoutError as exc:
+        raise ConfigError("等待验证消息超时，请重新执行 get-user") from exc
+    print(f"user_openid: {user_openid}")
+
+
+def run() -> None:
+    command = sys.argv[1:]
+    if not command:
+        asyncio.run(main())
+    elif command == ["get-user"]:
+        asyncio.run(get_user())
+    else:
+        raise SystemExit("用法：python -m src.app [get-user]")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()

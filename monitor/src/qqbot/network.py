@@ -17,6 +17,7 @@ from .targets import Incoming, Target
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 API_URL = "https://api.sgroup.qq.com"
+# Current protocol reference: https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html
 INTENTS = 1 << 25
 LOGGER = logging.getLogger(__name__)
 

@@ -53,6 +53,38 @@ def menu(state: str) -> Outgoing:
     return Outgoing(message.render("menu", state=state), True, menu_keyboard())
 
 
+async def discover_user(network: Network, code: str, timeout: float = 300) -> str:
+    """Wait for one exact C2C verification message and return its user_openid."""
+    stopped = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    found: asyncio.Future[str] = loop.create_future()
+
+    async def verify(event_name: str, event: dict) -> None:
+        received = incoming(event_name, event)
+        if (
+            received is None
+            or received.target.kind != "user"
+            or received.content != code
+            or found.done()
+        ):
+            return
+        try:
+            await network.reply(received, text("verified"))
+        except Exception:
+            LOGGER.exception("QQ 验证成功，但回复验证消息失败")
+        finally:
+            found.set_result(received.sender_id)
+            stopped.set()
+
+    server = asyncio.create_task(network.serve(verify, stopped))
+    try:
+        return await asyncio.wait_for(found, timeout=timeout)
+    finally:
+        stopped.set()
+        server.cancel()
+        await asyncio.gather(server, return_exceptions=True)
+
+
 class QQBot:
     def __init__(
         self, network: Network, policy: TargetPolicy, power,

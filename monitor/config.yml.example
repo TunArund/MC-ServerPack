@@ -20,13 +20,11 @@ qqbot:
     type: group
     id: bbb
   admins:
-  - aaa
+  - owner
   alerts:
     check-failed:
     - owner
     state-mismatch:
     - owner
-    - players
     recovered:
     - owner
-    - players

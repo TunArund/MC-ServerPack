@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from monitor.src.qqbot.message import render
 from monitor.src.qqbot.network import Network, Outgoing
-from monitor.src.qqbot.qqbot import QQBot, menu, menu_keyboard
+from monitor.src.qqbot.qqbot import QQBot, discover_user, menu, menu_keyboard
 from monitor.src.qqbot.targets import Target, TargetPolicy, incoming
 
 
@@ -48,6 +48,27 @@ def group_event(message_id: str, sender: str, content: str) -> dict:
         "author": {"member_openid": sender},
         "content": content,
     }
+
+
+def user_event(message_id: str, sender: str, content: str) -> dict:
+    return {
+        "id": message_id,
+        "author": {"user_openid": sender},
+        "content": content,
+    }
+
+
+class DiscoveryNetwork(FakeNetwork):
+    def __init__(self, events: list[tuple[str, dict]]) -> None:
+        super().__init__()
+        self.events = events
+
+    async def serve(self, handler, stopped) -> None:
+        for event_name, event in self.events:
+            await handler(event_name, event)
+            if stopped.is_set():
+                return
+        await stopped.wait()
 
 
 class MessageTests(unittest.TestCase):
@@ -190,6 +211,17 @@ class QQBotTests(unittest.IsolatedAsyncioTestCase):
         await bot.alert("check-failed", "API 失败")
         await bot.flush_alerts()
         self.assertEqual(network.pushes, [])
+
+    async def test_user_discovery_requires_exact_c2c_code(self) -> None:
+        network = DiscoveryNetwork([
+            ("C2C_MESSAGE_CREATE", user_event("m1", "wrong-user", "0000")),
+            ("GROUP_AT_MESSAGE_CREATE", group_event("m2", "group-user", "a1b2")),
+            ("C2C_MESSAGE_CREATE", user_event("m3", "owner-openid", "a1b2")),
+        ])
+        result = await discover_user(network, "a1b2", timeout=1)
+        self.assertEqual(result, "owner-openid")
+        self.assertEqual(len(network.replies), 1)
+        self.assertIn("验证成功", network.replies[0][1].content)
 
 
 if __name__ == "__main__":

@@ -76,18 +76,21 @@ class MonitorConfigTests(unittest.TestCase):
             "auto-start": False,
             "auto-stop": False,
         }, {
-            "targets": [{"name": "players", "type": "group", "id": "group-a"}],
-            "admins": ["user-a"],
+            "targets": [
+                {"name": "owner", "type": "user", "id": "user-a"},
+                {"name": "players", "type": "group", "id": "group-a"},
+            ],
+            "admins": ["owner"],
             "alerts": {
                 "check-failed": ["players"],
                 "state-mismatch": [],
                 "recovered": ["players"],
             },
         }))
-        self.assertEqual(config.qqbot.targets[0].name, "players")
-        self.assertEqual(config.qqbot.targets[0].kind, "group")
-        self.assertEqual(config.qqbot.targets[0].identifier, "group-a")
-        self.assertEqual(config.qqbot.admins, ("user-a",))
+        self.assertEqual(config.qqbot.targets[1].name, "players")
+        self.assertEqual(config.qqbot.targets[1].kind, "group")
+        self.assertEqual(config.qqbot.targets[1].identifier, "group-a")
+        self.assertEqual(config.qqbot.admins, ("owner",))
         self.assertEqual(
             next(route for route in config.qqbot.alerts if route.kind == "check-failed").targets,
             ("players",),
