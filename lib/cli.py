@@ -8,17 +8,14 @@ should register a command only when its service implementation exists.
 from __future__ import annotations
 
 import argparse
-import secrets as token_secrets
 import sys
 from pathlib import Path
 
-from .config import (
-    CONFIG_FILE, AppConfig, ConfigError, load, load_env,
-    upsert_monitor_user_target,
-)
-from .deploy import DeployError, DeploymentService
-from .modpacks import ModpackError, ModpackService, validate_pack_id
-from .power import Power, PowerError, PowerTarget, create_power, load_adapter
+from .config import CONFIG_FILE, AppConfig, ConfigError, load
+from .deploy import DeployError
+from .manager import ManagerService, ModpackError
+from .monitor import MonitorService
+from .power import InstanceStatus, PowerError, load_adapter
 from .remote import CommandError, Transport
 
 
@@ -29,49 +26,44 @@ class CliServices:
         self.config_path = config_path
         self.config: AppConfig = load(config_path)
         self.transport = Transport()
-        self.deployment = DeploymentService(
+        self.manager = ManagerService(
             config_path, config=self.config, transport=self.transport,
         )
-        self.modpacks = ModpackService(self.config, transport=self.transport)
 
     def check(self, target: str) -> None:
-        self.deployment.check(target)
+        runtime = self.manager if target == "manager" else self._monitor()
+        runtime.check()
 
     def deploy_manager(self) -> None:
-        self.deployment.deploy_manager()
+        self.manager.deploy()
 
     def deploy_monitor(self) -> None:
-        self.deployment.deploy_monitor()
+        self._monitor().deploy()
 
     def deploy_pack(self, pack_id: str, *, force: bool = False) -> None:
-        self.modpacks.deploy_pack(pack_id, force=force)
+        self.manager.deploy_pack(pack_id, force=force)
 
     def create_pack(self, pack_id: str) -> Path:
-        return self.modpacks.create_pack(pack_id)
+        return self.manager.create_pack(pack_id)
 
-    def remote_manager(self, arguments: list[str], *, tty: bool = False) -> None:
-        self.modpacks.remote_manager(arguments, tty=tty)
+    def remote_pack(
+        self, action: str, pack_id: str | None = None, *,
+        extra: tuple[str, ...] = (), tty: bool = False,
+    ) -> None:
+        self.manager.remote_pack(action, pack_id, extra=extra, tty=tty)
 
-    def power(self) -> Power:
-        settings = self.config.manager.power_api
-        if not settings:
-            raise PowerError("manager.power-api 未配置")
-        return create_power(
-            settings.provider,
-            PowerTarget(settings.instance_id, settings.instance_region),
-            load_env(self.config_path.parent / ".env"),
+    def manager_power(
+        self, action: str, *, force: bool = False,
+    ) -> InstanceStatus:
+        return self.manager.power_action(action, force=force)
+
+    def _monitor(self) -> MonitorService:
+        return MonitorService(
+            self.config_path, config=self.config, transport=self.transport,
         )
 
-    def stop_modpacks(self) -> None:
-        self.modpacks.remote_manager(["stop-all"])
-
     def add_monitor_target(self, name: str) -> str:
-        code = token_secrets.token_hex(2)
-        print(f"请向机器人发送：{code}", flush=True)
-        identifier = self.deployment.discover_monitor_user(code)
-        upsert_monitor_user_target(self.config_path, name, identifier)
-        self.deployment.refresh_monitor_config()
-        return identifier
+        return self._monitor().add_target(name)
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -143,28 +135,15 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
                 print("Monitor 部署完成")
         return 0
     if args.module == "manager":
-        power = services.power()
-        if args.action == "status":
-            result = power.status()
-        elif args.action == "start":
-            result = power.start()
-        else:
-            if not args.force:
-                try:
-                    answer = input("将停止全部整合包并关闭云主机；输入 yes 确认：")
-                except EOFError:
-                    answer = ""
-                if answer.strip().lower() != "yes":
-                    print("已取消关机")
-                    return 0
-            current = power.status()
-            if current.state == "RUNNING":
-                try:
-                    services.stop_modpacks()
-                except (CommandError, ModpackError):
-                    if not args.force:
-                        raise
-            result = power.stop(current)
+        if args.action == "stop" and not args.force:
+            try:
+                answer = input("将停止全部整合包并关闭云主机；输入 yes 确认：")
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() != "yes":
+                print("已取消关机")
+                return 0
+        result = services.manager_power(args.action, force=args.force)
         suffix = f"，公网 IP={result.public_ip}" if result.public_ip else ""
         print(f"Manager 云主机：{result.state}{suffix}")
         return 0
@@ -173,8 +152,6 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
         print(f"已更新 Monitor QQ 目标：{args.name} ({identifier})")
         return 0
     if args.module == "pack":
-        if hasattr(args, "pack_id"):
-            validate_pack_id(args.pack_id)
         if args.action == "create":
             path = services.create_pack(args.pack_id)
             print(f"已创建本地整合包：{path}")
@@ -183,26 +160,27 @@ def dispatch(argv: list[str] | None = None, service: CliServices | None = None) 
             services.deploy_pack(args.pack_id, force=args.force)
             print(f"整合包已部署：{args.pack_id}")
             return 0
-        arguments = [args.action]
-        if hasattr(args, "pack_id"):
-            arguments.append(args.pack_id)
+        pack_id = getattr(args, "pack_id", None)
+        extra: list[str] = []
         tty = False
         if args.action == "logs":
             if args.lines < 0:
                 raise ModpackError("日志行数不能为负数")
-            arguments.extend(("--lines", str(args.lines)))
+            extra.extend(("--lines", str(args.lines)))
             if args.follow:
-                arguments.append("--follow")
+                extra.append("--follow")
                 tty = True
         elif args.action == "console":
             if not args.command:
                 raise ModpackError("控制台命令不能为空")
-            arguments.extend(args.command)
+            extra.extend(args.command)
         elif args.action == "restore" and args.backup:
-            arguments.append(args.backup)
+            extra.append(args.backup)
         elif args.action == "remove" and args.force:
-            arguments.append("--force")
-        services.remote_manager(arguments, tty=tty)
+            extra.append("--force")
+        services.remote_pack(
+            args.action, pack_id, extra=tuple(extra), tty=tty,
+        )
         return 0
     return 0
 

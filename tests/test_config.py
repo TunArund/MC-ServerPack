@@ -8,8 +8,8 @@ import yaml
 
 from lib.config import (
     ConfigError, load, render_runtime_section, runtime_section,
-    upsert_monitor_user_target,
 )
+from lib.monitor.config import upsert_user_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,7 +115,7 @@ class ConfigTests(unittest.TestCase):
         source = ROOT / "config.yml.example"
         path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
         original = path.read_text(encoding="utf-8")
-        upsert_monitor_user_target(path, "owner", "new-openid")
+        upsert_user_target(path, "owner", "new-openid")
         updated = path.read_text(encoding="utf-8")
         self.assertEqual(updated, original.replace("id: aaa", "id: 'new-openid'", 1))
         self.assertEqual(load(path).monitor.targets[0].identifier, "new-openid")
@@ -123,7 +123,7 @@ class ConfigTests(unittest.TestCase):
     def test_user_target_is_added_when_name_does_not_exist(self) -> None:
         source = ROOT / "config.yml.example"
         path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
-        upsert_monitor_user_target(path, "backup-owner", "second-openid")
+        upsert_user_target(path, "backup-owner", "second-openid")
         config = load(path)
         added = next(item for item in config.monitor.targets if item.name == "backup-owner")
         self.assertEqual(added.identifier, "second-openid")

@@ -10,10 +10,13 @@ from unittest.mock import Mock, patch
 
 import yaml
 
-from lib.cli import CliServices, dispatch
+from lib.cli import dispatch
 from lib.config import load as load_config
-from lib.deploy import DeploymentService
-from lib.modpacks import ModpackError, ModpackService, validate_pack_id
+from lib.manager.deploy import ManagerDeployment
+from lib.manager.modpacks import ModpackError, ModpackService, validate_pack_id
+from lib.manager.service import ManagerService
+from lib.monitor.deploy import MonitorDeployment
+from lib.monitor.service import MonitorService
 from lib.power import InstanceStatus, Power, PowerError, PowerTarget
 from lib.providers import tencent_api
 from lib.remote import CommandError, archive_tree, cleanup_archive, shell_join
@@ -58,16 +61,17 @@ class FakeService:
         self.calls.append(("create-pack", pack_id))
         return Path("manager/modpacks") / pack_id
 
-    def remote_manager(self, arguments: list[str], *, tty: bool = False) -> None:
-        self.calls.append(("remote", arguments, tty))
+    def remote_pack(
+        self, action: str, pack_id: str | None = None, *,
+        extra: tuple[str, ...] = (), tty: bool = False,
+    ) -> None:
+        self.calls.append(("remote-pack", action, pack_id, extra, tty))
 
-    def power(self):
-        return self.cloud
-
-    def stop_modpacks(self) -> None:
-        self.calls.append("stop-modpacks")
+    def manager_power(self, action: str, *, force: bool = False):
+        self.calls.append(("manager-power", action, force))
         if self.stop_error:
             raise self.stop_error
+        return InstanceStatus("STOPPED" if action == "stop" else "RUNNING")
 
     def add_monitor_target(self, name: str) -> str:
         self.calls.append(("add-monitor-target", name))
@@ -116,15 +120,15 @@ class TerminalCliTests(unittest.TestCase):
             (Path(__file__).resolve().parents[1] / "config.yml.example").read_text(),
             encoding="utf-8",
         )
-        services = CliServices.__new__(CliServices)
+        services = MonitorService.__new__(MonitorService)
         services.config_path = config_path
         services.deployment = Mock()
-        services.deployment.discover_monitor_user.return_value = "new-openid"
-        with patch("lib.cli.token_secrets.token_hex", return_value="a1b2"):
-            result = services.add_monitor_target("owner")
+        services.deployment.discover_user.return_value = "new-openid"
+        with patch("lib.monitor.service.secrets.token_hex", return_value="a1b2"):
+            result = services.add_target("owner")
         self.assertEqual(result, "new-openid")
-        services.deployment.discover_monitor_user.assert_called_once_with("a1b2")
-        services.deployment.refresh_monitor_config.assert_called_once_with()
+        services.deployment.discover_user.assert_called_once_with("a1b2")
+        services.deployment.refresh_config.assert_called_once_with()
         document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         owner = next(
             item for item in document["monitor"]["qqbot"]["targets"]
@@ -135,12 +139,16 @@ class TerminalCliTests(unittest.TestCase):
     def test_pack_arguments_are_forwarded_without_shell_joining(self) -> None:
         service = FakeService()
         self.assertEqual(dispatch(["pack", "console", "demo", "say", "hello world"], service), 0)
-        self.assertEqual(service.calls, [("remote", ["console", "demo", "say", "hello world"], False)])
+        self.assertEqual(service.calls, [
+            ("remote-pack", "console", "demo", ("say", "hello world"), False),
+        ])
 
     def test_follow_logs_requests_tty(self) -> None:
         service = FakeService()
         dispatch(["pack", "logs", "demo", "--lines", "20", "--follow"], service)
-        self.assertEqual(service.calls, [("remote", ["logs", "demo", "--lines", "20", "--follow"], True)])
+        self.assertEqual(service.calls, [
+            ("remote-pack", "logs", "demo", ("--lines", "20", "--follow"), True),
+        ])
 
     def test_deploy_all_keeps_runtime_deployments_separate(self) -> None:
         service = FakeService()
@@ -154,24 +162,23 @@ class TerminalCliTests(unittest.TestCase):
 
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
-        service.stop_error = CommandError("SSH failed")
         dispatch(["manager", "stop", "--force"], service)
-        self.assertEqual(service.calls, ["stop-modpacks"])
-        self.assertEqual(service.cloud.calls, ["status", ("stop", "RUNNING")])
+        self.assertEqual(service.calls, [("manager-power", "stop", True)])
 
     def test_stop_failure_prevents_poweroff_by_default(self) -> None:
         service = FakeService()
         service.stop_error = CommandError("SSH failed")
         with patch("builtins.input", return_value="yes"), self.assertRaises(CommandError):
             dispatch(["manager", "stop"], service)
-        self.assertEqual(service.calls, ["stop-modpacks"])
-        self.assertEqual(service.cloud.calls, ["status"])
+        self.assertEqual(service.calls, [("manager-power", "stop", False)])
 
-    def test_pack_id_is_checked_before_remote_command(self) -> None:
+    def test_pack_id_is_forwarded_to_manager_service(self) -> None:
         service = FakeService()
-        with self.assertRaises(ModpackError):
-            dispatch(["pack", "status", "bad_name"], service)
-        self.assertFalse(service.calls)
+        dispatch(["pack", "status", "bad_name"], service)
+        self.assertEqual(
+            service.calls,
+            [("remote-pack", "status", "bad_name", (), False)],
+        )
 
 
 class PowerTests(unittest.TestCase):
@@ -276,7 +283,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_manager_deploy_uploads_only_manager_section_and_preserves_runtime_data(self) -> None:
         transport = FakeTransport(self.archive)
-        DeploymentService(self.config, transport=transport).deploy_manager()
+        ManagerDeployment(self.config, transport=transport).deploy()
         config_upload = next(data for destination, data in transport.uploads if destination.endswith("/config.yml"))
         deployed = yaml.safe_load(config_upload)
         self.assertIn("modpack", deployed)
@@ -306,8 +313,8 @@ class DeploymentTests(unittest.TestCase):
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         transport = FakeTransport(self.archive)
         transport.ssh_stdout = b"user_openid: discovered-user\n"
-        service = DeploymentService(self.config, transport=transport)
-        self.assertEqual(service.discover_monitor_user("a1b2"), "discovered-user")
+        service = MonitorDeployment(self.config, transport=transport)
+        self.assertEqual(service.discover_user("a1b2"), "discovered-user")
         command = " ".join(transport.ssh_calls[-1][1])
         self.assertIn("./monitor.sh add-target a1b2", command)
 
@@ -328,7 +335,36 @@ class DeploymentTests(unittest.TestCase):
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
         with patch("lib.power.load_adapter", return_value=SimpleNamespace()):
-            self.assertIsInstance(CliServices(self.config).power(), Power)
+            self.assertIsInstance(ManagerService(self.config).power(), Power)
+
+    def test_manager_service_owns_stop_then_poweroff_sequence(self) -> None:
+        service = ManagerService.__new__(ManagerService)
+        service.modpacks = Mock()
+        power = FakeCloud()
+        service.power = Mock(return_value=power)
+        result = service.power_action("stop")
+        self.assertEqual(result.state, "STOPPED")
+        service.modpacks.remote_manager.assert_called_once_with(["stop-all"])
+        self.assertEqual(power.calls, ["status", ("stop", "RUNNING")])
+
+    def test_manager_service_force_allows_stop_failure(self) -> None:
+        service = ManagerService.__new__(ManagerService)
+        service.modpacks = Mock()
+        service.modpacks.remote_manager.side_effect = CommandError("SSH failed")
+        power = FakeCloud()
+        service.power = Mock(return_value=power)
+        service.power_action("stop", force=True)
+        self.assertEqual(power.calls, ["status", ("stop", "RUNNING")])
+
+    def test_manager_service_stop_failure_prevents_poweroff_by_default(self) -> None:
+        service = ManagerService.__new__(ManagerService)
+        service.modpacks = Mock()
+        service.modpacks.remote_manager.side_effect = CommandError("SSH failed")
+        power = FakeCloud()
+        service.power = Mock(return_value=power)
+        with self.assertRaises(CommandError):
+            service.power_action("stop")
+        self.assertEqual(power.calls, ["status"])
 
     def test_manager_deploy_selects_custom_adapter_secret(self) -> None:
         document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
@@ -342,7 +378,7 @@ class DeploymentTests(unittest.TestCase):
         document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
-        service = DeploymentService(self.config, transport=FakeTransport(self.archive))
+        service = ManagerDeployment(self.config, transport=FakeTransport(self.archive))
         self.assertEqual(
             service._manager_env(),
             "POWER_SECRET_ID=\nPOWER_SECRET_KEY=secret\n",

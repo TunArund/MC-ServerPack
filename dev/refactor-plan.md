@@ -68,8 +68,11 @@ Terminal 在线，也不读取对方的配置文件。
 3. Manager 数据安全：持久化路径、备份/恢复、内存与并发限制、定时停服。
 4. Terminal 部署：已实现环境检查、保留运行数据的源码同步、独立配置/最小密钥分发、
    整合包上传、远程 Manager 命令，以及先停服后软关机的云电源控制。
-   Terminal 内部由 `cli.py` 解析和编排，`deploy.py` 负责部署，`modpacks.py` 负责整合包及
-   SSH 停服，`power.py` 只负责实例电源状态机，`remote.py` 负责 SSH/SCP。
+   Terminal 的 `cli.py` 只负责参数解析、交互确认和结果展示；`lib/manager`、`lib/monitor`
+   分别包装两个运行时的部署与业务操作。`deploy.py` 只保留上传和远端初始化的公共机制，
+   两端具体部署流程各自放在 `manager/deploy.py`、`monitor/deploy.py`；整合包及先停服后关机
+   的流程属于 `manager`，QQ 目标发现、配置写入和刷新属于 `monitor`。`power.py` 只负责
+   实例电源状态机，`remote.py` 只负责 SSH/SCP。
    Terminal 与 Manager 使用内容完全相同的 `power.py`。`power.py` 按 ID 从 `providers`发现
    `<provider>_api.py`，腾讯云 SDK 实现自包含在 `tencent_api.py`，并校验
    `status/start/stop` 接口；`Power` 持有实例信息和 AK/SK 并在调用时传给适配器，

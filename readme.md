@@ -90,7 +90,9 @@ zip、tar.gz都行，支持从url下载
 整合包 ID 仅允许大小写英文字母、数字和减号（`A-Z`、`a-z`、`0-9`、`-`）。
 # 详情
 ## 目录结构
-/lib/{cli.py,config.py,deploy.py,modpacks.py,power.py,remote.py,providers/}
+/lib/{cli.py,config.py,deploy.py,power.py,remote.py,manager/,monitor/,providers/}
+/lib/manager/{service.py,deploy.py,modpacks.py}
+/lib/monitor/{service.py,deploy.py,config.py}
 /lib/providers/{tencent_api.py,example_api.py}
 
 /mc.{sh,exe}

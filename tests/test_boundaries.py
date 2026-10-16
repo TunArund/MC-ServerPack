@@ -9,6 +9,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_terminal_cli_only_calls_runtime_facades(self) -> None:
+        source = (ROOT / "lib/cli.py").read_text(encoding="utf-8")
+        tree = ast.parse(source, filename="lib/cli.py")
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                imported.update(alias.name for alias in node.names)
+        self.assertTrue({"ManagerService", "MonitorService"} <= imported)
+        for internal in (
+            "create_power", "load_env", "upsert_user_target",
+            "ManagerDeployment", "MonitorDeployment", "ModpackService",
+        ):
+            self.assertNotIn(internal, imported)
+        self.assertNotIn("manager.sh", source)
+        self.assertNotIn("monitor.sh", source)
+
+    def test_runtime_deployment_is_split_by_owner(self) -> None:
+        shared = (ROOT / "lib/deploy.py").read_text(encoding="utf-8")
+        self.assertNotIn("class DeploymentService", shared)
+        self.assertTrue((ROOT / "lib/manager/deploy.py").is_file())
+        self.assertTrue((ROOT / "lib/monitor/deploy.py").is_file())
+
     def test_power_core_is_identical_in_all_runtimes(self) -> None:
         expected = (ROOT / "lib/power.py").read_bytes()
         self.assertEqual(expected, (ROOT / "manager/lib/power.py").read_bytes())
