@@ -9,6 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_power_core_is_identical_in_terminal_and_manager(self) -> None:
+        self.assertEqual(
+            (ROOT / "lib/power.py").read_bytes(),
+            (ROOT / "manager/lib/power.py").read_bytes(),
+        )
+
     def test_no_cross_runtime_imports(self) -> None:
         forbidden = {
             "lib": ("manager", "monitor"),

@@ -84,14 +84,14 @@ zip、tar.gz都行，支持从url下载
 整合包 ID 仅允许大小写英文字母、数字和减号（`A-Z`、`a-z`、`0-9`、`-`）。
 # 详情
 ## 目录结构
-/lib/{cli.py,config.py,deploy.py,modpacks.py,power.py,remote.py,tencent.py}
+/lib/{cli.py,config.py,deploy.py,modpacks.py,power.py,providers.py,remote.py,tencent.py}
 
 /mc.{sh,exe}
 /{config.yml,.env,README.md}
 配置、密钥、说明
 
 /manager/{readme.md,manager.sh,lib/,runtime/,modpacks/}
-lib/{archive.py,cli.py,config.py,docker.py,modpacks.py,power.py,schedule.py}
+lib/{archive.py,cli.py,config.py,docker.py,modpacks.py,power.py,providers.py,schedule.py,tencent.py}
 runtime/{java{8,17,21}.dockerfile,entrypoint.sh}
 modpacks/template/{src/,data/,backups/,config.yml}
 

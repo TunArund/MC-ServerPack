@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from .archive import list_backups
 from .config import MANAGER_ROOT, ManagerLimits, PackSpec
-from .power import create_power
+from .providers import create_power
 
 
 ZONE = ZoneInfo("Asia/Shanghai")

@@ -14,9 +14,10 @@ from pathlib import Path
 from .config import CONFIG_FILE, AppConfig, ConfigError, load, load_env
 from .deploy import DeployError, DeploymentService
 from .modpacks import ModpackError, ModpackService, validate_pack_id
-from .power import Power, PowerError, PowerTarget, tencent_adapter, webhook_adapter
+from .power import Power, PowerError
+from .providers import create_power
 from .remote import CommandError, Transport
-from .tencent import ApiCall, TencentApiError, create_api
+from .tencent import TencentApiError
 
 
 class CliServices:
@@ -30,7 +31,6 @@ class CliServices:
             config_path, config=self.config, transport=self.transport,
         )
         self.modpacks = ModpackService(self.config, transport=self.transport)
-        self._api_call: ApiCall | None = None
 
     def check(self, target: str) -> None:
         self.deployment.check(target)
@@ -50,30 +50,11 @@ class CliServices:
     def remote_manager(self, arguments: list[str], *, tty: bool = False) -> None:
         self.modpacks.remote_manager(arguments, tty=tty)
 
-    def _cloud_api(self) -> ApiCall:
-        if self._api_call is None:
-            power = self.config.manager.power_api
-            if not power or power.provider != "tencent":
-                raise PowerError("manager.power-api 未配置腾讯云 provider")
-            values = load_env(self.config_path.parent / ".env")
-            self._api_call = create_api(
-                power.instance_region,
-                values.get("POWER_SECRET_ID", ""),
-                values.get("POWER_SECRET_KEY", ""),
-            )
-        return self._api_call
-
     def power(self) -> Power:
-        power = self.config.manager.power_api
-        if not power:
+        settings = self.config.manager.power_api
+        if not settings:
             raise PowerError("manager.power-api 未配置")
-        target = PowerTarget(power.instance_id, power.instance_region)
-        if power.provider == "tencent":
-            return Power(tencent_adapter(target, self._cloud_api()))
-        values = load_env(self.config_path.parent / ".env")
-        return Power(webhook_adapter(
-            target, power.url or "", values.get("POWER_SECRET_KEY", ""),
-        ))
+        return create_power(settings, load_env(self.config_path.parent / ".env"))
 
     def stop_modpacks(self) -> None:
         self.modpacks.remote_manager(["stop-all"])

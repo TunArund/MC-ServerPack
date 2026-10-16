@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from .power import InstanceStatus, PowerCall, PowerError, PowerTarget
+
 
 class TencentApiError(RuntimeError):
     pass
@@ -36,5 +38,40 @@ def create_api(region: str, secret_id: str, secret_key: str) -> ApiCall:
             return json.loads(response.to_json_string())
         except Exception as exc:
             raise TencentApiError(f"{service}.{action} 失败：{exc}") from exc
+
+    return call
+
+
+def tencent_adapter(
+    target: PowerTarget, secret_id: str, secret_key: str, *,
+    api_call: ApiCall | None = None,
+) -> PowerCall:
+    api = api_call or create_api(target.instance_region, secret_id, secret_key)
+
+    def call(action: str) -> InstanceStatus | None:
+        actions = {
+            "status": ("DescribeInstances", {"InstanceIds": [target.instance_id]}),
+            "start": ("StartInstances", {"InstanceIds": [target.instance_id]}),
+            "stop": ("StopInstances", {
+                "InstanceIds": [target.instance_id],
+                "StopType": "SOFT", "StoppedMode": "STOP_CHARGING",
+            }),
+        }
+        api_action, payload = actions[action]
+        try:
+            reply = api("cvm", api_action, payload)
+        except (PowerError, TencentApiError):
+            raise
+        except Exception as exc:
+            raise PowerError(f"cvm.{api_action} 失败：{exc}") from exc
+        if action != "status":
+            return None
+        instances = reply.get("InstanceSet") or []
+        if len(instances) != 1 or instances[0].get("InstanceId") != target.instance_id:
+            raise PowerError("DescribeInstances 未返回唯一目标实例")
+        state = instances[0].get("InstanceState")
+        if not isinstance(state, str) or not state:
+            raise PowerError("DescribeInstances 缺少实例状态")
+        return InstanceStatus(state, (instances[0].get("PublicIpAddresses") or [""])[0])
 
     return call

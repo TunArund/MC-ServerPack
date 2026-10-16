@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .tencent import ApiCall, TencentApiError
-
 
 class PowerError(RuntimeError):
     pass
@@ -37,9 +35,11 @@ class Power:
 
     def __init__(
         self, api_call: PowerCall, *, sleeper: Callable[[float], None] = time.sleep,
+        wait_after_action: bool = True,
     ) -> None:
         self.api_call = api_call
         self.sleeper = sleeper
+        self.wait_after_action = wait_after_action
 
     def status(self) -> InstanceStatus:
         result = self.api_call("status")
@@ -61,6 +61,8 @@ class Power:
         current = self.status()
         if current.state == "STOPPED":
             self.api_call("start")
+            if not self.wait_after_action:
+                return InstanceStatus("STARTING", current.public_ip)
         elif current.state not in ("RUNNING", "STARTING"):
             raise PowerError(f"实例处于 {current.state}，不能开机")
         return self.wait("RUNNING", 180)
@@ -71,39 +73,11 @@ class Power:
             return current
         if current.state == "RUNNING":
             self.api_call("stop")
+            if not self.wait_after_action:
+                return InstanceStatus("STOPPING", current.public_ip)
         elif current.state != "STOPPING":
             raise PowerError(f"实例处于 {current.state}，不能关机")
         return self.wait("STOPPED", 360)
-
-
-def tencent_adapter(target: PowerTarget, api_call: ApiCall) -> PowerCall:
-    def call(action: str) -> InstanceStatus | None:
-        actions = {
-            "status": ("DescribeInstances", {"InstanceIds": [target.instance_id]}),
-            "start": ("StartInstances", {"InstanceIds": [target.instance_id]}),
-            "stop": ("StopInstances", {
-                "InstanceIds": [target.instance_id],
-                "StopType": "SOFT", "StoppedMode": "STOP_CHARGING",
-            }),
-        }
-        api_action, payload = actions[action]
-        try:
-            reply = api_call("cvm", api_action, payload)
-        except (PowerError, TencentApiError):
-            raise
-        except Exception as exc:
-            raise PowerError(f"cvm.{api_action} 失败：{exc}") from exc
-        if action != "status":
-            return None
-        instances = reply.get("InstanceSet") or []
-        if len(instances) != 1 or instances[0].get("InstanceId") != target.instance_id:
-            raise PowerError("DescribeInstances 未返回唯一目标实例")
-        state = instances[0].get("InstanceState")
-        if not isinstance(state, str) or not state:
-            raise PowerError("DescribeInstances 缺少实例状态")
-        return InstanceStatus(state, (instances[0].get("PublicIpAddresses") or [""])[0])
-
-    return call
 
 
 def webhook_adapter(

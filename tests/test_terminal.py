@@ -14,10 +14,10 @@ from lib.config import load as load_config
 from lib.deploy import DeploymentService
 from lib.modpacks import ModpackError, ModpackService, validate_pack_id
 from lib.power import (
-    InstanceStatus, Power, PowerError, PowerTarget, tencent_adapter,
-    webhook_adapter,
+    InstanceStatus, Power, PowerError, PowerTarget, webhook_adapter,
 )
 from lib.remote import CommandError, archive_tree, cleanup_archive, shell_join
+from lib.tencent import tencent_adapter
 
 
 class FakeCloud:
@@ -152,7 +152,8 @@ class PowerTests(unittest.TestCase):
             return {}
 
         result = Power(
-            tencent_adapter(self.target(), api), sleeper=lambda _: None,
+            tencent_adapter(self.target(), "id", "key", api_call=api),
+            sleeper=lambda _: None,
         ).start()
         self.assertEqual(result.state, "RUNNING")
         self.assertEqual(actions, ["DescribeInstances", "StartInstances", "DescribeInstances"])
@@ -167,7 +168,10 @@ class PowerTests(unittest.TestCase):
                 return {"InstanceSet": [{"InstanceId": "ins-test", "InstanceState": next(descriptions)}]}
             return {}
 
-        power = Power(tencent_adapter(self.target(), api), sleeper=lambda _: None)
+        power = Power(
+            tencent_adapter(self.target(), "id", "key", api_call=api),
+            sleeper=lambda _: None,
+        )
         current = power.status()
         result = power.stop(current)
         self.assertEqual(result.state, "STOPPED")
@@ -183,7 +187,9 @@ class PowerTests(unittest.TestCase):
             return {}
 
         with self.assertRaises(PowerError):
-            Power(tencent_adapter(self.target(), api)).stop()
+            Power(tencent_adapter(
+                self.target(), "id", "key", api_call=api,
+            )).stop()
         self.assertNotIn("StopInstances", actions)
 
     def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
