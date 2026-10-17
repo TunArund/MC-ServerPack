@@ -1,4 +1,4 @@
-"""Normalize QQ events and enforce configured target/admin boundaries."""
+"""规范化 QQ 事件，并执行目标与管理员权限边界。"""
 
 from __future__ import annotations
 

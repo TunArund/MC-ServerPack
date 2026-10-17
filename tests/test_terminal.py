@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -10,16 +11,15 @@ from unittest.mock import Mock, patch
 
 import yaml
 
-from lib.cli import dispatch
+from lib.cli import CliServices, dispatch
 from lib.config import load as load_config
-from lib.manager.deploy import ManagerDeployment
-from lib.manager.modpacks import ModpackError, ModpackService, validate_pack_id
-from lib.manager.service import ManagerService
-from lib.monitor.deploy import MonitorDeployment
-from lib.monitor.service import MonitorService
+from lib.deploy import RuntimeDeployment, archive_tree
+from lib.manager import Manager
+from lib.monitor import Monitor
 from lib.power import InstanceStatus, Power, PowerError, PowerTarget
-from lib.providers import tencent_api
-from lib.remote import CommandError, archive_tree, cleanup_archive, shell_join
+from lib.providers import tencent
+from lib.remote import CommandError, shell_join
+from manager.lib.config import ConfigError as ManagerConfigError, validate_pack_id
 
 
 class FakeCloud:
@@ -48,30 +48,41 @@ class FakeService:
     def check(self, target: str) -> None:
         self.calls.append(("check", target))
 
-    def deploy_manager(self) -> None:
-        self.calls.append("deploy-manager")
+    def install(self, target: str) -> None:
+        self.calls.append(("install", target))
 
-    def deploy_monitor(self) -> None:
-        self.calls.append("deploy-monitor")
+    def publish(self, target: str) -> None:
+        self.calls.append(("publish", target))
 
-    def deploy_pack(self, pack_id: str, *, force: bool) -> None:
-        self.calls.append(("deploy-pack", pack_id, force))
+    def configure(self, target: str) -> None:
+        self.calls.append(("configure", target))
 
-    def create_pack(self, pack_id: str) -> Path:
-        self.calls.append(("create-pack", pack_id))
+    def deploy_modpack(self, pack_id: str, *, force: bool) -> None:
+        self.calls.append(("deploy-modpack", pack_id, force))
+
+    def install_docker(self, target: str) -> None:
+        self.calls.append(("install-docker", target))
+
+    def install_python(self) -> None:
+        self.calls.append(("install-python", "manager"))
+
+    def local_create(self, pack_id: str) -> Path:
+        self.calls.append(("local-create", pack_id))
         return Path("manager/modpacks") / pack_id
 
-    def remote_pack(
+    def manager_command(
         self, action: str, pack_id: str | None = None, *,
         extra: tuple[str, ...] = (), tty: bool = False,
     ) -> None:
-        self.calls.append(("remote-pack", action, pack_id, extra, tty))
+        self.calls.append(("manager", action, pack_id, extra, tty))
 
-    def manager_power(self, action: str, *, force: bool = False):
-        self.calls.append(("manager-power", action, force))
+    def control(self, target: str, action: str, *, force: bool = False):
+        self.calls.append(("control", target, action, force))
         if self.stop_error:
             raise self.stop_error
-        return InstanceStatus("STOPPED" if action == "stop" else "RUNNING")
+        return None if target == "monitor" else InstanceStatus(
+            "STOPPED" if action == "stop" else "RUNNING"
+        )
 
     def add_monitor_target(self, name: str) -> str:
         self.calls.append(("add-monitor-target", name))
@@ -83,8 +94,6 @@ class FakeTransport:
         self.archive_path = archive
         self.ssh_calls: list[tuple[str, list[str], dict]] = []
         self.uploads: list[tuple[str, bytes]] = []
-        self.cleaned = False
-        self.excluded: set[str] = set()
         self.ssh_stdout: bytes = b""
 
     def ssh(self, target: str, arguments: list[str], **kwargs):
@@ -95,16 +104,11 @@ class FakeTransport:
             stdout=self.ssh_stdout,
         )
 
+    def ssh_logged(self, target: str, arguments: list[str], **kwargs):
+        return self.ssh(target, arguments, **kwargs)
+
     def scp(self, source: Path, destination: str) -> None:
         self.uploads.append((destination, source.read_bytes()))
-
-    def archive(self, source: Path, exclude=None) -> Path:
-        self.excluded = set(exclude or ())
-        return self.archive_path
-
-    def cleanup(self, archive: Path) -> None:
-        self.cleaned = True
-
 
 class TerminalCliTests(unittest.TestCase):
     def test_monitor_add_target_defaults_to_owner(self) -> None:
@@ -120,64 +124,64 @@ class TerminalCliTests(unittest.TestCase):
             (Path(__file__).resolve().parents[1] / "config.yml.example").read_text(),
             encoding="utf-8",
         )
-        services = MonitorService.__new__(MonitorService)
+        (config_path.parent / ".env").write_text(
+            "POWER_SECRET_ID=id\nPOWER_SECRET_KEY=key\n"
+            "QQBOT_SECRET_ID=bot\nQQBOT_SECRET_KEY=token\n",
+            encoding="utf-8",
+        )
+        services = Monitor.__new__(Monitor)
         services.config_path = config_path
         services.deployment = Mock()
-        services.deployment.discover_user.return_value = "new-openid"
-        with patch("lib.monitor.service.secrets.token_hex", return_value="a1b2"):
+        services.command = Mock(return_value=subprocess.CompletedProcess(
+            [], 0, stdout=b"user_openid: new-openid\n",
+        ))
+        with patch("lib.monitor.secrets.token_hex", return_value="a1b2"):
             result = services.add_target("owner")
         self.assertEqual(result, "new-openid")
-        services.deployment.discover_user.assert_called_once_with("a1b2")
-        services.deployment.refresh_config.assert_called_once_with()
+        services.command.assert_any_call(["add-target", "a1b2"], capture=True)
+        services.deployment.configure.assert_called_once()
         document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         owner = next(
             item for item in document["monitor"]["qqbot"]["targets"]
             if item["name"] == "owner"
         )
         self.assertEqual(owner["id"], "new-openid")
+        config_text, environment = services.deployment.configure.call_args.args
+        self.assertIn("qqbot:", config_text)
+        self.assertIn("QQBOT_SECRET_KEY=token", environment)
 
     def test_pack_arguments_are_forwarded_without_shell_joining(self) -> None:
         service = FakeService()
-        self.assertEqual(dispatch(["pack", "console", "demo", "say", "hello world"], service), 0)
+        self.assertEqual(dispatch(["manager", "console", "demo", "say", "hello world"], service), 0)
         self.assertEqual(service.calls, [
-            ("remote-pack", "console", "demo", ("say", "hello world"), False),
+            ("manager", "console", "demo", ("say", "hello world"), False),
         ])
 
     def test_follow_logs_requests_tty(self) -> None:
         service = FakeService()
-        dispatch(["pack", "logs", "demo", "--lines", "20", "--follow"], service)
+        dispatch(["manager", "logs", "demo", "--lines", "20", "--follow"], service)
         self.assertEqual(service.calls, [
-            ("remote-pack", "logs", "demo", ("--lines", "20", "--follow"), True),
+            ("manager", "logs", "demo", ("--lines", "20", "--follow"), True),
         ])
-
-    def test_deploy_all_keeps_runtime_deployments_separate(self) -> None:
-        service = FakeService()
-        dispatch(["deploy", "all"], service)
-        self.assertEqual(service.calls, ["deploy-manager", "deploy-monitor"])
-
-    def test_pack_create_is_local(self) -> None:
-        service = FakeService()
-        dispatch(["pack", "create", "demo"], service)
-        self.assertEqual(service.calls, [("create-pack", "demo")])
 
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
-        dispatch(["manager", "stop", "--force"], service)
-        self.assertEqual(service.calls, [("manager-power", "stop", True)])
+        dispatch(["stop", "manager", "--force"], service)
+        self.assertEqual(service.calls, [("control", "manager", "stop", True)])
 
     def test_stop_failure_prevents_poweroff_by_default(self) -> None:
         service = FakeService()
         service.stop_error = CommandError("SSH failed")
         with patch("builtins.input", return_value="yes"), self.assertRaises(CommandError):
-            dispatch(["manager", "stop"], service)
-        self.assertEqual(service.calls, [("manager-power", "stop", False)])
+            dispatch(["stop", "manager"], service)
+        self.assertEqual(service.calls, [("control", "manager", "stop", False)])
 
     def test_pack_id_is_forwarded_to_manager_service(self) -> None:
         service = FakeService()
-        dispatch(["pack", "status", "bad_name"], service)
+        dispatch(["manager", "status", "bad_name"], service)
         self.assertEqual(
             service.calls,
-            [("remote-pack", "status", "bad_name", (), False)],
+            [("manager", "status", "bad_name", (), False)],
         )
 
 
@@ -186,10 +190,10 @@ class PowerTests(unittest.TestCase):
         return PowerTarget("ins-test")
 
     def tencent(self, api, *, sleeper=lambda _: None) -> Power:
-        patcher = patch.object(tencent_api, "_create_api", return_value=api)
+        patcher = patch.object(tencent, "_create_api", return_value=api)
         patcher.start()
         self.addCleanup(patcher.stop)
-        return Power(tencent_api, self.target(), "id", "key", sleeper=sleeper)
+        return Power(tencent, self.target(), "id", "key", sleeper=sleeper)
 
     def test_start_is_idempotent_and_waits_for_running(self) -> None:
         states = iter(("STOPPED", "RUNNING"))
@@ -237,7 +241,7 @@ class PowerTests(unittest.TestCase):
     def test_pack_id_allows_only_ascii_letters_digits_and_hyphen(self) -> None:
         self.assertEqual(validate_pack_id("Pack-01"), "Pack-01")
         for invalid in ("pack_name", "pack.name", "../pack", "中文"):
-            with self.subTest(invalid=invalid), self.assertRaises(ModpackError):
+            with self.subTest(invalid=invalid), self.assertRaises(ManagerConfigError):
                 validate_pack_id(invalid)
 
     def test_webhook_uses_normalized_contract(self) -> None:
@@ -278,22 +282,54 @@ class DeploymentTests(unittest.TestCase):
             },
             "monitor": {"enabled": False}, "cos": {"enabled": False},
         }), encoding="utf-8")
+        (self.root / ".env").write_text("", encoding="utf-8")
         self.archive = self.root / "source.tar.gz"
         self.archive.write_bytes(b"archive")
 
     def test_manager_deploy_uploads_only_manager_section_and_preserves_runtime_data(self) -> None:
-        transport = FakeTransport(self.archive)
-        ManagerDeployment(self.config, transport=transport).deploy()
-        config_upload = next(data for destination, data in transport.uploads if destination.endswith("/config.yml"))
-        deployed = yaml.safe_load(config_upload)
+        service = Manager(self.config, transport=FakeTransport(self.archive))
+        service.deployment = Mock()
+        service.install()
+        config_text, environment = service.deployment.install.call_args.args
+        deployed = yaml.safe_load(config_text)
         self.assertIn("modpack", deployed)
         self.assertNotIn("monitor", deployed)
-        scripts = "\n".join(" ".join(call[1]) for call in transport.ssh_calls)
-        self.assertNotIn("/modpacks;", scripts)
-        self.assertNotIn("/.schedule-state.json", scripts)
-        self.assertIn("schedule install", scripts)
-        self.assertNotIn("modpacks", transport.excluded)
-        self.assertTrue(transport.cleaned)
+        self.assertEqual(environment, "")
+
+    def test_manager_config_sync_includes_filtered_environment(self) -> None:
+        (self.root / ".env").write_text(
+            "POWER_SECRET_ID=id\nPOWER_SECRET_KEY=key\n"
+            "QQBOT_SECRET_KEY=not-for-manager\n",
+            encoding="utf-8",
+        )
+        service = Manager(self.config, transport=FakeTransport(self.archive))
+        service.deployment = Mock()
+        service.configure()
+        config_text, environment = service.deployment.configure.call_args.args
+        self.assertIn("modpack:", config_text)
+        self.assertEqual(
+            environment,
+            "POWER_SECRET_ID=id\nPOWER_SECRET_KEY=key\n",
+        )
+
+    def test_generic_deployer_only_invokes_runtime_check_and_install(self) -> None:
+        source = self.root / "runtime"
+        source.mkdir()
+        (source / "runtime.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        transport = FakeTransport(self.archive)
+        endpoint = load_config(self.config).manager.endpoint
+        deployment = RuntimeDeployment(
+            source, endpoint, "runtime.sh", transport=transport,
+        )
+        deployment.install("value: 1\n", "TOKEN=value\n")
+        scripts = "\n".join(
+            str(call[2].get("input_text", "")) + " " + " ".join(call[1])
+            for call in transport.ssh_calls
+        )
+        self.assertNotIn("apt-get", scripts)
+        self.assertNotIn("pip install", scripts)
+        self.assertIn("check", scripts)
+        self.assertIn("install", scripts)
 
     def test_monitor_user_discovery_parses_remote_openid(self) -> None:
         document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
@@ -313,17 +349,16 @@ class DeploymentTests(unittest.TestCase):
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         transport = FakeTransport(self.archive)
         transport.ssh_stdout = b"user_openid: discovered-user\n"
-        service = MonitorDeployment(self.config, transport=transport)
-        self.assertEqual(service.discover_user("a1b2"), "discovered-user")
+        service = Monitor(self.config, transport=transport)
+        service.command(["add-target", "a1b2"], capture=True)
         command = " ".join(transport.ssh_calls[-1][1])
         self.assertIn("./monitor.sh add-target a1b2", command)
 
     def test_pack_deploy_rejects_path_traversal_before_remote_access(self) -> None:
         transport = FakeTransport(self.archive)
-        config = load_config(self.config)
-        service = ModpackService(config, transport=transport)
-        with self.assertRaisesRegex(RuntimeError, "无效整合包 ID"):
-            service.deploy_pack("../escape")
+        service = Manager(self.config, transport=transport)
+        with self.assertRaisesRegex(CommandError, "命令执行失败"):
+            service.deploy_modpack("../escape")
         self.assertFalse(transport.ssh_calls)
 
     def test_cli_selects_custom_adapter_and_reads_fixed_env_key(self) -> None:
@@ -334,36 +369,36 @@ class DeploymentTests(unittest.TestCase):
         }
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
-        with patch("lib.power.load_adapter", return_value=SimpleNamespace()):
-            self.assertIsInstance(ManagerService(self.config).power(), Power)
+        with patch("lib.manager.create_power", return_value=Mock(spec=Power)):
+            self.assertIsInstance(Manager(self.config).power(), Power)
 
     def test_manager_service_owns_stop_then_poweroff_sequence(self) -> None:
-        service = ManagerService.__new__(ManagerService)
-        service.modpacks = Mock()
+        service = CliServices.__new__(CliServices)
+        service.manager = Mock()
         power = FakeCloud()
-        service.power = Mock(return_value=power)
-        result = service.power_action("stop")
+        service.manager.power.return_value = power
+        result = service.control("manager", "stop")
         self.assertEqual(result.state, "STOPPED")
-        service.modpacks.remote_manager.assert_called_once_with(["stop-all"])
+        service.manager.run.assert_called_once_with("stop-all")
         self.assertEqual(power.calls, ["status", ("stop", "RUNNING")])
 
     def test_manager_service_force_allows_stop_failure(self) -> None:
-        service = ManagerService.__new__(ManagerService)
-        service.modpacks = Mock()
-        service.modpacks.remote_manager.side_effect = CommandError("SSH failed")
+        service = CliServices.__new__(CliServices)
+        service.manager = Mock()
+        service.manager.run.side_effect = CommandError("SSH failed")
         power = FakeCloud()
-        service.power = Mock(return_value=power)
-        service.power_action("stop", force=True)
+        service.manager.power.return_value = power
+        service.control("manager", "stop", force=True)
         self.assertEqual(power.calls, ["status", ("stop", "RUNNING")])
 
     def test_manager_service_stop_failure_prevents_poweroff_by_default(self) -> None:
-        service = ManagerService.__new__(ManagerService)
-        service.modpacks = Mock()
-        service.modpacks.remote_manager.side_effect = CommandError("SSH failed")
+        service = CliServices.__new__(CliServices)
+        service.manager = Mock()
+        service.manager.run.side_effect = CommandError("SSH failed")
         power = FakeCloud()
-        service.power = Mock(return_value=power)
+        service.manager.power.return_value = power
         with self.assertRaises(CommandError):
-            service.power_action("stop")
+            service.control("manager", "stop")
         self.assertEqual(power.calls, ["status"])
 
     def test_manager_deploy_selects_custom_adapter_secret(self) -> None:
@@ -378,10 +413,10 @@ class DeploymentTests(unittest.TestCase):
         document["manager"]["modpack"].update({"auto-stop": True, "stop-at": "23:00"})
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         (self.root / ".env").write_text("POWER_SECRET_KEY=secret\n", encoding="utf-8")
-        service = ManagerDeployment(self.config, transport=FakeTransport(self.archive))
+        service = Manager(self.config, transport=FakeTransport(self.archive))
         self.assertEqual(
-            service._manager_env(),
-            "POWER_SECRET_ID=\nPOWER_SECRET_KEY=secret\n",
+            service._environment(),
+            "POWER_SECRET_KEY=secret\n",
         )
 
     def test_shell_join_quotes_untrusted_console_text(self) -> None:
@@ -400,7 +435,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn("modpacks/template/config.yml", names)
             self.assertNotIn("modpacks/demo/config.yml", names)
         finally:
-            cleanup_archive(archive)
+            shutil.rmtree(archive.parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

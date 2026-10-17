@@ -7,9 +7,10 @@ from pathlib import Path
 import yaml
 
 from lib.config import (
-    ConfigError, load, render_runtime_section, runtime_section,
+    ConfigError, deployment_connection, deployment_endpoint, deployment_host,
+    initialize, load, load_manager, load_monitor, render_runtime_section,
+    runtime_section, upsert_monitor_user_target,
 )
-from lib.monitor.config import upsert_user_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,12 +37,117 @@ class ConfigTests(unittest.TestCase):
             "cos": {"enabled": False},
         }
 
+    def test_initialize_copies_examples_without_overwriting(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "config.yml.example").write_text("manager: example\n")
+        (root / ".env.example").write_text("TOKEN=\n")
+
+        first = initialize(root / "config.yml")
+        self.assertEqual(first, (
+            (root / "config.yml", True),
+            (root / ".env", True),
+        ))
+        self.assertEqual((root / "config.yml").read_text(), "manager: example\n")
+        self.assertEqual((root / ".env").read_text(), "TOKEN=\n")
+        self.assertEqual((root / ".env").stat().st_mode & 0o777, 0o600)
+
+        (root / "config.yml").write_text("keep\n")
+        second = initialize(root / "config.yml")
+        self.assertEqual(second, (
+            (root / "config.yml", False),
+            (root / ".env", False),
+        ))
+        self.assertEqual((root / "config.yml").read_text(), "keep\n")
+
+    def test_initialize_requires_both_examples_before_writing(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "config.yml.example").write_text("manager: example\n")
+        with self.assertRaisesRegex(ConfigError, "初始化模板"):
+            initialize(root / "config.yml")
+        self.assertFalse((root / "config.yml").exists())
+
     def test_minimum_disabled_optional_services(self) -> None:
         config = load(self.write(self.minimum()))
         self.assertEqual(config.manager.endpoint.host, "manager.example")
         self.assertEqual(config.manager.modpack.java, (17, 21))
         self.assertFalse(config.monitor.enabled)
         self.assertIsNone(config.monitor.endpoint)
+
+    def test_monitor_loading_does_not_validate_manager(self) -> None:
+        document = self.minimum()
+        document["manager"]["user"] = ""
+        document["monitor"] = {
+            "enabled": True,
+            "host": "monitor.example",
+            "user": "monitor",
+            "dir": "/srv/monitor",
+            "manager": {
+                "power-api": {
+                    "provider": "tencent",
+                    "instance-id": "manager",
+                    "instance-region": "ap-test",
+                },
+            },
+        }
+        config = load_monitor(self.write(document))
+        self.assertEqual(config.endpoint.user, "monitor")
+
+    def test_account_bootstrap_reads_only_target_host(self) -> None:
+        document = self.minimum()
+        document["manager"]["user"] = "root"
+        document["manager"]["modpack"] = "not-yet-configured"
+        self.assertEqual(
+            deployment_host(self.write(document), "manager"),
+            "manager.example",
+        )
+
+    def test_docker_bootstrap_reads_only_target_connection(self) -> None:
+        document = self.minimum()
+        document["manager"]["dir"] = "not-needed"
+        document["manager"]["modpack"] = "not-yet-configured"
+        self.assertEqual(
+            deployment_connection(self.write(document), "manager"),
+            ("manager.example", "minecraft"),
+        )
+
+    def test_python_bootstrap_reads_only_target_endpoint(self) -> None:
+        document = self.minimum()
+        document["manager"]["modpack"] = "not-yet-configured"
+        endpoint = deployment_endpoint(self.write(document), "manager")
+        self.assertEqual(endpoint.host, "manager.example")
+        self.assertEqual(endpoint.user, "minecraft")
+        self.assertEqual(endpoint.directory, "/srv/minecraft")
+
+    def test_runtime_endpoints_reject_root_user(self) -> None:
+        manager = self.minimum()
+        manager["manager"]["user"] = "root"
+        with self.assertRaisesRegex(ConfigError, "不能是 root"):
+            load_manager(self.write(manager))
+
+        monitor = self.minimum()
+        monitor["monitor"] = {
+            "enabled": True,
+            "host": "monitor.example",
+            "user": "root",
+            "dir": "/srv/monitor",
+            "manager": {
+                "power-api": {
+                    "provider": "tencent",
+                    "instance-id": "manager",
+                    "instance-region": "ap-test",
+                },
+            },
+        }
+        with self.assertRaisesRegex(ConfigError, "不能是 root"):
+            load_monitor(self.write(monitor))
+
+        monitor["monitor"]["enabled"] = False
+        with self.assertRaisesRegex(ConfigError, "不能是 root"):
+            load_monitor(self.write(monitor))
 
     def test_monitor_requires_cloud_identity(self) -> None:
         document = self.minimum()
@@ -64,7 +170,7 @@ class ConfigTests(unittest.TestCase):
             "provider": "../power", "instance-id": "manager",
             "instance-region": "local",
         }
-        with self.assertRaisesRegex(ConfigError, "字母、数字和减号"):
+        with self.assertRaisesRegex(ConfigError, "字母、数字和下划线"):
             load(self.write(document))
 
     def test_enabled_schedule_requires_time(self) -> None:
@@ -115,7 +221,7 @@ class ConfigTests(unittest.TestCase):
         source = ROOT / "config.yml.example"
         path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
         original = path.read_text(encoding="utf-8")
-        upsert_user_target(path, "owner", "new-openid")
+        upsert_monitor_user_target(path, "owner", "new-openid")
         updated = path.read_text(encoding="utf-8")
         self.assertEqual(updated, original.replace("id: aaa", "id: 'new-openid'", 1))
         self.assertEqual(load(path).monitor.targets[0].identifier, "new-openid")
@@ -123,7 +229,7 @@ class ConfigTests(unittest.TestCase):
     def test_user_target_is_added_when_name_does_not_exist(self) -> None:
         source = ROOT / "config.yml.example"
         path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
-        upsert_user_target(path, "backup-owner", "second-openid")
+        upsert_monitor_user_target(path, "backup-owner", "second-openid")
         config = load(path)
         added = next(item for item in config.monitor.targets if item.name == "backup-owner")
         self.assertEqual(added.identifier, "second-openid")

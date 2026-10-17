@@ -1,4 +1,4 @@
-"""Daily power-event calculations and atomic completion state."""
+"""计算每日电源事件并原子记录完成状态。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _at(local: datetime, clock: str) -> datetime:
 
 
 def latest_event(now: datetime, schedule: PowerSchedule) -> PowerEvent | None:
-    """Return the most recent enabled event, including yesterday for catch-up."""
+    """返回最近启用的事件，并包含昨日未处理事件以便补执行。"""
     local = now.astimezone(ZONE)
     candidates: list[PowerEvent] = []
     definitions = (

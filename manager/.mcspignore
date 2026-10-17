@@ -1,0 +1,11 @@
+config.yml
+.env
+.venv
+modpacks/*
+!modpacks/template
+!modpacks/template/*
+modpacks/template/data
+modpacks/template/backups
+.schedule-state.json
+schedule.log
+deploy.log

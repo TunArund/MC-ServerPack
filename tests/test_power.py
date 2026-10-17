@@ -9,8 +9,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from manager.lib.config import ManagerLimits
-from manager.lib.power import Power, PowerError, PowerTarget, load_adapter
-from manager.lib.providers import tencent_api
+from manager.lib.power import Power, PowerError, PowerTarget
+from manager.lib.provider import ProviderError, list_providers, load_provider
+from manager.lib.providers import tencent
 from manager.lib.schedule import create_power
 
 
@@ -58,10 +59,10 @@ class PowerTests(unittest.TestCase):
                 self.assertEqual(payload["StopType"], "SOFT")
                 self.assertEqual(payload["StoppedMode"], "STOP_CHARGING")
             return {}
-        patcher = patch.object(tencent_api, "_create_api", return_value=api)
+        patcher = patch.object(tencent, "_create_api", return_value=api)
         patcher.start()
         self.addCleanup(patcher.stop)
-        return Power(tencent_api, self.target, secret_id, secret_key, wait_after_action=False)
+        return Power(tencent, self.target, secret_id, secret_key, wait_after_action=False)
 
     def test_running_instance_uses_billing_safe_soft_stop(self) -> None:
         runner = FakeRunner()
@@ -75,7 +76,7 @@ class PowerTests(unittest.TestCase):
 
     def test_credentials_are_required(self) -> None:
         with patch.dict("os.environ", {}, clear=True), self.assertRaisesRegex(PowerError, "POWER_SECRET"):
-            Power(tencent_api, self.target, "", "").status()
+            Power(tencent, self.target, "", "").status()
 
     def test_webhook_reads_fixed_token_and_uses_normalized_payload(self) -> None:
         calls: list[tuple[str, str, str, str, str]] = []
@@ -102,28 +103,36 @@ class PowerTests(unittest.TestCase):
         )
         with (
             patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}),
-            patch("manager.lib.power.load_adapter", return_value=SimpleNamespace()),
+            patch("manager.lib.power.load_provider", return_value=SimpleNamespace()),
         ):
             self.assertIsInstance(create_power(settings, self.root), Power)
 
     def test_provider_is_discovered_and_interface_is_checked(self) -> None:
         providers = self.root / "providers"
         providers.mkdir()
-        (providers / "xxxaaa_api.py").write_text(
+        (providers / "xxxaaa.py").write_text(
             "def status(instance_id, region, secret_id, secret_key): return {'state': 'RUNNING'}\n"
             "def start(instance_id, region, secret_id, secret_key): return {}\n"
             "def stop(instance_id, region, secret_id, secret_key): return {}\n",
             encoding="utf-8",
         )
-        adapter = load_adapter("xxxaaa", providers_dir=providers)
+        adapter = load_provider("xxxaaa", providers_dir=providers)
         self.assertEqual(adapter.status("i", "r", "", "token"), {"state": "RUNNING"})
+        self.assertEqual(list_providers(providers_dir=providers), ("xxxaaa",))
 
     def test_provider_requires_all_actions(self) -> None:
         providers = self.root / "providers"
         providers.mkdir()
-        (providers / "broken_api.py").write_text("VALUE = 1\n", encoding="utf-8")
-        with self.assertRaisesRegex(PowerError, "status"):
-            load_adapter("broken", providers_dir=providers)
+        (providers / "broken.py").write_text("VALUE = 1\n", encoding="utf-8")
+        with self.assertRaisesRegex(ProviderError, "status"):
+            load_provider("broken", providers_dir=providers)
+
+    def test_provider_id_rejects_hyphen_and_paths(self) -> None:
+        for provider in ("bad-name", "../bad", "bad.py"):
+            with self.subTest(provider=provider), self.assertRaisesRegex(
+                ProviderError, "字母、数字和下划线",
+            ):
+                load_provider(provider, providers_dir=self.root)
 
 
 if __name__ == "__main__":

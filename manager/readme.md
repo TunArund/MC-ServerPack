@@ -1,16 +1,3 @@
-# 用户账户
-## 账号创建
-useradd username
-usermod -aG sudo,docker username
-echo 'username ALL=(ALL:ALL) NOPASS | sudo tee /etc/sudoers.d/username'
-
-## ssh免密登录
-ssh-keygen
-
-~username/.ssh/authorized_keys 写入公钥，如id_ed25519.pub的内容
-
-Done，如出错或不知如何进行，自行咨询D老师
-
 # 整合包标准目录结构
 参考./modpacks/template
 ```
@@ -29,10 +16,10 @@ template/
     ├── ops.json
     ├── server.properties
     ├── usercache.json
-    ├── user_jvm_args.txt
+    ├── user_jvm_args.txt # 个性化java启动参数
     ├── usernamecache.json
     ├── whitelist.json
-    └── world/
+    └── world/ # 重要：你的存档
 ```
 |目录|作用|
 ----|----
@@ -52,7 +39,12 @@ Manager 独立读取并持有自己的 `config.yml`，不依赖 Terminal 或 Mon
 
 ```bash
 cp config.yml.example config.yml
+./manager.sh check
+./manager.sh install docker
+./manager.sh install
 ./manager.sh create example
+./manager.sh create vanilla --vanilla
+./manager.sh create vanilla-locked --vanilla 1.21.10 --accept-eula
 ./manager.sh config example
 ./manager.sh start example
 ./manager.sh status example
@@ -64,10 +56,23 @@ cp config.yml.example config.yml
 ./manager.sh restore example
 ./manager.sh remove example --force
 ./manager.sh stop-all
+./manager.sh export example
+./manager.sh import example /path/to/example.tar.gz
 ./manager.sh schedule install
 ./manager.sh schedule run
 ./manager.sh schedule remove
 ```
+
+`check` 只验证 Python 3.9+、venv、Docker Engine、Compose 插件和 crontab，不会安装或修改系统软件。
+`install docker` 在 Debian/Ubuntu 上配置 Docker 官方 APT 仓库，安装 Engine、Buildx
+和 Compose 插件，启用服务并将当前非 root 用户加入 `docker` 组。该组具有等同 root
+的 Docker 权限；安装完成后需重新登录，再执行 `./manager.sh check`。
+`install` 在环境检查通过后安装 Manager 自身 Python 依赖并安装聚合调度任务。
+`create --vanilla [version]` 从 Mojang 官方元数据下载原版服务端，校验文件大小与
+SHA-1，并自动写入版本、Java 镜像和启动命令。不指定版本时使用最新正式版；默认
+`eula=false`，只有显式添加 `--accept-eula` 才写入 `eula=true`。
+ `export/import` 导入导出整合包完整结构，含src,data,config
+
 
 `start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
 修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。
@@ -126,7 +131,8 @@ modpack:
 新的备份。
 
 `power-api.provider: tencent` 使用内置的腾讯云 SDK 适配；例如
-`provider: xxxaaa` 会自动寻找 `lib/providers/xxxaaa_api.py`。该文件必须实现
+`provider: xxx_aaa` 会自动寻找 `lib/providers/xxx_aaa.py`。Provider ID 仅允许
+大小写字母、数字和下划线。该文件必须实现
 `status`、`start`、`stop`，URL 和厂商细节写在文件内。先安装依赖并填写密钥文件：
 
 ```bash

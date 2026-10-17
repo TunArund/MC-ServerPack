@@ -1,4 +1,4 @@
-"""Asynchronous Monitor service for scheduled cloud power control."""
+"""执行云主机定时电源控制的异步 Monitor 服务。"""
 
 from __future__ import annotations
 

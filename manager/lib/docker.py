@@ -1,10 +1,14 @@
-"""Small, injectable wrapper around Docker and Docker Compose."""
+"""轻量且可注入的 Docker 与 Docker Compose 封装。"""
 
 from __future__ import annotations
 
 import os
+import pwd
+import re
+import shutil
 import subprocess
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import MANAGER_ROOT, PackSpec, render_compose, runtime_image
@@ -15,6 +19,149 @@ class DockerError(RuntimeError):
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+@dataclass(frozen=True)
+class DockerInstallResult:
+    already_installed: bool
+    user_added: str | None
+
+
+class DockerInstaller:
+    """使用 Docker 官方 APT 仓库安装 Engine 与 Compose 插件。"""
+
+    CONFLICTS = (
+        "docker.io", "docker-compose", "docker-doc", "docker-buildx",
+        "podman-docker", "containerd", "runc",
+    )
+    PACKAGES = (
+        "docker-ce", "docker-ce-cli", "containerd.io",
+        "docker-buildx-plugin", "docker-compose-plugin",
+    )
+
+    def __init__(
+        self, runner: Runner = subprocess.run, *,
+        os_release: Path = Path("/etc/os-release"),
+        effective_uid: int | None = None, invoking_user: str | None = None,
+    ) -> None:
+        self.runner = runner
+        self.os_release = os_release
+        self.effective_uid = os.geteuid() if effective_uid is None else effective_uid
+        self.invoking_user = invoking_user or pwd.getpwuid(os.getuid()).pw_name
+        if self.effective_uid == 0:
+            self.privilege: list[str] = []
+        elif shutil.which("sudo"):
+            self.privilege = ["sudo", "--non-interactive"]
+        else:
+            raise DockerError("安装 Docker 需要 root 或免密 sudo")
+
+    def _call(
+        self, arguments: Sequence[str], *, capture: bool = False,
+        input_text: str | None = None, check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            result = self.runner(
+                list(arguments), text=True, input=input_text,
+                capture_output=capture, check=False,
+            )
+        except OSError as exc:
+            raise DockerError(f"无法执行 {arguments[0]}：{exc}") from exc
+        if check and result.returncode:
+            detail = ((result.stderr or result.stdout) if capture else "") or "请查看命令输出"
+            raise DockerError(
+                f"Docker 安装命令失败：{arguments[0]}：{detail.strip()[-500:]}"
+            )
+        return result
+
+    def _root(self, *arguments: str, **options) -> subprocess.CompletedProcess[str]:
+        return self._call([*self.privilege, *arguments], **options)
+
+    def _platform(self) -> tuple[str, str, str]:
+        try:
+            lines = self.os_release.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise DockerError(f"无法读取 {self.os_release}：{exc}") from exc
+        values: dict[str, str] = {}
+        for line in lines:
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, value = line.split("=", 1)
+                values[key] = value.strip().strip("\"'")
+        distribution = values.get("ID", "").lower()
+        codename = values.get("VERSION_CODENAME", "").lower()
+        if distribution not in ("debian", "ubuntu"):
+            raise DockerError("仅支持在 Debian 或 Ubuntu 上自动安装 Docker")
+        if not re.fullmatch(r"[a-z0-9.-]+", codename):
+            raise DockerError("/etc/os-release 缺少安全的 VERSION_CODENAME")
+        architecture = self._call(
+            ["dpkg", "--print-architecture"], capture=True,
+        ).stdout.strip()
+        if not re.fullmatch(r"[a-z0-9]+", architecture):
+            raise DockerError("无法识别 dpkg 架构")
+        return distribution, codename, architecture
+
+    def _installed_conflicts(self) -> list[str]:
+        installed = []
+        for package in self.CONFLICTS:
+            result = self._call(
+                ["dpkg-query", "-W", "-f=${db:Status-Abbrev}", package],
+                capture=True, check=False,
+            )
+            if result.returncode == 0 and result.stdout.startswith("ii"):
+                installed.append(package)
+        return installed
+
+    def _grant_access(self) -> str | None:
+        if self.invoking_user == "root":
+            return None
+        self._root("usermod", "--append", "--groups", "docker", self.invoking_user)
+        return self.invoking_user
+
+    def _enable_and_verify(self) -> None:
+        self._root("systemctl", "enable", "--now", "docker.service", "containerd.service")
+        self._root("docker", "info", capture=True)
+        self._call(["docker", "compose", "version"], capture=True)
+
+    def install(self) -> DockerInstallResult:
+        docker = self._call(["docker", "--version"], capture=True, check=False)
+        compose = self._call(
+            ["docker", "compose", "version"], capture=True, check=False,
+        )
+        if docker.returncode == 0 and compose.returncode == 0:
+            user = self._grant_access()
+            self._enable_and_verify()
+            return DockerInstallResult(True, user)
+
+        distribution, codename, architecture = self._platform()
+        self._root("apt-get", "update")
+        self._root("apt-get", "install", "-y", "ca-certificates", "curl")
+        conflicts = self._installed_conflicts()
+        if conflicts:
+            self._root("apt-get", "remove", "-y", *conflicts)
+        self._root("install", "-m", "0755", "-d", "/etc/apt/keyrings")
+        keyring = "/etc/apt/keyrings/docker.asc"
+        self._root(
+            "curl", "-fsSL",
+            f"https://download.docker.com/linux/{distribution}/gpg",
+            "-o", keyring,
+        )
+        self._root("chmod", "a+r", keyring)
+        source = (
+            "Types: deb\n"
+            f"URIs: https://download.docker.com/linux/{distribution}\n"
+            f"Suites: {codename}\n"
+            "Components: stable\n"
+            f"Architectures: {architecture}\n"
+            f"Signed-By: {keyring}\n"
+        )
+        self._root(
+            "tee", "/etc/apt/sources.list.d/docker.sources",
+            input_text=source, capture=True,
+        )
+        self._root("apt-get", "update")
+        self._root("apt-get", "install", "-y", *self.PACKAGES)
+        user = self._grant_access()
+        self._enable_and_verify()
+        return DockerInstallResult(False, user)
 
 
 class DockerClient:

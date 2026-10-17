@@ -1,4 +1,4 @@
-"""Validate modpack configuration and render its Docker Compose project."""
+"""校验整合包配置并渲染 Docker Compose 项目。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ PACK_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
-PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
 DEFAULT_COMMAND = ("bash", "./run.sh", "nogui")
 
 
@@ -173,7 +173,7 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
             raise ConfigError("power-api.provider 必须是非空 provider ID")
         provider = provider.strip()
         if not PROVIDER_ID_RE.fullmatch(provider):
-            raise ConfigError("power-api.provider 仅允许大小写字母、数字和减号")
+            raise ConfigError("power-api.provider 仅允许大小写字母、数字和下划线")
     return ManagerLimits(
         _positive_integer(modpack.get("max-running", 1), "modpack.max-running"),
         memory,

@@ -8,11 +8,17 @@ Manager 云主机，不使用 SSH、TAT，也不执行 `manager.sh`。
 ```bash
 cp config.yml.example config.yml
 cp .env.example .env
-./monitor.sh up
+./monitor.sh check
+./monitor.sh install
 ./monitor.sh status
 ./monitor.sh logs --follow
-./monitor.sh down
+./monitor.sh stop
+./monitor.sh start
 ```
+
+`check` 只验证 Docker Engine 与 Compose 插件是否可用，不会安装或修改系统软件。
+`install` 在检查通过后构建并启动 Monitor 容器；日常启停使用 `start`、`stop`，它们
+只操作 Monitor 容器，不关闭这台 7x24h 主机。
 
 QQ 单聊目标应从顶层终端验证并写回唯一配置源：
 

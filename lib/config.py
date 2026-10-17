@@ -1,11 +1,17 @@
-"""Load and validate the terminal-owned project configuration."""
+"""
+解析根config.yml配置
+"""
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from .remote import HOST_RE
 
 try:
     import yaml
@@ -19,13 +25,44 @@ ENV_FILE = ROOT / ".env"
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
 REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
-PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
 TARGET_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
 ALERT_KINDS = ("check-failed", "state-mismatch", "recovered")
 
 
 class ConfigError(RuntimeError):
-    """The configuration cannot be used safely."""
+    """配置无法安全使用。"""
+
+
+def initialize(path: str | Path = CONFIG_FILE) -> tuple[tuple[Path, bool], ...]:
+    """从示例创建 Terminal 配置与密钥文件，不覆盖已有文件。"""
+    config = Path(path)
+    targets = (
+        (config.with_name(config.name + ".example"), config, 0o644),
+        (config.parent / ".env.example", config.parent / ".env", 0o600),
+    )
+    for source, _, _ in targets:
+        if not source.is_file():
+            raise ConfigError(f"缺少初始化模板：{source}")
+
+    result: list[tuple[Path, bool]] = []
+    for source, target, mode in targets:
+        content = source.read_bytes()
+        try:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        except FileExistsError:
+            result.append((target, False))
+            continue
+        except OSError as exc:
+            raise ConfigError(f"无法创建 {target}：{exc}") from exc
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(content)
+        except OSError as exc:
+            target.unlink(missing_ok=True)
+            raise ConfigError(f"无法创建 {target}：{exc}") from exc
+        result.append((target, True))
+    return tuple(result)
 
 
 def load_env(path: Path = ENV_FILE) -> dict[str, str]:
@@ -170,6 +207,23 @@ def _optional_clock(section: dict[str, Any], enabled: bool, key: str, field: str
     return _clock(value, field) if value is not None else None
 
 
+def _host(value: object, field: str) -> str:
+    host = _text(value, field)
+    if not HOST_RE.fullmatch(host):
+        raise ConfigError(f"{field} 必须是有效的 IPv4 地址或域名")
+    return host
+
+
+def _user(value: object, field: str) -> str:
+    user = _text(value, f"{field}.user")
+    if user == "root":
+        raise ConfigError(
+            f"{field}.user 不能是 root；请填写普通用户名并使用 "
+            f"deploy {field} --create-user 创建"
+        )
+    return user
+
+
 def _endpoint(section: dict[str, Any], field: str) -> Endpoint:
     directory = _text(section.get("dir"), f"{field}.dir")
     path = PurePosixPath(directory)
@@ -177,11 +231,9 @@ def _endpoint(section: dict[str, Any], field: str) -> Endpoint:
         raise ConfigError(f"{field}.dir 必须是安全的绝对路径")
     if len(path.parts) < 3:
         raise ConfigError(f"{field}.dir 不能是系统顶层目录")
-    return Endpoint(
-        _text(section.get("host"), f"{field}.host"),
-        _text(section.get("user"), f"{field}.user"),
-        directory,
-    )
+    host = _host(section.get("host"), f"{field}.host")
+    user = _user(section.get("user"), field)
+    return Endpoint(host, user, directory)
 
 
 def _power_api(section: object, field: str, *, required: bool) -> PowerApiConfig | None:
@@ -192,7 +244,7 @@ def _power_api(section: object, field: str, *, required: bool) -> PowerApiConfig
     region = _text(power.get("instance-region"), f"{field}.instance-region")
     provider = _text(power.get("provider"), f"{field}.provider")
     if not PROVIDER_ID_RE.fullmatch(provider):
-        raise ConfigError(f"{field}.provider 仅允许大小写字母、数字和减号")
+        raise ConfigError(f"{field}.provider 仅允许大小写字母、数字和下划线")
     return PowerApiConfig(provider, instance_id, region)
 
 
@@ -211,14 +263,14 @@ def _read_root(path: str | Path) -> dict[str, Any]:
 
 
 def runtime_section(path: str | Path, runtime: str) -> dict[str, Any]:
-    """Return one runtime subtree unchanged for deployment serialization."""
+    """原样返回一个运行时的配置子树，供部署时序列化。"""
     if runtime not in ("manager", "monitor"):
         raise ConfigError(f"未知运行时：{runtime}")
     return _mapping(_read_root(path).get(runtime), runtime)
 
 
 def render_runtime_section(path: str | Path, runtime: str) -> str:
-    """Serialize a runtime subtree without sorting or remapping its keys."""
+    """不排序、不重映射键，直接序列化运行时配置子树。"""
     if yaml is None:
         raise ConfigError("缺少 PyYAML；请先安装项目依赖")
     return yaml.safe_dump(
@@ -226,9 +278,79 @@ def render_runtime_section(path: str | Path, runtime: str) -> str:
     )
 
 
-def load(path: str | Path = CONFIG_FILE) -> AppConfig:
-    """Read *path* and return a validated, typed configuration."""
-    root = _read_root(path)
+def upsert_monitor_user_target(path: str | Path, name: str, identifier: str) -> None:
+    """更新指定 Monitor 用户目标，不重排无关 YAML。"""
+    if not TARGET_NAME_RE.fullmatch(name):
+        raise ConfigError("target name 仅允许大小写字母、数字和减号")
+    identifier = _text(identifier, "user_openid")
+    source = Path(path)
+    text = source.read_text(encoding="utf-8")
+    document = yaml.compose(text) if yaml is not None else None
+
+    def pair(node, key: str):
+        if node is None or node.id != "mapping":
+            raise ConfigError(f"缺少 monitor.qqbot.{key}")
+        for item_key, value in node.value:
+            if item_key.value == key:
+                return item_key, value
+        raise ConfigError(f"缺少 monitor.qqbot.{key}")
+
+    _, monitor = pair(document, "monitor")
+    _, qqbot = pair(monitor, "qqbot")
+    targets_key, targets = pair(qqbot, "targets")
+    if targets.id != "sequence":
+        raise ConfigError("monitor.qqbot.targets 必须是数组")
+    quoted_id = "'" + identifier.replace("'", "''") + "'"
+    updated = None
+    for item in targets.value:
+        if item.id != "mapping":
+            continue
+        fields = {key.value: value for key, value in item.value}
+        if fields.get("name") is None or fields["name"].value != name:
+            continue
+        if fields.get("type") is None or fields["type"].value != "user":
+            raise ConfigError(f"monitor.qqbot.targets.{name} 不是 user 目标")
+        target_id = fields.get("id")
+        if target_id is None:
+            raise ConfigError(f"monitor.qqbot.targets.{name} 缺少 id")
+        updated = (
+            text[:target_id.start_mark.index] + quoted_id
+            + text[target_id.end_mark.index:]
+        )
+        break
+    if updated is None:
+        indent = " " * targets_key.start_mark.column
+        entry = (
+            f"{indent}- name: {name}\n"
+            f"{indent}  type: user\n"
+            f"{indent}  id: {quoted_id}\n"
+        )
+        if targets.flow_style:
+            updated = (
+                text[:targets.start_mark.index] + "\n" + entry
+                + text[targets.end_mark.index:]
+            )
+        else:
+            insertion = text.rfind("\n", 0, targets.end_mark.index) + 1
+            updated = text[:insertion] + entry + text[insertion:]
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=source.parent,
+            prefix=".config-", suffix=".yml", delete=False,
+        ) as output:
+            output.write(updated)
+            temporary = Path(output.name)
+        os.chmod(temporary, source.stat().st_mode & 0o777)
+        load_monitor(temporary)
+        os.replace(temporary, source)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _parse_manager(root: dict[str, Any]) -> ManagerConfig:
     manager_raw = _mapping(root.get("manager"), "manager")
     manager_endpoint = _endpoint(manager_raw, "manager")
     manager_auto_stop = _boolean(manager_raw.get("auto-stop"), "manager.auto-stop", default=False)
@@ -264,7 +386,18 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
     _positive_int(modpack_raw.get("start-timeout", 300), "manager.modpack.start-timeout")
     _positive_int(modpack_raw.get("stop-timeout", 180), "manager.modpack.stop-timeout")
 
+    return ManagerConfig(
+        manager_endpoint, manager_auto_stop, manager_stop_at, manager_power, modpack,
+    )
+
+
+def _parse_monitor(root: dict[str, Any]) -> MonitorConfig:
     monitor_raw = _mapping(root.get("monitor"), "monitor", optional=True)
+    if monitor_raw.get("user") == "root":
+        raise ConfigError(
+            "monitor.user 不能是 root；请填写普通用户名并使用 "
+            "deploy monitor --create-user 创建"
+        )
     monitor_enabled = _boolean(monitor_raw.get("enabled"), "monitor.enabled", default=False)
     monitor_endpoint = _endpoint(monitor_raw, "monitor") if monitor_enabled else None
     monitor_manager_raw = _mapping(monitor_raw.get("manager"), "monitor.manager", optional=True)
@@ -350,22 +483,63 @@ def load(path: str | Path = CONFIG_FILE) -> AppConfig:
                 f"{sorted(unknown_targets)[0]}"
             )
         alerts.append(QQAlertRoute(kind, route_names))
-    monitor = MonitorConfig(
+    return MonitorConfig(
         monitor_enabled, monitor_endpoint, monitor_schedule, monitor_power,
         tuple(targets), admins, tuple(alerts),
     )
 
+
+def _parse_cos(root: dict[str, Any]) -> CosConfig:
     cos_raw = _mapping(root.get("cos"), "cos", optional=True)
     cos_enabled = _boolean(cos_raw.get("enabled"), "cos.enabled", default=False)
-    cos = CosConfig(
+    return CosConfig(
         cos_enabled,
         _text(cos_raw.get("region"), "cos.region") if cos_enabled else None,
         _text(cos_raw.get("bucket"), "cos.bucket") if cos_enabled else None,
         str(cos_raw.get("prefix", "/minecraft")),
         _positive_int(cos_raw.get("expire", 3600), "cos.expire"),
     )
-    return AppConfig(
-        ManagerConfig(manager_endpoint, manager_auto_stop, manager_stop_at, manager_power, modpack),
-        monitor,
-        cos,
+
+
+def load_manager(path: str | Path = CONFIG_FILE) -> ManagerConfig:
+    """只读取并校验 Manager 配置。"""
+    return _parse_manager(_read_root(path))
+
+
+def deployment_host(path: str | Path, runtime: str) -> str:
+    """只读取账号引导所需的主机，不解析运行时用户或业务配置。"""
+    if runtime not in ("manager", "monitor"):
+        raise ConfigError(f"未知运行时：{runtime}")
+    section = _mapping(_read_root(path).get(runtime), runtime)
+    return _host(section.get("host"), f"{runtime}.host")
+
+
+def deployment_connection(path: str | Path, runtime: str) -> tuple[str, str]:
+    """读取部署前置操作所需的 SSH 地址，不解析运行时业务配置。"""
+    if runtime not in ("manager", "monitor"):
+        raise ConfigError(f"未知运行时：{runtime}")
+    section = _mapping(_read_root(path).get(runtime), runtime)
+    return (
+        _host(section.get("host"), f"{runtime}.host"),
+        _user(section.get("user"), runtime),
     )
+
+
+def deployment_endpoint(path: str | Path, runtime: str) -> Endpoint:
+    """读取源码部署所需的 SSH 地址和目录，不解析运行时业务配置。"""
+    if runtime not in ("manager", "monitor"):
+        raise ConfigError(f"未知运行时：{runtime}")
+    return _endpoint(
+        _mapping(_read_root(path).get(runtime), runtime), runtime,
+    )
+
+
+def load_monitor(path: str | Path = CONFIG_FILE) -> MonitorConfig:
+    """只读取并校验 Monitor 配置。"""
+    return _parse_monitor(_read_root(path))
+
+
+def load(path: str | Path = CONFIG_FILE) -> AppConfig:
+    """读取并校验完整 Terminal 配置。"""
+    root = _read_root(path)
+    return AppConfig(_parse_manager(root), _parse_monitor(root), _parse_cos(root))

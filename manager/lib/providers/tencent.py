@@ -1,8 +1,7 @@
-"""Self-contained Tencent Cloud power provider."""
+"""腾讯云 CVM 电源 Provider。"""
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 
 
@@ -14,25 +13,29 @@ def _create_api(region: str, secret_id: str, secret_key: str) -> ApiCall:
         raise RuntimeError("缺少 POWER_SECRET_ID/POWER_SECRET_KEY")
     try:
         from tencentcloud.common import credential
-        from tencentcloud.cvm.v20170312 import cvm_client, models as cvm_models
+        from tencentcloud.common.common_client import CommonClient
+        from tencentcloud.common.profile.client_profile import ClientProfile
+        from tencentcloud.common.profile.http_profile import HttpProfile
     except ImportError as exc:
         raise RuntimeError("缺少腾讯云 SDK；请安装 requirements.txt") from exc
     auth = credential.Credential(secret_id, secret_key)
-    client = cvm_client.CvmClient(auth, region)
+    http_profile = HttpProfile(endpoint="cvm.tencentcloudapi.com")
+    client = CommonClient(
+        "cvm", "2017-03-12", auth, region,
+        ClientProfile(httpProfile=http_profile),
+    )
 
     def call(action: str, payload: dict) -> dict:
         try:
-            request = getattr(cvm_models, action + "Request")()
-            request.from_json_string(json.dumps(payload))
-            response = getattr(client, action)(request)
-            return json.loads(response.to_json_string())
+            response = client.call_json(action, payload)
+            return response.get("Response", response)
         except Exception as exc:
             raise RuntimeError(f"cvm.{action} 失败：{exc}") from exc
 
     return call
 
 
-def _invoke(
+def _request(
     action: str, instance_id: str, region: str,
     secret_id: str, secret_key: str,
 ) -> dict:
@@ -62,12 +65,12 @@ def _invoke(
 
 
 def status(instance_id: str, region: str, secret_id: str, secret_key: str) -> dict:
-    return _invoke("status", instance_id, region, secret_id, secret_key)
+    return _request("status", instance_id, region, secret_id, secret_key)
 
 
 def start(instance_id: str, region: str, secret_id: str, secret_key: str) -> dict:
-    return _invoke("start", instance_id, region, secret_id, secret_key)
+    return _request("start", instance_id, region, secret_id, secret_key)
 
 
 def stop(instance_id: str, region: str, secret_id: str, secret_key: str) -> dict:
-    return _invoke("stop", instance_id, region, secret_id, secret_key)
+    return _request("stop", instance_id, region, secret_id, secret_key)

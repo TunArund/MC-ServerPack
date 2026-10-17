@@ -1,4 +1,4 @@
-"""Monitor process entry point."""
+"""Monitor 进程入口。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ DATA_DIR = Path(os.environ.get("MCSP_DATA", "/app/data"))
 
 
 class AsyncPower:
-    """Adapt the synchronous provider boundary for the QQ event loop."""
+    """让同步 Provider 边界适配 QQ 事件循环。"""
 
     def __init__(self, power) -> None:
         self.power = power

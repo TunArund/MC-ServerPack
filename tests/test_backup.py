@@ -10,14 +10,14 @@ from pathlib import Path
 
 import yaml
 
-from manager.lib.archive import ArchiveError, create_backup, restore_backup
+from manager.lib.backup import BackupError, create_backup, restore_backup
 from manager.lib.config import load_pack, render_compose
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-class ArchiveTests(unittest.TestCase):
+class BackupTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -56,7 +56,7 @@ class ArchiveTests(unittest.TestCase):
             payload = b"bad"
             item.size = len(payload)
             archive.addfile(item, io.BytesIO(payload))
-        with self.assertRaisesRegex(ArchiveError, "不安全路径"):
+        with self.assertRaisesRegex(BackupError, "不安全路径"):
             restore_backup(self.spec, backup.name)
         self.assertFalse((self.root / "escaped").exists())
 

@@ -1,4 +1,4 @@
-"""Load and validate the independently deployed Monitor configuration."""
+"""加载并校验独立部署的 Monitor 配置。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import yaml
 
 CONFIG_FILE = Path(os.environ.get("MCSP_CONFIG", "/app/config.yml"))
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
-PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
 TARGET_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
 ALERT_KINDS = ("check-failed", "state-mismatch", "recovered")
 
@@ -110,7 +110,7 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     power = _mapping(manager.get("power-api"), "manager.power-api")
     provider = _text(power.get("provider"), "manager.power-api.provider")
     if not PROVIDER_ID_RE.fullmatch(provider):
-        raise ConfigError("manager.power-api.provider 仅允许大小写字母、数字和减号")
+        raise ConfigError("manager.power-api.provider 仅允许大小写字母、数字和下划线")
     auto_start = _boolean(manager.get("auto-start"), "manager.auto-start")
     auto_stop = _boolean(manager.get("auto-stop"), "manager.auto-stop")
     start_at = _optional_clock(manager, auto_start, "start-at", "manager.start-at")

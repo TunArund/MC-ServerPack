@@ -94,7 +94,7 @@ class ManagerConfigTests(unittest.TestCase):
             "provider": "../power", "instance-region": "local",
             "instance-id": "manager",
         }
-        with self.assertRaisesRegex(ConfigError, "字母、数字和减号"):
+        with self.assertRaisesRegex(ConfigError, "字母、数字和下划线"):
             load_limits(self.write(document))
 
     def test_schedule_rejects_invalid_clock(self) -> None:

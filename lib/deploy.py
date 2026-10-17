@@ -1,126 +1,537 @@
-"""Shared deployment transport for independently deployed runtimes."""
+"""
+远端账号与目录文件管理
+追求幂等
+"""
 
 from __future__ import annotations
 
+import re
+import shutil
 import tempfile
+import tarfile
+from fnmatch import fnmatch
 from pathlib import Path
+from typing import Optional
 
 from . import remote
-from .config import CONFIG_FILE, AppConfig, Endpoint, load, render_runtime_section
+from .config import Endpoint
+from .remote import CommandError
 
 
-BOOTSTRAP = r"""set -Eeuo pipefail
-role="$1"
-if [ "$(id -u)" -eq 0 ]; then run_root() { "$@"; }; else run_root() { sudo -n "$@"; }; fi
-need=0
-command -v python3 >/dev/null 2>&1 || need=1
-python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1 || need=1
-if [ "$role" = manager ]; then command -v crontab >/dev/null 2>&1 || need=1; fi
-command -v docker >/dev/null 2>&1 || need=1
-docker compose version >/dev/null 2>&1 || need=1
-if [ "$need" = 1 ]; then
-  [ "$(id -u)" -eq 0 ] || sudo -n true >/dev/null 2>&1 || { echo '安装环境需要免密 sudo' >&2; exit 1; }
-  . /etc/os-release
-  case "$ID" in debian|ubuntu) ;; *) echo "暂不支持自动安装：$ID" >&2; exit 1 ;; esac
-  run_root apt-get update
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip cron ca-certificates curl
-  if ! docker compose version >/dev/null 2>&1; then
-    run_root install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /tmp/mcsp-docker.asc
-    run_root install -m 0644 /tmp/mcsp-docker.asc /etc/apt/keyrings/docker.asc
-    rm -f /tmp/mcsp-docker.asc
-    arch="$(dpkg --print-architecture)"
-    repo="deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable"
-    run_root sh -c "printf '%s\\n' '$repo' > /etc/apt/sources.list.d/docker.list"
-    run_root apt-get update
-    run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  fi
-  run_root systemctl enable --now docker
-  [ "$role" != manager ] || run_root systemctl enable --now cron
+USERNAME_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+KEY_PREFIXES = ("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-")
+
+
+class AccountError(RuntimeError):
+    """部署用户参数或公钥无效。"""
+
+
+def default_public_key() -> Path:
+    ssh_dir = Path.home() / ".ssh"
+    for name in ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"):
+        path = ssh_dir / name
+        if path.is_file():
+            return path
+    raise AccountError("未找到默认 SSH 公钥；请使用 --key 指定 .pub 文件")
+
+
+def read_public_key(path: Optional[Path] = None) -> str:
+    source = (path or default_public_key()).expanduser().resolve()
+    try:
+        key = source.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise AccountError(f"无法读取 SSH 公钥 {source}：{exc}") from exc
+    if "\n" in key or not key.startswith(KEY_PREFIXES):
+        raise AccountError(f"SSH 公钥格式无效：{source}")
+    return key
+
+
+def resolve_public_key(path: Optional[Path] = None) -> Path:
+    source = (path or default_public_key()).expanduser().resolve()
+    if source.suffix != ".pub":
+        raise AccountError(f"SSH 公钥必须是 .pub 文件：{source}")
+    read_public_key(source)
+    private_key = source.with_suffix("")
+    if not private_key.is_file():
+        raise AccountError(f"找不到 SSH 私钥：{private_key}")
+    return source
+
+
+class AccountProvisioner:
+    """通过已有管理员 SSH 账号引导普通部署用户。"""
+
+    def __init__(self, transport: Optional[remote.Transport] = None) -> None:
+        self.transport = transport or remote.Transport()
+
+    @staticmethod
+    def _administrator(value: str) -> str:
+        if not USERNAME_RE.fullmatch(value):
+            raise AccountError("管理员用户名仅允许小写字母、数字、下划线和减号")
+        return value
+
+    def prepare_key(self, key_path: Optional[Path] = None) -> Path:
+        return resolve_public_key(key_path)
+
+    def test_login(self, host: str, administrator: str, key_path: Path) -> None:
+        administrator = self._administrator(administrator)
+        self.transport.ssh(
+            remote.target(administrator, host), ["true"], capture=True,
+            identity=key_path.with_suffix(""),
+        )
+
+    def create(
+        self, host: str, username: str, administrator: str,
+        key_path: Optional[Path] = None,
+    ) -> None:
+        if username == "root" or not USERNAME_RE.fullmatch(username):
+            raise AccountError("用户名仅允许小写字母、数字、下划线和减号，且不能是 root")
+        administrator = self._administrator(administrator)
+        destination = remote.target(administrator, host)
+        source = resolve_public_key(key_path)
+        public_key = read_public_key(source)
+        identity = source.with_suffix("")
+        script = r"""set -Eeuo pipefail
+user=$1
+key=$2
+for command in useradd getent passwd install visudo; do
+  command -v "$command" >/dev/null || {
+    printf '缺少系统命令：%s\n' "$command" >&2
+    exit 127
+  }
+done
+test -d /etc/sudoers.d || {
+  echo '缺少 /etc/sudoers.d；请先安装 sudo' >&2
+  exit 127
+}
+if ! id -u "$user" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash "$user"
+  passwd --lock "$user" >/dev/null
 fi
-if [ "$(id -u)" -ne 0 ] && ! id -nG | tr ' ' '\n' | grep -qx docker; then
-  run_root usermod -aG docker "$(id -un)"
-  echo '已加入 docker 组，请重新登录后再次部署' >&2
-  exit 3
+home=$(getent passwd "$user" | cut -d: -f6)
+group=$(id -gn "$user")
+test -n "$home"
+install -d -m 700 -o "$user" -g "$group" "$home/.ssh"
+touch "$home/.ssh/authorized_keys"
+if ! grep -qxF -- "$key" "$home/.ssh/authorized_keys"; then
+  printf '%s\n' "$key" >> "$home/.ssh/authorized_keys"
 fi
-docker info >/dev/null
+chown "$user:$group" "$home/.ssh/authorized_keys"
+chmod 600 "$home/.ssh/authorized_keys"
+sudoers="/etc/sudoers.d/$user"
+temporary="$sudoers.mcsp-new"
+printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$user" > "$temporary"
+chmod 440 "$temporary"
+visudo -cf "$temporary" >/dev/null
+mv -f -- "$temporary" "$sudoers"
+if getent group docker >/dev/null; then
+  usermod --append --groups docker "$user"
+fi
+printf 'user=%s home=%s\n' "$user" "$home"
 """
+        command = ["bash", "-s", "--", username, public_key]
+        if administrator != "root":
+            command = ["sudo", "--non-interactive", *command]
+        self.transport.ssh(
+            destination, command, input_text=script, capture=True,
+            identity=identity,
+        )
+        verified = self.transport.ssh(
+            destination, ["getent", "passwd", username], capture=True,
+            identity=identity,
+        )
+        output = (
+            verified.stdout.decode("utf-8", "replace")
+            if isinstance(verified.stdout, bytes) else (verified.stdout or "")
+        )
+        if not output.startswith(username + ":"):
+            raise AccountError(f"远端未确认部署用户存在：{username}@{host}")
+
+
+def archive_tree(source: Path, *, exclude: set[str] | None = None) -> Path:
+    if not source.is_dir():
+        raise CommandError(f"归档源目录不存在：{source}")
+    temporary = Path(tempfile.mkdtemp(prefix="mcsp-upload-"))
+    output = temporary / "source.tar.gz"
+    patterns = list(exclude or ())
+    ignore_file = source / ".mcspignore"
+    if ignore_file.is_file():
+        patterns.extend(
+            line.strip() for line in ignore_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+
+    def ignored(name: str) -> bool:
+        matched = False
+        path = Path(name)
+        candidates = [path.as_posix(), *(item.as_posix() for item in path.parents)]
+        for pattern in patterns:
+            negate = pattern.startswith("!")
+            rule = pattern[1:] if negate else pattern
+            if any(
+                fnmatch(candidate, rule) or fnmatch(candidate + "/", rule)
+                for candidate in candidates
+            ):
+                matched = not negate
+        return matched
+
+    with tarfile.open(output, "w:gz") as archive:
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            if "__pycache__" in relative.parts or path.suffix == ".pyc":
+                continue
+            if ignored(relative.as_posix()):
+                continue
+            archive.add(path, arcname=relative.as_posix(), recursive=False)
+    return output
 
 
 class DeployError(RuntimeError):
     pass
 
 
-class RuntimeDeployment:
-    """Common upload mechanics; runtime-specific steps belong to subclasses."""
+class DockerProvisioner:
+    """Terminal 直接在目标服务器安装 Docker，不依赖运行时源码。"""
 
-    runtime: str
-    source: Path
+    SCRIPT = r"""set -Eeuo pipefail
+STEP=初始化
+trap 'code=$?; echo "Docker 安装失败（步骤：$STEP，退出码：$code）" >&2; exit "$code"' ERR
+
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=
+elif command -v sudo >/dev/null 2>&1 && sudo --non-interactive true; then
+  SUDO='sudo --non-interactive'
+else
+  echo '安装 Docker 需要 root 或免密 sudo' >&2
+  exit 1
+fi
+
+as_root() {
+  if [ -n "$SUDO" ]; then
+    $SUDO "$@"
+  else
+    "$@"
+  fi
+}
+
+apt_get() {
+  as_root env DEBIAN_FRONTEND=noninteractive \
+    apt-get -o Dpkg::Use-Pty=0 "$@"
+}
+
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  STEP=验证现有安装
+  echo '[Docker] 验证现有 Engine 与 Compose'
+  as_root systemctl enable --now docker.service containerd.service
+  if [ "$(id -un)" != root ]; then
+    as_root usermod --append --groups docker "$(id -un)"
+  fi
+  as_root docker info >/dev/null
+  echo 'Docker Engine 与 Compose 插件已存在并验证'
+  exit 0
+fi
+
+test -r /etc/os-release || { echo '无法读取 /etc/os-release' >&2; exit 1; }
+. /etc/os-release
+case "${ID:-}" in
+  debian|ubuntu) distribution=$ID ;;
+  *) echo '仅支持在 Debian 或 Ubuntu 上自动安装 Docker' >&2; exit 1 ;;
+esac
+codename=${VERSION_CODENAME:-}
+case "$codename" in
+  ''|*[!a-zA-Z0-9.-]*) echo '/etc/os-release 缺少安全的 VERSION_CODENAME' >&2; exit 1 ;;
+esac
+architecture=$(dpkg --print-architecture)
+case "$architecture" in
+  ''|*[!a-zA-Z0-9]*) echo '无法识别 dpkg 架构' >&2; exit 1 ;;
+esac
+
+STEP=准备下载工具
+echo '[Docker 1/5] 准备 ca-certificates 与 curl'
+apt_get update
+apt_get install -y ca-certificates curl
+conflicts=
+for package in docker.io docker-compose docker-doc docker-buildx podman-docker containerd runc; do
+  if dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii'; then
+    conflicts="$conflicts $package"
+  fi
+done
+if [ -n "$conflicts" ]; then
+  # shellcheck disable=SC2086
+  apt_get remove -y $conflicts
+fi
+
+STEP=下载仓库密钥
+echo '[Docker 2/5] 下载 Docker 官方仓库密钥'
+as_root install -m 0755 -d /etc/apt/keyrings
+key_url="https://download.docker.com/linux/$distribution/gpg"
+if ! as_root curl --fail --show-error --location \
+  --retry 5 --retry-delay 2 --retry-all-errors \
+  --connect-timeout 15 --max-time 180 \
+  "$key_url" -o /etc/apt/keyrings/docker.asc; then
+  echo "无法下载 Docker 仓库密钥：$key_url" >&2
+  echo '请检查目标服务器访问 download.docker.com 的网络后重试' >&2
+  exit 35
+fi
+as_root chmod a+r /etc/apt/keyrings/docker.asc
+source_text=$(printf '%s\n' \
+  'Types: deb' \
+  "URIs: https://download.docker.com/linux/$distribution" \
+  "Suites: $codename" \
+  'Components: stable' \
+  "Architectures: $architecture" \
+  'Signed-By: /etc/apt/keyrings/docker.asc')
+if [ -n "$SUDO" ]; then
+  printf '%s\n' "$source_text" | $SUDO tee /etc/apt/sources.list.d/docker.sources >/dev/null
+else
+  printf '%s\n' "$source_text" > /etc/apt/sources.list.d/docker.sources
+fi
+
+STEP=更新Docker仓库
+echo '[Docker 3/5] 更新 Docker 软件仓库'
+apt_get update
+STEP=安装Docker
+echo '[Docker 4/5] 安装 Engine、Buildx 与 Compose'
+apt_get install -y \
+  docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+STEP=启动并验证Docker
+echo '[Docker 5/5] 启动并验证 Docker'
+as_root systemctl enable --now docker.service containerd.service
+if [ "$(id -un)" != root ]; then
+  as_root usermod --append --groups docker "$(id -un)"
+fi
+as_root docker info >/dev/null
+docker compose version >/dev/null
+echo 'Docker Engine 与 Compose 插件安装完成'
+if [ "$(id -un)" != root ]; then
+  echo "已将 $(id -un) 加入 docker 组；重新登录后生效"
+fi
+"""
 
     def __init__(
-        self, endpoint: Endpoint, config_path: Path = CONFIG_FILE, *,
-        config: AppConfig | None = None, transport: remote.Transport | None = None,
+        self, host: str, user: str, *, transport: remote.Transport | None = None,
+    ) -> None:
+        self.host = host
+        self.user = user
+        self.transport = transport or remote.Transport()
+
+    def install(self) -> None:
+        self.transport.ssh_logged(
+            remote.target(self.user, self.host),
+            ["bash", "-s", "--"], input_text=self.SCRIPT,
+            label=f"准备 Docker：{self.user}@{self.host}",
+        )
+
+
+class PythonProvisioner:
+    """为源码版 Manager 准备 Python、venv 与项目依赖。"""
+
+    SYSTEM_SCRIPT = r"""set -Eeuo pipefail
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=
+elif command -v sudo >/dev/null 2>&1 && sudo --non-interactive true; then
+  SUDO='sudo --non-interactive'
+else
+  echo '安装 Python 需要 root 或免密 sudo' >&2
+  exit 1
+fi
+as_root() {
+  if [ -n "$SUDO" ]; then $SUDO "$@"; else "$@"; fi
+}
+echo '[Python 1/3] 安装 Python、pip 与 venv'
+as_root env DEBIAN_FRONTEND=noninteractive \
+  apt-get -o Dpkg::Use-Pty=0 update
+as_root env DEBIAN_FRONTEND=noninteractive \
+  apt-get -o Dpkg::Use-Pty=0 install -y python3 python3-pip python3-venv
+echo 'Python、pip 与 venv 已就绪'
+"""
+
+    VENV_SCRIPT = r"""set -Eeuo pipefail
+root=$1
+requirements=$2
+echo '[Python 2/3] 创建 Manager 虚拟环境'
+mkdir -p -- "$root"
+python3 -m venv "$root/.venv"
+echo '[Python 3/3] 安装 Manager Python 依赖'
+"$root/.venv/bin/python" -m pip install --requirement "$requirements"
+"$root/.venv/bin/python" -c 'import yaml'
+echo 'Manager Python 环境已就绪'
+"""
+
+    def __init__(
+        self, endpoint: Endpoint, requirements: Path, *,
+        transport: remote.Transport | None = None,
     ) -> None:
         self.endpoint = endpoint
-        self.config_path = config_path
-        self.env_path = config_path.parent / ".env"
-        self.config = config or load(config_path)
+        self.requirements = requirements
         self.transport = transport or remote.Transport()
 
     @property
     def destination(self) -> str:
         return remote.target(self.endpoint.user, self.endpoint.host)
 
-    def check_environment(self, required: tuple[Path, ...], command: str) -> None:
-        if any(not path.is_file() or path.stat().st_size == 0 for path in required):
-            raise DeployError(f"{self.runtime.capitalize()} 部署文件不完整")
+    def install(self) -> None:
+        if not self.requirements.is_file():
+            raise DeployError(f"缺少 Python 依赖清单：{self.requirements}")
+        remote_requirements = self.endpoint.directory + "/.mcsp-requirements.txt"
+        self.transport.ssh_logged(
+            self.destination, ["bash", "-s", "--"],
+            input_text=self.SYSTEM_SCRIPT,
+            label=f"准备 Python：{self.destination}",
+        )
+        self.transport.ssh(
+            self.destination, ["mkdir", "-p", self.endpoint.directory],
+        )
+        try:
+            self.transport.scp(
+                self.requirements, f"{self.destination}:{remote_requirements}",
+            )
+            self.transport.ssh_logged(
+                self.destination,
+                [
+                    "bash", "-s", "--", self.endpoint.directory,
+                    remote_requirements,
+                ],
+                input_text=self.VENV_SCRIPT,
+                label=f"安装 Manager Python 依赖：{self.destination}",
+            )
+        finally:
+            self.transport.ssh(
+                self.destination, ["rm", "-f", remote_requirements],
+                check=False,
+            )
+
+
+class RuntimeDeployment:
+    """传输运行时，并且只调用运行时公开的管理命令。"""
+
+    def __init__(
+        self, source: Path, endpoint: Endpoint, entrypoint: str, *,
+        preserve: tuple[str, ...] = (),
+        transport: remote.Transport | None = None,
+    ) -> None:
+        if any(
+            not name or name in (".", "..") or "/" in name or "\\" in name
+            for name in preserve
+        ):
+            raise DeployError("保留路径必须是运行时根目录下的单个名称")
+        self.source = source
+        self.endpoint = endpoint
+        self.entrypoint = entrypoint
+        self.preserve = ("config.yml", ".env", *preserve)
+        self.transport = transport or remote.Transport()
+
+    @property
+    def destination(self) -> str:
+        return remote.target(self.endpoint.user, self.endpoint.host)
+
+    def _check_source(self) -> None:
+        script = self.source / self.entrypoint
+        if not script.is_file() or script.stat().st_size == 0:
+            raise DeployError(f"缺少运行时入口：{script}")
+
+    def check(self) -> None:
+        self._check_source()
+        script = self.source / self.entrypoint
         self.transport.ssh(self.destination, ["true"], capture=True)
         self.transport.ssh(
-            self.destination, ["bash", "-lc", command], capture=True,
+            self.destination, ["bash", "-s", "--", "check"],
+            input_text=script.read_text(encoding="utf-8"), capture=True,
         )
 
-    def prepare(self, *, excluded: set[str] | None = None) -> None:
-        self.transport.ssh(
-            self.destination, ["bash", "-s", "--", self.runtime],
-            input_text=BOOTSTRAP,
-        )
-        self.sync_source(excluded=excluded)
-        self.upload_text(
-            render_runtime_section(self.config_path, self.runtime),
-            f"{self.destination}:{self.endpoint.directory}/config.yml",
-        )
-
-    def upload_text(self, content: str, destination: str, mode: int = 0o644) -> None:
-        with tempfile.TemporaryDirectory(prefix="mcsp-config-") as directory:
-            output = Path(directory) / "payload"
-            output.write_text(content, encoding="utf-8")
-            output.chmod(mode)
-            self.transport.scp(output, destination)
-
-    def sync_source(self, *, excluded: set[str] | None = None) -> None:
-        exclusions = {
-            "config.yml", ".env", ".venv", "data",
-            ".schedule-state.json", "schedule.log", "deploy.log",
-            *(excluded or set()),
-        }
-        archive = self.transport.archive(self.source, exclusions)
-        remote_archive = self.endpoint.directory + "/.mcsp-upload.tar.gz"
+    def publish(self) -> None:
+        """发布运行时代码，不要求目标运行环境已经完整。"""
+        self._check_source()
+        archive = archive_tree(self.source)
+        remote_archive = self.endpoint.directory + "/.mcsp-release.tar.gz"
         try:
             self.transport.ssh(
                 self.destination, ["mkdir", "-p", self.endpoint.directory],
             )
             self.transport.scp(archive, f"{self.destination}:{remote_archive}")
-            names = (
-                "lib", "runtime", "src", "manager.sh", "monitor.sh",
-                "Dockerfile", "compose.yml", "requirements.txt",
-            )
-            targets = [self.endpoint.directory + "/" + name for name in names]
-            script = (
-                "rm -rf -- " + remote.shell_join(targets) + "; "
-                f"tar -xzf {remote.shell_join([remote_archive])} "
-                f"-C {remote.shell_join([self.endpoint.directory])}; "
-                f"rm -f -- {remote.shell_join([remote_archive])}"
-            )
-            self.transport.ssh(self.destination, ["bash", "-lc", script])
+            self._extract(remote_archive)
         finally:
-            self.transport.cleanup(archive)
+            shutil.rmtree(archive.parent, ignore_errors=True)
+
+    def install(self, config: str, environment: str) -> None:
+        """上传完整运行时及配置，然后调用运行时自己的安装逻辑。"""
+        self.check()
+        self.publish()
+        self.upload_config(config)
+        self.upload_environment(environment)
+        self._invoke("install")
+
+    def configure(self, config: str, environment: str | None = None) -> None:
+        """只更新运行时配置；校验及重载行为由运行时自己负责。"""
+        self.upload_config(config)
+        if environment is not None:
+            self.upload_environment(environment)
+        self._invoke("apply-config")
+
+    def _invoke(self, action: str) -> None:
+        command = (
+            f"cd {remote.shell_join([self.endpoint.directory])} && "
+            f"chmod 700 {remote.shell_join([self.entrypoint])} && "
+            f"exec ./{remote.shell_join([self.entrypoint])} "
+            f"{remote.shell_join([action])}"
+        )
+        if action == "install":
+            runtime = self.entrypoint.removesuffix(".sh")
+            self.transport.ssh_logged(
+                self.destination, ["bash", "-lc", command],
+                label=f"安装 {runtime} 运行时：{self.destination}",
+            )
+        else:
+            self.transport.ssh(self.destination, ["bash", "-lc", command])
+
+    def upload_config(self, content: str) -> None:
+        self._upload(content, "config.yml")
+
+    def upload_environment(self, content: str) -> None:
+        self._upload(content, ".env", mode=0o600)
+
+    def _extract(self, remote_archive: str) -> None:
+        directory = remote.shell_join([self.endpoint.directory])
+        archive = remote.shell_join([remote_archive])
+        preserve = remote.shell_join([" " + " ".join(self.preserve) + " "])
+        script = f"""set -Eeuo pipefail
+root={directory}
+archive={archive}
+stage="$root/.mcsp-stage"
+rm -rf -- "$stage"
+mkdir -p "$stage"
+tar -xzf "$archive" -C "$stage"
+rm -f -- "$archive"
+preserve={preserve}
+for path in "$root"/* "$root"/.[!.]*; do
+  [ -e "$path" ] || continue
+  name="${{path##*/}}"
+  case "$name" in .mcsp-stage|.mcsp-release.tar.gz) continue;; esac
+  case "$preserve" in *" $name "*) continue;; esac
+  rm -rf -- "$path"
+done
+for path in "$stage"/* "$stage"/.[!.]*; do
+  [ -e "$path" ] || continue
+  name="${{path##*/}}"
+  case "$preserve" in
+    *" $name "*)
+      if [ -d "$path" ]; then mkdir -p "$root/$name"; cp -a "$path/." "$root/$name/"; fi
+      ;;
+    *) rm -rf -- "$root/$name"; mv -- "$path" "$root/$name";;
+  esac
+done
+rm -rf -- "$stage"
+"""
+        self.transport.ssh(self.destination, ["bash", "-lc", script])
+
+    def _upload(self, content: str, name: str, *, mode: int = 0o644) -> None:
+        with tempfile.TemporaryDirectory(prefix="mcsp-runtime-") as directory:
+            output = Path(directory) / name
+            output.write_text(content, encoding="utf-8")
+            output.chmod(mode)
+            destination = f"{self.destination}:{self.endpoint.directory}/{name}"
+            self.transport.scp(output, destination)
+        self.transport.ssh(
+            self.destination,
+            ["chmod", f"{mode:o}", self.endpoint.directory + "/" + name],
+        )

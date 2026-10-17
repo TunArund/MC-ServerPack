@@ -1,4 +1,4 @@
-"""Atomic backup and restore of a modpack's persistent data directory."""
+"""以原子方式备份和恢复整合包持久化数据。"""
 
 from __future__ import annotations
 
@@ -12,20 +12,20 @@ from pathlib import Path, PurePosixPath
 from .config import PackSpec
 
 
-class ArchiveError(RuntimeError):
+class BackupError(RuntimeError):
     pass
 
 
 def _reject_links(root: Path) -> None:
     for path in root.rglob("*"):
         if path.is_symlink():
-            raise ArchiveError(f"持久化数据中不允许符号链接：{path.relative_to(root)}")
+            raise BackupError(f"持久化数据中不允许符号链接：{path.relative_to(root)}")
 
 
 def create_backup(spec: PackSpec, now: datetime | None = None, *, prune: bool = True) -> Path:
     data = spec.directory / "data"
     if not data.is_dir():
-        raise ArchiveError(f"{spec.pack_id} 缺少 data/ 目录")
+        raise BackupError(f"{spec.pack_id} 缺少 data/ 目录")
     _reject_links(data)
     backups = spec.directory / "backups"
     backups.mkdir(exist_ok=True)
@@ -38,7 +38,7 @@ def create_backup(spec: PackSpec, now: datetime | None = None, *, prune: bool = 
         os.replace(temporary, target)
     except (OSError, tarfile.TarError) as exc:
         temporary.unlink(missing_ok=True)
-        raise ArchiveError(f"备份失败：{exc}") from exc
+        raise BackupError(f"备份失败：{exc}") from exc
     if prune:
         prune_backups(spec, keep=target)
     return target
@@ -64,15 +64,15 @@ def prune_backups(spec: PackSpec, *, keep: Path | None = None) -> None:
 def resolve_backup(spec: PackSpec, name: str | None) -> Path:
     if name:
         if Path(name).name != name:
-            raise ArchiveError("只能指定 backups/ 中的文件名")
+            raise BackupError("只能指定 backups/ 中的文件名")
         source = spec.directory / "backups" / name
     else:
         candidates = list_backups(spec)
         if not candidates:
-            raise ArchiveError("没有可恢复的备份")
+            raise BackupError("没有可恢复的备份")
         source = candidates[0]
     if not source.is_file():
-        raise ArchiveError(f"找不到备份：{source.name}")
+        raise BackupError(f"找不到备份：{source.name}")
     return source
 
 
@@ -81,9 +81,9 @@ def _validate_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     for member in members:
         path = PurePosixPath(member.name)
         if path.is_absolute() or not path.parts or path.parts[0] != "data" or ".." in path.parts:
-            raise ArchiveError(f"备份包含不安全路径：{member.name}")
+            raise BackupError(f"备份包含不安全路径：{member.name}")
         if not (member.isfile() or member.isdir()):
-            raise ArchiveError(f"备份包含链接或特殊文件：{member.name}")
+            raise BackupError(f"备份包含链接或特殊文件：{member.name}")
     return members
 
 
@@ -97,14 +97,14 @@ def restore_backup(spec: PackSpec, name: str | None = None) -> Path:
                 members = _validate_members(archive)
                 archive.extractall(temporary, members=members)
         except (OSError, tarfile.TarError) as exc:
-            raise ArchiveError(f"备份无法读取：{exc}") from exc
+            raise BackupError(f"备份无法读取：{exc}") from exc
         restored = temporary / "data"
         if not restored.is_dir():
-            raise ArchiveError("备份缺少 data/ 目录")
+            raise BackupError("备份缺少 data/ 目录")
         current = parent / "data"
         previous = parent / ".data-before-restore"
         if previous.exists():
-            raise ArchiveError(f"发现未处理的恢复目录：{previous}")
+            raise BackupError(f"发现未处理的恢复目录：{previous}")
         try:
             if current.exists():
                 current.rename(previous)
@@ -112,6 +112,6 @@ def restore_backup(spec: PackSpec, name: str | None = None) -> Path:
         except OSError as exc:
             if not current.exists() and previous.exists():
                 previous.rename(current)
-            raise ArchiveError(f"替换数据失败：{exc}") from exc
+            raise BackupError(f"替换数据失败：{exc}") from exc
         shutil.rmtree(previous, ignore_errors=True)
     return source

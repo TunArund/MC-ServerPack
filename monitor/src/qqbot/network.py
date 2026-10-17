@@ -1,4 +1,4 @@
-"""QQ access-token, HTTP reply and WebSocket transport."""
+"""QQ access-token、HTTP 消息与 WebSocket 传输。"""
 
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -14,8 +16,9 @@ from manager.lib.config import (
     ConfigError, load_pack, normalize_persistent, parse_interval, render_compose,
     validate_pack_id,
 )
-from manager.lib.docker import DockerClient
-from manager.lib.modpacks import ModpackManager
+from manager.lib.docker import DockerClient, DockerInstaller
+from manager.lib.modpacks import ModpackError, ModpackManager
+from manager.lib.transfer import export_pack, import_pack
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +98,96 @@ class PackConfigTests(ManagerFixture):
         self.assertIn("name: new-pack", (target / "config.yml").read_text(encoding="utf-8"))
         self.assertTrue((target / "backups").is_dir())
 
+    def test_create_vanilla_downloads_verified_official_server(self) -> None:
+        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
+        server = b"official-server-jar"
+        manifest_url = (
+            "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+        )
+        version_url = "https://piston-meta.mojang.com/v1/packages/test/version.json"
+        server_url = "https://piston-data.mojang.com/v1/objects/test/server.jar"
+        responses = {
+            manifest_url: json.dumps({
+                "latest": {"release": "1.21.10"},
+                "versions": [{"id": "1.21.10", "url": version_url}],
+            }).encode(),
+            version_url: json.dumps({
+                "javaVersion": {"majorVersion": 21},
+                "downloads": {"server": {
+                    "url": server_url, "size": len(server),
+                    "sha1": hashlib.sha1(server).hexdigest(),
+                }},
+            }).encode(),
+            server_url: server,
+        }
+
+        class Response:
+            def __init__(self, content: bytes) -> None:
+                self.content = content
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self, limit: int) -> bytes:
+                return self.content[:limit]
+
+        def open_url(url: str, *, timeout: int):
+            self.assertEqual(timeout, 60)
+            return Response(responses[url])
+
+        manager = ModpackManager(self.root)
+        with patch("manager.lib.modpacks.urlopen", side_effect=open_url):
+            target = manager.create(
+                "vanilla", vanilla="latest", accept_eula=True,
+            )
+
+        self.assertEqual((target / "src/server.jar").read_bytes(), server)
+        self.assertEqual((target / "src/eula.txt").read_text(), "eula=true\n")
+        config = yaml.safe_load((target / "config.yml").read_text())
+        self.assertEqual(config["version"], "1.21.10")
+        self.assertEqual(config["java"], 21)
+        self.assertEqual(config["command"], [
+            "java", "@user_jvm_args.txt", "-jar", "server.jar", "nogui",
+        ])
+
+    def test_accept_eula_requires_vanilla_and_leaves_no_partial_pack(self) -> None:
+        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
+        manager = ModpackManager(self.root)
+        with self.assertRaisesRegex(ModpackError, "只能与 --vanilla"):
+            manager.create("invalid", accept_eula=True)
+        self.assertFalse((self.packs / "invalid").exists())
+
+    def test_export_import_contract_preserves_runtime_data(self) -> None:
+        source = self.make_pack("source")
+        archive = export_pack("source", self.packs)
+        destination_root = self.root / "destination"
+        destination_root.mkdir()
+        shutil.copytree(PROJECT_ROOT / "manager/runtime", destination_root / "runtime")
+        destination = ModpackManager(destination_root)
+
+        deployed = import_pack(destination, "target", archive, force=False)
+        (deployed / "data/world.dat").parent.mkdir(exist_ok=True)
+        (deployed / "data/world.dat").write_text("keep", encoding="utf-8")
+        (source / "src/new.txt").write_text("updated", encoding="utf-8")
+        replacement = export_pack("source", self.packs)
+        import_pack(destination, "target", replacement, force=True)
+
+        self.assertEqual((deployed / "src/new.txt").read_text(), "updated")
+        self.assertEqual((deployed / "data/world.dat").read_text(), "keep")
+
+    def test_import_rejects_unsafe_archive_member(self) -> None:
+        archive = self.root / "unsafe.tar.gz"
+        payload = self.root / "payload"
+        payload.write_text("bad", encoding="utf-8")
+        import tarfile
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(payload, arcname="../escape")
+        with self.assertRaisesRegex(RuntimeError, "不安全路径"):
+            import_pack(ModpackManager(self.root), "target", archive, force=False)
+
 
 class FakeRunner:
     def __init__(self) -> None:
@@ -156,6 +249,88 @@ class DockerClientTests(ManagerFixture):
         commands = [call[0] for call in self.runner.calls]
         self.assertTrue(any("stop" in command for command in commands))
         self.assertTrue(any(command[:2] == ["docker", "inspect"] for command in commands))
+
+
+class DockerInstallRunner:
+    def __init__(self, *, installed: bool = False) -> None:
+        self.installed = installed
+        self.calls: list[tuple[list[str], dict]] = []
+
+    def __call__(self, arguments: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        self.calls.append((arguments, kwargs))
+        output, error, code = "", "", 0
+        if arguments == ["dpkg", "--print-architecture"]:
+            output = "amd64\n"
+        elif arguments[:2] == ["dpkg-query", "-W"]:
+            code = 1
+        elif arguments[:2] == ["docker", "--version"]:
+            code = 0 if self.installed else 1
+        elif arguments[:3] == ["docker", "compose", "version"]:
+            code = 0 if self.installed else 1
+        elif arguments[:4] == ["apt-get", "install", "-y", "docker-ce"]:
+            self.installed = True
+        return subprocess.CompletedProcess(arguments, code, output, error)
+
+
+class DockerInstallerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.os_release = Path(temporary.name) / "os-release"
+        self.os_release.write_text(
+            'ID=debian\nVERSION_CODENAME="bookworm"\n', encoding="utf-8",
+        )
+
+    def test_installs_from_official_repository_and_verifies(self) -> None:
+        runner = DockerInstallRunner()
+        result = DockerInstaller(
+            runner, os_release=self.os_release, effective_uid=0,
+            invoking_user="root",
+        ).install()
+        commands = [arguments for arguments, _ in runner.calls]
+        self.assertFalse(result.already_installed)
+        self.assertIn([
+            "curl", "-fsSL", "https://download.docker.com/linux/debian/gpg",
+            "-o", "/etc/apt/keyrings/docker.asc",
+        ], commands)
+        install = next(
+            arguments for arguments in commands
+            if arguments[:4] == ["apt-get", "install", "-y", "docker-ce"]
+        )
+        self.assertIn("docker-compose-plugin", install)
+        tee_index = commands.index(["tee", "/etc/apt/sources.list.d/docker.sources"])
+        source = runner.calls[tee_index][1]["input"]
+        self.assertIn("Suites: bookworm", source)
+        self.assertIn("Architectures: amd64", source)
+        self.assertIn([
+            "systemctl", "enable", "--now", "docker.service", "containerd.service",
+        ], commands)
+        self.assertIn(["docker", "info"], commands)
+
+    def test_existing_install_is_kept_and_user_gets_access(self) -> None:
+        runner = DockerInstallRunner(installed=True)
+        result = DockerInstaller(
+            runner, os_release=self.os_release, effective_uid=0,
+            invoking_user="steam",
+        ).install()
+        commands = [arguments for arguments, _ in runner.calls]
+        self.assertTrue(result.already_installed)
+        self.assertEqual(result.user_added, "steam")
+        self.assertIn(
+            ["usermod", "--append", "--groups", "docker", "steam"], commands,
+        )
+        self.assertFalse(any("apt-get" in arguments for arguments in commands))
+
+    def test_rejects_unsupported_distribution_before_mutation(self) -> None:
+        self.os_release.write_text("ID=arch\nVERSION_CODENAME=rolling\n")
+        runner = DockerInstallRunner()
+        with self.assertRaisesRegex(RuntimeError, "Debian 或 Ubuntu"):
+            DockerInstaller(
+                runner, os_release=self.os_release, effective_uid=0,
+                invoking_user="root",
+            ).install()
+        commands = [arguments for arguments, _ in runner.calls]
+        self.assertFalse(any("apt-get" in arguments for arguments in commands))
 
 
 if __name__ == "__main__":

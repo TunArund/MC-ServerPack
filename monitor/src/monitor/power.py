@@ -1,24 +1,18 @@
-"""Provider-neutral cloud-instance power state machine."""
+"""与云厂商无关的实例电源状态机。"""
 
 from __future__ import annotations
 
-import importlib.util
-import inspect
-import re
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from types import ModuleType
+from typing import Optional
 
-
-PROVIDERS_DIR = Path(__file__).resolve().parent / "providers"
-PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+from .provider import ProviderError, load_provider
 
 
 class PowerError(RuntimeError):
-    pass
+    """电源操作失败。"""
 
 
 @dataclass(frozen=True)
@@ -33,39 +27,8 @@ class InstanceStatus:
     public_ip: str = ""
 
 
-def load_adapter(provider: str, *, providers_dir: Path = PROVIDERS_DIR) -> ModuleType:
-    if not PROVIDER_ID_RE.fullmatch(provider):
-        raise PowerError("无效 provider ID；仅允许大小写字母、数字和减号")
-    source = providers_dir / f"{provider}_api.py"
-    if not source.is_file():
-        raise PowerError(f"未找到 provider：{source.name}")
-    module_name = f"{__package__}.providers._loaded_{provider.replace('-', '_')}_api"
-    spec = importlib.util.spec_from_file_location(module_name, source)
-    if spec is None or spec.loader is None:
-        raise PowerError(f"provider 无法加载：{source.name}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        sys.modules.pop(module_name, None)
-        raise PowerError(f"provider 加载失败：{source.name}：{exc}") from exc
-    for action in ("status", "start", "stop"):
-        function = getattr(module, action, None)
-        if not callable(function):
-            raise PowerError(f"provider {source.name} 未提供 {action}")
-        try:
-            signature = inspect.signature(function)
-            signature.bind("instance", "region", "id", "key")
-        except (TypeError, ValueError) as exc:
-            raise PowerError(f"provider {source.name} 的 {action} 接口不正确") from exc
-        if tuple(signature.parameters) != ("instance_id", "region", "secret_id", "secret_key"):
-            raise PowerError(f"provider {source.name} 的 {action} 参数名不正确")
-    return module
-
-
 class Power:
-    """Own credentials and shared state transitions; delegate API calls only."""
+    """持有密钥与公共状态转换，具体 API 调用交给 Provider。"""
 
     def __init__(
         self, adapter: ModuleType, target: PowerTarget, secret_id: str,
@@ -124,7 +87,7 @@ class Power:
             raise PowerError(f"实例处于 {current.state}，不能开机")
         return self.wait("RUNNING", 180)
 
-    def stop(self, current: InstanceStatus | None = None) -> InstanceStatus:
+    def stop(self, current: Optional[InstanceStatus] = None) -> InstanceStatus:
         current = current or self.status()
         if current.state == "STOPPED":
             return current
@@ -141,8 +104,12 @@ def create_power(
     provider: str, target: PowerTarget, secrets: dict[str, str],
     *, wait_after_action: bool = True,
 ) -> Power:
+    try:
+        adapter = load_provider(provider)
+    except ProviderError as exc:
+        raise PowerError(str(exc)) from exc
     return Power(
-        load_adapter(provider), target,
+        adapter, target,
         secrets.get("POWER_SECRET_ID", ""),
         secrets.get("POWER_SECRET_KEY", ""),
         wait_after_action=wait_after_action,

@@ -1,4 +1,4 @@
-"""Example provider; copy and rename it to <provider>_api.py."""
+"""自定义电源 Provider 示例；复制并改名为 <provider>.py。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""QQ Bot command routing and power-operation confirmation."""
+"""QQ Bot 命令路由与电源操作确认。"""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def menu(state: str) -> Outgoing:
 
 
 async def discover_user(network: Network, code: str, timeout: float = 300) -> str:
-    """Wait for one exact C2C verification message and return its user_openid."""
+    """等待完全匹配的单聊验证码消息并返回 user_openid。"""
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     found: asyncio.Future[str] = loop.create_future()
@@ -118,7 +118,7 @@ class QQBot:
             await asyncio.gather(network, alerts, return_exceptions=True)
 
     async def alert(self, kind: str, content: str) -> None:
-        """Queue a typed alert for its configured targets."""
+        """将分类告警加入其配置目标的发送队列。"""
         if kind == "recovered":
             content = message.render("recovered")
         try:

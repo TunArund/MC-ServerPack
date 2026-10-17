@@ -1,4 +1,4 @@
-"""One aggregated Manager schedule for shutdown actions and per-pack backups."""
+"""聚合执行 Manager 关机流程和各整合包备份。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import IO, Iterator
 from zoneinfo import ZoneInfo
 
-from .archive import list_backups
+from .backup import list_backups
 from .config import MANAGER_ROOT, ManagerLimits, PackSpec
 from .power import PowerError, PowerTarget, create_power as build_power
 
@@ -243,7 +243,7 @@ def run_all(
 
 
 def run_due(manager, now: float | None = None) -> tuple[list[Path], list[tuple[str, str]], bool]:
-    """Compatibility helper for tests and backup-only callers."""
+    """供测试和仅执行备份的调用方使用的兼容入口。"""
     report = ScheduleReport()
     with schedule_lock(manager.manager_root) as state_handle:
         report.acquired = state_handle is not None

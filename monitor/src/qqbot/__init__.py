@@ -1,1 +1,0 @@
-"""QQ Bot integration boundary."""

@@ -1,4 +1,4 @@
-"""Load and render QQ Bot text templates."""
+"""加载并渲染 QQ Bot 文本模板。"""
 
 from __future__ import annotations
 

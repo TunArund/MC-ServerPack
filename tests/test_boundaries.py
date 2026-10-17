@@ -16,33 +16,74 @@ class RuntimeBoundaryTests(unittest.TestCase):
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 imported.update(alias.name for alias in node.names)
-        self.assertTrue({"ManagerService", "MonitorService"} <= imported)
+        self.assertTrue({"Manager", "Monitor"} <= imported)
         for internal in (
             "create_power", "load_env", "upsert_user_target",
-            "ManagerDeployment", "MonitorDeployment", "ModpackService",
+            "RuntimeDeployment", "ModpackManager",
         ):
             self.assertNotIn(internal, imported)
         self.assertNotIn("manager.sh", source)
         self.assertNotIn("monitor.sh", source)
 
-    def test_runtime_deployment_is_split_by_owner(self) -> None:
+    def test_terminal_runtime_adapters_are_flat_modules(self) -> None:
         shared = (ROOT / "lib/deploy.py").read_text(encoding="utf-8")
-        self.assertNotIn("class DeploymentService", shared)
-        self.assertTrue((ROOT / "lib/manager/deploy.py").is_file())
-        self.assertTrue((ROOT / "lib/monitor/deploy.py").is_file())
+        tree = ast.parse(shared, filename="lib/deploy.py")
+        imports = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        self.assertIn("class DockerProvisioner", shared)
+        self.assertIn("apt-get", shared)
+        self.assertIn("class PythonProvisioner", shared)
+        self.assertIn("python3-venv", shared)
+        self.assertNotIn("docker", imports)
+        self.assertTrue((ROOT / "lib/manager.py").is_file())
+        self.assertTrue((ROOT / "lib/monitor.py").is_file())
+        self.assertFalse((ROOT / "lib/manager/service.py").exists())
+        self.assertFalse((ROOT / "lib/monitor/service.py").exists())
 
     def test_power_core_is_identical_in_all_runtimes(self) -> None:
         expected = (ROOT / "lib/power.py").read_bytes()
         self.assertEqual(expected, (ROOT / "manager/lib/power.py").read_bytes())
         self.assertEqual(expected, (ROOT / "monitor/src/monitor/power.py").read_bytes())
 
+        expected_provider = (ROOT / "lib/provider.py").read_bytes()
+        self.assertEqual(expected_provider, (ROOT / "manager/lib/provider.py").read_bytes())
+        self.assertEqual(
+            expected_provider,
+            (ROOT / "monitor/src/monitor/provider.py").read_bytes(),
+        )
+        self.assertNotIn(b"load_adapter", expected)
+
     def test_shared_provider_implementations_are_identical(self) -> None:
-        for name in ("tencent_api.py", "example_api.py"):
+        for name in ("tencent.py", "example.py"):
             expected = (ROOT / "lib/providers" / name).read_bytes()
             with self.subTest(name=name, runtime="manager"):
                 self.assertEqual(expected, (ROOT / "manager/lib/providers" / name).read_bytes())
             with self.subTest(name=name, runtime="monitor"):
                 self.assertEqual(expected, (ROOT / "monitor/src/monitor/providers" / name).read_bytes())
+
+        tencent = (ROOT / "lib/providers/tencent.py").read_text(encoding="utf-8")
+        self.assertIn("def _request(", tencent)
+        self.assertNotIn("def _invoke(", tencent)
+
+    def test_deploy_metadata_and_transport_have_single_owners(self) -> None:
+        remote = (ROOT / "lib/remote.py").read_text(encoding="utf-8")
+        self.assertNotIn("def archive_tree", remote)
+        self.assertNotIn("def cleanup_archive", remote)
+        self.assertFalse((ROOT / "manager/.mcsp-preserve").exists())
+        self.assertFalse((ROOT / "monitor/.mcsp-preserve").exists())
+        self.assertTrue((ROOT / "manager/.mcspignore").is_file())
+        self.assertTrue((ROOT / "monitor/.mcspignore").is_file())
+
+    def test_manager_module_names_describe_both_directions(self) -> None:
+        self.assertTrue((ROOT / "manager/lib/backup.py").is_file())
+        self.assertFalse((ROOT / "manager/lib/archive.py").exists())
+        transfer = (ROOT / "manager/lib/transfer.py").read_text(encoding="utf-8")
+        self.assertIn("def export_pack", transfer)
+        self.assertIn("def import_pack", transfer)
 
     def test_no_cross_runtime_imports(self) -> None:
         forbidden = {
@@ -65,7 +106,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_monitor_source_root_contains_only_global_modules(self) -> None:
         modules = sorted(path.name for path in (ROOT / "monitor/src").glob("*.py"))
-        self.assertEqual(modules, ["__init__.py", "app.py", "config.py"])
+        self.assertEqual(modules, ["app.py", "config.py"])
         self.assertFalse((ROOT / "monitor/src/state.py").exists())
 
     def test_monitor_domain_does_not_import_global_config(self) -> None:
@@ -80,7 +121,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             ROOT / "lib/providers", ROOT / "manager/lib/providers",
             ROOT / "monitor/src/monitor/providers",
         ):
-            for path in directory.glob("*_api.py"):
+            for path in directory.glob("*.py"):
                 with self.subTest(path=path):
                     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                     for node in ast.walk(tree):
