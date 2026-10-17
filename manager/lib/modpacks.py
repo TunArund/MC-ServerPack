@@ -61,17 +61,19 @@ def _read_url(url: str, *, limit: int) -> bytes:
                 time.sleep(attempt + 1)
 
     if content is None and shutil.which("curl"):
-        result = subprocess.run([
-            "curl", "--fail", "--location", "--silent", "--show-error",
-            "--retry", "5", "--retry-all-errors", "--retry-delay", "1",
-            "--connect-timeout", "15", "--max-time", "180",
-            "--max-filesize", str(limit), url,
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if result.returncode == 0:
-            content = result.stdout
-        else:
+        for attempt in range(5):
+            result = subprocess.run([
+                "curl", "--fail", "--location", "--silent", "--show-error",
+                "--ipv4", "--http1.1", "--connect-timeout", "15",
+                "--max-time", "180", "--max-filesize", str(limit), url,
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if result.returncode == 0:
+                content = result.stdout
+                break
             detail = result.stderr.decode("utf-8", "replace").strip()
             errors.append(f"curl 退出码 {result.returncode}: {detail}")
+            if attempt < 4:
+                time.sleep(attempt + 1)
 
     if content is None:
         detail = errors[-1] if errors else "未知错误"

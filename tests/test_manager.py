@@ -197,9 +197,19 @@ class PackConfigTests(ManagerFixture):
             self.assertEqual(_read_url("https://example.test/file", limit=20), b"downloaded")
 
         arguments = run.call_args.args[0]
-        self.assertIn("--retry-all-errors", arguments)
+        self.assertIn("--ipv4", arguments)
+        self.assertIn("--http1.1", arguments)
         self.assertIn("--max-filesize", arguments)
         self.assertNotIn("--insecure", arguments)
+
+    def test_default_jvm_arguments_match_template_memory_limit(self) -> None:
+        arguments = (
+            PROJECT_ROOT / "manager/modpacks/template/src/user_jvm_args.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("-Xms2G\n", arguments)
+        self.assertIn("-Xmx6G\n", arguments)
+        self.assertIn("-XX:+UseG1GC\n", arguments)
+        self.assertNotIn("Dfml", arguments)
 
     def test_accept_eula_requires_vanilla_and_leaves_no_partial_pack(self) -> None:
         shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
