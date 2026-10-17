@@ -17,7 +17,7 @@ from manager.lib.config import (
     validate_pack_id,
 )
 from manager.lib.docker import DockerClient, DockerInstaller
-from manager.lib.modpacks import ModpackError, ModpackManager
+from manager.lib.modpacks import ModpackError, ModpackManager, _read_url
 from manager.lib.transfer import export_pack, import_pack
 
 
@@ -146,12 +146,28 @@ class PackConfigTests(ManagerFixture):
 
         self.assertEqual((target / "src/server.jar").read_bytes(), server)
         self.assertEqual((target / "src/eula.txt").read_text(), "eula=true\n")
+        self.assertTrue((target / "src/user_jvm_args.txt").is_file())
         config = yaml.safe_load((target / "config.yml").read_text())
         self.assertEqual(config["version"], "1.21.10")
         self.assertEqual(config["java"], 21)
         self.assertEqual(config["command"], [
-            "java", "-jar", "server.jar", "nogui",
+            "java", "@user_jvm_args.txt", "-jar", "server.jar", "nogui",
         ])
+
+    def test_download_falls_back_to_verified_curl(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["curl"], 0, stdout=b"downloaded", stderr=b"",
+        )
+        with patch("manager.lib.modpacks.urlopen", side_effect=OSError("TLS EOF")), \
+             patch("manager.lib.modpacks.time.sleep"), \
+             patch("manager.lib.modpacks.shutil.which", return_value="/usr/bin/curl"), \
+             patch("manager.lib.modpacks.subprocess.run", return_value=result) as run:
+            self.assertEqual(_read_url("https://example.test/file", limit=20), b"downloaded")
+
+        arguments = run.call_args.args[0]
+        self.assertIn("--retry-all-errors", arguments)
+        self.assertIn("--max-filesize", arguments)
+        self.assertNotIn("--insecure", arguments)
 
     def test_accept_eula_requires_vanilla_and_leaves_no_partial_pack(self) -> None:
         shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")

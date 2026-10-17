@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -47,11 +48,34 @@ def _official_url(url: object, field: str) -> str:
 
 
 def _read_url(url: str, *, limit: int) -> bytes:
-    try:
-        with urlopen(url, timeout=60) as response:
-            content = response.read(limit + 1)
-    except OSError as exc:
-        raise ModpackError(f"下载失败：{url}：{exc}") from exc
+    errors: list[str] = []
+    content: bytes | None = None
+    for attempt in range(3):
+        try:
+            with urlopen(url, timeout=60) as response:
+                content = response.read(limit + 1)
+            break
+        except OSError as exc:
+            errors.append(str(exc))
+            if attempt < 2:
+                time.sleep(attempt + 1)
+
+    if content is None and shutil.which("curl"):
+        result = subprocess.run([
+            "curl", "--fail", "--location", "--silent", "--show-error",
+            "--retry", "5", "--retry-all-errors", "--retry-delay", "1",
+            "--connect-timeout", "15", "--max-time", "180",
+            "--max-filesize", str(limit), url,
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if result.returncode == 0:
+            content = result.stdout
+        else:
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            errors.append(f"curl 退出码 {result.returncode}: {detail}")
+
+    if content is None:
+        detail = errors[-1] if errors else "未知错误"
+        raise ModpackError(f"下载失败：{url}：{detail}")
     if len(content) > limit:
         raise ModpackError(f"下载内容超过限制：{url}")
     return content
@@ -133,7 +157,7 @@ def install_vanilla(directory: Path, requested: str, *, accept_eula: bool) -> st
         r"(?m)^java:\s*.*$", f"java: {_java_version(metadata, requested)}", config,
         count=1,
     )
-    config += "command: [java, -jar, server.jar, nogui]\n"
+    config += "command: [java, '@user_jvm_args.txt', -jar, server.jar, nogui]\n"
     config_file.write_text(config, encoding="utf-8")
     return requested
 
