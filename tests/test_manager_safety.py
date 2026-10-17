@@ -100,6 +100,26 @@ class ManagerSafetyTests(unittest.TestCase):
         self.assertFalse(failed)
         self.assertEqual(self.docker.commands, [("running", "say 服务器将在 15 分钟后关闭")])
 
+    def test_start_can_accept_eula_after_source_was_replaced(self) -> None:
+        self.make_pack("server")
+        source_eula = self.packs / "server/src/eula.txt"
+        source_eula.write_text("eula=false\n", encoding="utf-8")
+
+        self.manager.start("server", accept_eula=True)
+
+        self.assertEqual(source_eula.read_text(encoding="utf-8"), "eula=true\n")
+        self.assertEqual(self.docker.active, {"server"})
+
+    def test_start_updates_persisted_eula_when_present(self) -> None:
+        self.make_pack("server")
+        persisted = self.packs / "server/data/eula.txt"
+        persisted.parent.mkdir(exist_ok=True)
+        persisted.write_text("eula=false\n", encoding="utf-8")
+
+        self.manager.start("server", accept_eula=True)
+
+        self.assertEqual(persisted.read_text(encoding="utf-8"), "eula=true\n")
+
 
 if __name__ == "__main__":
     unittest.main()

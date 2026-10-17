@@ -48,9 +48,8 @@ class FakeServices:
     ) -> None:
         self.calls.append(("manager", action, pack_id, extra, tty))
 
-    def local_create(self, pack_id: str, *, extra=()) -> Path:
-        self.calls.append(("local-create", pack_id, extra))
-        return Path("manager/modpacks") / pack_id
+    def local_manager(self, arguments: list[str]) -> None:
+        self.calls.append(("local-manager", arguments))
 
     def monitor_command(self, action: str) -> None:
         self.calls.append(("monitor", action))
@@ -265,36 +264,33 @@ class TerminalCliRedesignTests(unittest.TestCase):
             ("manager", "logs", "Pack-01", ("--lines", "100", "--follow"), True),
         ])
 
-    def test_manager_vanilla_create_is_forwarded_to_remote_manager(self) -> None:
+    def test_manager_create_force_is_forwarded_to_remote_manager(self) -> None:
         services = FakeServices()
-        dispatch([
-            "manager", "create", "Vanilla-01", "--vanilla", "1.21.10",
-            "--accept-eula",
-        ], services)
+        dispatch(["manager", "create", "Server-01", "--force"], services)
         self.assertEqual(services.calls, [(
-            "manager", "create", "Vanilla-01",
-            ("--vanilla", "1.21.10", "--accept-eula"), False,
+            "manager", "create", "Server-01", ("--force",), False,
         )])
 
-    def test_local_vanilla_create_is_forwarded_to_local_manager(self) -> None:
+    def test_local_manager_arguments_are_forwarded_transparently(self) -> None:
         services = FakeServices()
-        dispatch([
-            "local", "manager", "create", "Vanilla-01", "--vanilla",
-            "--accept-eula", "--force",
-        ], services)
+        dispatch(["local", "manager", "remove", "Server-01", "--force"], services)
         self.assertEqual(services.calls, [(
-            "local-create", "Vanilla-01",
-            ("--vanilla", "latest", "--accept-eula", "--force"),
+            "local-manager", ["remove", "Server-01", "--force"],
+        )])
+
+    def test_manager_start_can_accept_eula(self) -> None:
+        services = FakeServices()
+        dispatch(["manager", "start", "Server-01", "--accept-eula"], services)
+        self.assertEqual(services.calls, [(
+            "manager", "start", "Server-01", ("--accept-eula",), False,
         )])
 
     def test_local_namespace_is_explicit(self) -> None:
         services = FakeServices()
-        output = io.StringIO()
-        with redirect_stdout(output):
-            dispatch(["local", "manager", "create", "Pack-01"], services)
-        self.assertEqual(services.calls, [("local-create", "Pack-01", ())])
-        self.assertIn("请覆盖 src/ 内容：", output.getvalue())
-        self.assertIn("请调整 config.yml 配置：", output.getvalue())
+        dispatch(["local", "manager", "create", "Pack-01"], services)
+        self.assertEqual(services.calls, [(
+            "local-manager", ["create", "Pack-01"],
+        )])
 
     def test_monitor_namespace_calls_remote_monitor(self) -> None:
         services = FakeServices()

@@ -91,14 +91,6 @@ class Manager:
             [str(ROOT / "manager/manager.sh"), *arguments], capture=capture,
         )
 
-    def create_local(self, pack_id: str, *, extra: Tuple[str, ...] = ()) -> Path:
-        result = self.local(["create", pack_id, *extra], capture=True)
-        output = result.stdout.decode("utf-8", "replace")
-        match = re.search(r"^已创建：(.+)$", output, re.MULTILINE)
-        if not match:
-            raise ManagerError("Manager 未返回创建路径")
-        return Path(match.group(1))
-
     def export(self, pack_id: str) -> Path:
         result = self.local(["export", pack_id], capture=True)
         output = result.stdout.decode("utf-8", "replace")

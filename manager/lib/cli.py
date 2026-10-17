@@ -32,20 +32,18 @@ def make_parser() -> argparse.ArgumentParser:
     create = commands.add_parser("create")
     create.add_argument("pack_id", help="整合包 ID")
     create.add_argument(
-        "--vanilla", nargs="?", const="latest", metavar="VERSION",
-        help="下载最新正式版或指定版本的 Mojang 原版服务端",
-    )
-    create.add_argument(
-        "--accept-eula", action="store_true",
-        help="确认接受 Minecraft EULA，并写入 eula=true",
-    )
-    create.add_argument(
         "--force", action="store_true",
         help="完整替换已存在的同名整合包",
     )
-    for action in ("config", "start", "stop", "status", "backup"):
+    for action in ("config", "stop", "status", "backup"):
         command = commands.add_parser(action)
         command.add_argument("pack_id", help="整合包 ID")
+    start = commands.add_parser("start")
+    start.add_argument("pack_id", help="整合包 ID")
+    start.add_argument(
+        "--accept-eula", action="store_true",
+        help="确认接受 Minecraft EULA，启动前写入 eula=true",
+    )
     logs = commands.add_parser("logs")
     logs.add_argument("pack_id")
     logs.add_argument("--lines", type=int, default=100, help="日志行数")
@@ -128,22 +126,15 @@ def dispatch(
     if args.action == "logs" and args.lines < 0:
         raise ModpackError("日志行数不能为负数")
     if args.action == "create":
-        created = service.create(
-            args.pack_id, vanilla=args.vanilla, accept_eula=args.accept_eula,
-            force=args.force,
-        )
+        created = service.create(args.pack_id, force=args.force)
         print(f"已创建：{created}")
-        if args.vanilla is None:
-            print(f"请覆盖 src/ 内容：{created / 'src'}")
-            print(f"请调整 config.yml 配置：{created / 'config.yml'}")
-        else:
-            print(f"原版服务端版本：{service.spec(args.pack_id).version}")
-            if not args.accept_eula:
-                print("启动前请阅读 Minecraft EULA，并将 src/eula.txt 改为 eula=true")
+        print(f"请覆盖 src/ 内容：{created / 'src'}")
+        print(f"请调整 config.yml 配置：{created / 'config.yml'}")
+        print("原版服务端下载：https://www.minecraft.net/download/server")
     elif args.action == "config":
         print(f"配置有效：{service.configure(args.pack_id)}")
     elif args.action == "start":
-        service.start(args.pack_id)
+        service.start(args.pack_id, accept_eula=args.accept_eula)
         print(f"已启动：{args.pack_id}")
     elif args.action == "stop":
         service.stop(args.pack_id)

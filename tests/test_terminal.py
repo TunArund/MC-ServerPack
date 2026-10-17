@@ -66,9 +66,8 @@ class FakeService:
     def install_python(self) -> None:
         self.calls.append(("install-python", "manager"))
 
-    def local_create(self, pack_id: str) -> Path:
-        self.calls.append(("local-create", pack_id))
-        return Path("manager/modpacks") / pack_id
+    def local_manager(self, arguments: list[str]) -> None:
+        self.calls.append(("local-manager", arguments))
 
     def manager_command(
         self, action: str, pack_id: str | None = None, *,

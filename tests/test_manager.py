@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import shutil
 import subprocess
@@ -17,7 +15,7 @@ from manager.lib.config import (
     validate_pack_id,
 )
 from manager.lib.docker import DockerClient, DockerInstaller
-from manager.lib.modpacks import ModpackError, ModpackManager, _read_url
+from manager.lib.modpacks import ModpackError, ModpackManager
 from manager.lib.transfer import export_pack, import_pack
 
 
@@ -98,62 +96,6 @@ class PackConfigTests(ManagerFixture):
         self.assertIn("name: new-pack", (target / "config.yml").read_text(encoding="utf-8"))
         self.assertTrue((target / "backups").is_dir())
 
-    def test_create_vanilla_downloads_verified_official_server(self) -> None:
-        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
-        server = b"official-server-jar"
-        manifest_url = (
-            "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
-        )
-        version_url = "https://piston-meta.mojang.com/v1/packages/test/version.json"
-        server_url = "https://piston-data.mojang.com/v1/objects/test/server.jar"
-        responses = {
-            manifest_url: json.dumps({
-                "latest": {"release": "1.21.10"},
-                "versions": [{"id": "1.21.10", "url": version_url}],
-            }).encode(),
-            version_url: json.dumps({
-                "javaVersion": {"majorVersion": 21},
-                "downloads": {"server": {
-                    "url": server_url, "size": len(server),
-                    "sha1": hashlib.sha1(server).hexdigest(),
-                }},
-            }).encode(),
-            server_url: server,
-        }
-
-        class Response:
-            def __init__(self, content: bytes) -> None:
-                self.content = content
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return None
-
-            def read(self, limit: int) -> bytes:
-                return self.content[:limit]
-
-        def open_url(url: str, *, timeout: int):
-            self.assertEqual(timeout, 60)
-            return Response(responses[url])
-
-        manager = ModpackManager(self.root)
-        with patch("manager.lib.modpacks.urlopen", side_effect=open_url):
-            target = manager.create(
-                "vanilla", vanilla="latest", accept_eula=True,
-            )
-
-        self.assertEqual((target / "src/server.jar").read_bytes(), server)
-        self.assertEqual((target / "src/eula.txt").read_text(), "eula=true\n")
-        self.assertTrue((target / "src/user_jvm_args.txt").is_file())
-        config = yaml.safe_load((target / "config.yml").read_text())
-        self.assertEqual(config["version"], "1.21.10")
-        self.assertEqual(config["java"], 21)
-        self.assertEqual(config["command"], [
-            "java", "-jar", "server.jar", "nogui",
-        ])
-
     def test_runtime_entrypoint_injects_editable_jvm_arguments(self) -> None:
         server = self.root / "server"
         binaries = self.root / "bin"
@@ -186,22 +128,6 @@ class PackConfigTests(ManagerFixture):
             ["-Xms2G", "-Dserver.name=My Server", "-jar", "server.jar", "nogui"],
         )
 
-    def test_download_falls_back_to_verified_curl(self) -> None:
-        result = subprocess.CompletedProcess(
-            ["curl"], 0, stdout=b"downloaded", stderr=b"",
-        )
-        with patch("manager.lib.modpacks.urlopen", side_effect=OSError("TLS EOF")), \
-             patch("manager.lib.modpacks.time.sleep"), \
-             patch("manager.lib.modpacks.shutil.which", return_value="/usr/bin/curl"), \
-             patch("manager.lib.modpacks.subprocess.run", return_value=result) as run:
-            self.assertEqual(_read_url("https://example.test/file", limit=20), b"downloaded")
-
-        arguments = run.call_args.args[0]
-        self.assertIn("--ipv4", arguments)
-        self.assertIn("--http1.1", arguments)
-        self.assertIn("--max-filesize", arguments)
-        self.assertNotIn("--insecure", arguments)
-
     def test_default_jvm_arguments_match_template_memory_limit(self) -> None:
         arguments = (
             PROJECT_ROOT / "manager/modpacks/template/src/user_jvm_args.txt"
@@ -210,13 +136,6 @@ class PackConfigTests(ManagerFixture):
         self.assertIn("-Xmx6G\n", arguments)
         self.assertIn("-XX:+UseG1GC\n", arguments)
         self.assertNotIn("Dfml", arguments)
-
-    def test_accept_eula_requires_vanilla_and_leaves_no_partial_pack(self) -> None:
-        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
-        manager = ModpackManager(self.root)
-        with self.assertRaisesRegex(ModpackError, "只能与 --vanilla"):
-            manager.create("invalid", accept_eula=True)
-        self.assertFalse((self.packs / "invalid").exists())
 
     def test_force_create_replaces_existing_pack(self) -> None:
         shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
@@ -239,10 +158,10 @@ class PackConfigTests(ManagerFixture):
         marker.write_text("keep", encoding="utf-8")
 
         with patch(
-            "manager.lib.modpacks.install_vanilla",
-            side_effect=ModpackError("download failed"),
-        ), self.assertRaisesRegex(ModpackError, "download failed"):
-            manager.create("keep-me", vanilla="latest", force=True)
+            "manager.lib.modpacks.shutil.copytree",
+            side_effect=OSError("copy failed"),
+        ), self.assertRaisesRegex(OSError, "copy failed"):
+            manager.create("keep-me", force=True)
 
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
         self.assertEqual(list((self.root / "tmp").iterdir()), [])

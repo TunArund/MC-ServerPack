@@ -43,11 +43,8 @@ cp config.yml.example config.yml
 ./manager.sh install docker
 ./manager.sh install
 ./manager.sh create example
-./manager.sh create vanilla --vanilla
-./manager.sh create vanilla-locked --vanilla 1.21.10 --accept-eula
-./manager.sh create vanilla --vanilla --accept-eula --force
 ./manager.sh config example
-./manager.sh start example
+./manager.sh start example --accept-eula
 ./manager.sh status example
 ./manager.sh logs example --lines 100
 ./manager.sh logs example --follow
@@ -69,9 +66,11 @@ cp config.yml.example config.yml
 和 Compose 插件，启用服务并将当前非 root 用户加入 `docker` 组。该组具有等同 root
 的 Docker 权限；安装完成后需重新登录，再执行 `./manager.sh check`。
 `install` 在环境检查通过后安装 Manager 自身 Python 依赖并安装聚合调度任务。
-`create --vanilla [version]` 从 Mojang 官方元数据下载原版服务端，校验文件大小与
-SHA-1，并自动写入版本、Java 镜像和启动命令。不指定版本时使用最新正式版；默认
-`eula=false`，只有显式添加 `--accept-eula` 才写入 `eula=true`。
+`create` 只创建标准目录骨架，不下载服务端。用户将整合包或原版服务端
+覆盖到 `src/` 后，调整 `config.yml` 中的版本、Java、端口和启动命令。
+原版服务端可从 [Minecraft 官方下载页](https://www.minecraft.net/download/server)
+或对应历史版本的官方发布页下载。`start --accept-eula` 会在启动前将
+最终生效的 `eula.txt` 写为 `eula=true`，不会被后续覆盖 `src/` 撤销。
 当启动命令的第一项是 `java` 时，Runtime 的 `entrypoint.sh` 会读取
 `src/user_jvm_args.txt`，忽略空行和注释后将每行作为一个 JVM 参数。这也适用于
 Java 8，且用户可直接修改堆大小和其他 JVM 参数。以脚本为启动命令的整合包

@@ -80,10 +80,8 @@ class CliServices:
             ROOT / "manager/lib/requirements.txt", transport=self.transport,
         ).install()
 
-    def local_create(
-        self, pack_id: str, *, extra: Tuple[str, ...] = (),
-    ) -> Path:
-        return self.manager_runtime().create_local(pack_id, extra=extra)
+    def local_manager(self, arguments: list[str]) -> None:
+        self.manager_runtime().local(arguments)
 
     def manager_command(
         self, action: str, pack_id: Optional[str] = None, *,
@@ -206,20 +204,18 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     manager_create = manager_commands.add_parser("create")
     manager_create.add_argument("pack_id")
     manager_create.add_argument(
-        "--vanilla", nargs="?", const="latest", metavar="VERSION",
-        help="在 Manager 上下载最新正式版或指定版本的 Mojang 原版服务端",
-    )
-    manager_create.add_argument(
-        "--accept-eula", action="store_true",
-        help="确认接受 Minecraft EULA",
-    )
-    manager_create.add_argument(
         "--force", action="store_true",
         help="完整替换远端已存在的同名整合包",
     )
-    for action in ("config", "start", "stop", "status", "backup"):
+    for action in ("config", "stop", "status", "backup"):
         item = manager_commands.add_parser(action)
         item.add_argument("pack_id")
+    manager_start = manager_commands.add_parser("start")
+    manager_start.add_argument("pack_id")
+    manager_start.add_argument(
+        "--accept-eula", action="store_true",
+        help="确认接受 Minecraft EULA，启动前写入 eula=true",
+    )
     logs = manager_commands.add_parser("logs")
     logs.add_argument("pack_id")
     logs.add_argument("--lines", type=int, default=100)
@@ -238,20 +234,9 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     local = commands.add_parser("local", help="调用本机运行时")
     local_runtime = local.add_subparsers(dest="runtime", required=True)
     local_manager = local_runtime.add_parser("manager")
-    local_manager_commands = local_manager.add_subparsers(dest="action", required=True)
-    local_create = local_manager_commands.add_parser("create")
-    local_create.add_argument("pack_id")
-    local_create.add_argument(
-        "--vanilla", nargs="?", const="latest", metavar="VERSION",
-        help="在本机 Manager 下载最新正式版或指定版本的 Mojang 原版服务端",
-    )
-    local_create.add_argument(
-        "--accept-eula", action="store_true",
-        help="确认接受 Minecraft EULA",
-    )
-    local_create.add_argument(
-        "--force", action="store_true",
-        help="完整替换本机已存在的同名整合包",
+    local_manager.add_argument(
+        "arguments", nargs=argparse.REMAINDER,
+        help="原样传给本机 Manager 入口的参数",
     )
 
     monitor = commands.add_parser("monitor", help="调用远端 Monitor")
@@ -289,12 +274,10 @@ def _dispatch_manager(args, services: CliServices) -> int:
             raise ManagerError("控制台命令不能为空")
         extra.extend(args.command)
     elif args.action == "create":
-        if args.vanilla is not None:
-            extra.extend(("--vanilla", args.vanilla))
-        if args.accept_eula:
-            extra.append("--accept-eula")
         if args.force:
             extra.append("--force")
+    elif args.action == "start" and args.accept_eula:
+        extra.append("--accept-eula")
     elif args.action == "restore" and args.backup:
         extra.append(args.backup)
     elif args.action == "remove" and args.force:
@@ -415,18 +398,7 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
     if args.module == "manager":
         return _dispatch_manager(args, services)
     if args.module == "local":
-        extra = []
-        if args.vanilla is not None:
-            extra.extend(("--vanilla", args.vanilla))
-        if args.accept_eula:
-            extra.append("--accept-eula")
-        if args.force:
-            extra.append("--force")
-        path = services.local_create(args.pack_id, extra=tuple(extra))
-        print(f"已创建本地整合包：{path}")
-        if args.vanilla is None:
-            print(f"请覆盖 src/ 内容：{path / 'src'}")
-            print(f"请调整 config.yml 配置：{path / 'config.yml'}")
+        services.local_manager(args.arguments)
         return 0
     if args.module == "monitor":
         if args.action == "add-target":

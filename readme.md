@@ -68,13 +68,8 @@ python3 -m pip install -r lib/requirements.txt
 
 # 3.上传启动 整合包
 ./mcsp.sh local manager create example # 创建本地整合包骨架
-./mcsp.sh local manager create vanilla --vanilla --accept-eula # 本地创建原版服务端
 ./mcsp.sh deploy modpack example # 上传到manager
-./mcsp.sh manager start example # 远程启动
-
-# 没有现成整合包时，直接在 Manager 创建最新原版服务端
-./mcsp.sh manager create vanilla --vanilla --accept-eula
-./mcsp.sh manager start vanilla
+./mcsp.sh manager start example --accept-eula # 接受 EULA 并远程启动
 ```
 
 `--install-python` 仅存在于源码入口。源码版完整部署会为远端 Manager 创建
@@ -123,12 +118,15 @@ zip、tar.gz都行，支持从url下载
 
 整合包 ID 仅允许大小写英文字母、数字和减号（`A-Z`、`a-z`、`0-9`、`-`）。
 
-`manager create <id> --vanilla` 通过远端 `manager.sh` 从 Mojang 官方版本清单获取
-最新正式版；也可用 `--vanilla <version>` 锁定版本。服务端 jar 会校验官方声明的
-文件大小和 SHA-1。默认生成 `eula=false`；只有明确传入 `--accept-eula` 才表示接受
-[Minecraft EULA](https://www.minecraft.net/eula) 并生成 `eula=true`。
-本机可使用 `local manager create`的同样参数。同名目录默认拒绝创建；
-显式添加 `--force` 会完整替换其 `src`、`data`、`backups` 和配置。
+`local manager create <id>` 只创建整合包骨架，用户自行覆盖 `src/` 并调整
+`config.yml`。原版服务端从 [Minecraft 官方下载页](https://www.minecraft.net/download/server)
+或所需历史版本的官方发布页下载。启动时添加 `--accept-eula` 表示接受
+[Minecraft EULA](https://www.minecraft.net/eula) 并在最终整合包中写入 `eula=true`。
+同名目录默认拒绝创建；`create --force` 会完整替换其 `src`、`data`、
+`backups` 和配置。
+
+`local manager <args...>` 会将后续参数原样传给本机 `manager.sh`，因此
+`create`、`remove`、`config`、`start` 等 Manager 命令均可直接使用。
 
 ## 账号
 需持有 Linux 服务器与非 root 的免密 sudo 账号；配置中的 `manager.user` 和
