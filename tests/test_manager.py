@@ -150,7 +150,7 @@ class PackConfigTests(ManagerFixture):
         self.assertEqual(config["version"], "1.21.10")
         self.assertEqual(config["java"], 21)
         self.assertEqual(config["command"], [
-            "java", "@user_jvm_args.txt", "-jar", "server.jar", "nogui",
+            "java", "-jar", "server.jar", "nogui",
         ])
 
     def test_accept_eula_requires_vanilla_and_leaves_no_partial_pack(self) -> None:
@@ -159,6 +159,35 @@ class PackConfigTests(ManagerFixture):
         with self.assertRaisesRegex(ModpackError, "只能与 --vanilla"):
             manager.create("invalid", accept_eula=True)
         self.assertFalse((self.packs / "invalid").exists())
+
+    def test_force_create_replaces_existing_pack(self) -> None:
+        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
+        manager = ModpackManager(self.root)
+        target = manager.create("replace-me")
+        (target / "src/old.txt").write_text("old", encoding="utf-8")
+
+        replaced = manager.create("replace-me", force=True)
+
+        self.assertEqual(replaced, target)
+        self.assertFalse((target / "src/old.txt").exists())
+        self.assertTrue((target / "config.yml").is_file())
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+
+    def test_failed_force_create_keeps_existing_pack(self) -> None:
+        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
+        manager = ModpackManager(self.root)
+        target = manager.create("keep-me")
+        marker = target / "src/keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+
+        with patch(
+            "manager.lib.modpacks.install_vanilla",
+            side_effect=ModpackError("download failed"),
+        ), self.assertRaisesRegex(ModpackError, "download failed"):
+            manager.create("keep-me", vanilla="latest", force=True)
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
 
     def test_export_import_contract_preserves_runtime_data(self) -> None:
         source = self.make_pack("source")

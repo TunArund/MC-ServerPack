@@ -80,8 +80,10 @@ class CliServices:
             ROOT / "manager/lib/requirements.txt", transport=self.transport,
         ).install()
 
-    def local_create(self, pack_id: str) -> Path:
-        return self.manager_runtime().create_local(pack_id)
+    def local_create(
+        self, pack_id: str, *, extra: Tuple[str, ...] = (),
+    ) -> Path:
+        return self.manager_runtime().create_local(pack_id, extra=extra)
 
     def manager_command(
         self, action: str, pack_id: Optional[str] = None, *,
@@ -211,6 +213,10 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
         "--accept-eula", action="store_true",
         help="确认接受 Minecraft EULA",
     )
+    manager_create.add_argument(
+        "--force", action="store_true",
+        help="完整替换远端已存在的同名整合包",
+    )
     for action in ("config", "start", "stop", "status", "backup"):
         item = manager_commands.add_parser(action)
         item.add_argument("pack_id")
@@ -235,6 +241,18 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     local_manager_commands = local_manager.add_subparsers(dest="action", required=True)
     local_create = local_manager_commands.add_parser("create")
     local_create.add_argument("pack_id")
+    local_create.add_argument(
+        "--vanilla", nargs="?", const="latest", metavar="VERSION",
+        help="在本机 Manager 下载最新正式版或指定版本的 Mojang 原版服务端",
+    )
+    local_create.add_argument(
+        "--accept-eula", action="store_true",
+        help="确认接受 Minecraft EULA",
+    )
+    local_create.add_argument(
+        "--force", action="store_true",
+        help="完整替换本机已存在的同名整合包",
+    )
 
     monitor = commands.add_parser("monitor", help="调用远端 Monitor")
     monitor_commands = monitor.add_subparsers(dest="action", required=True)
@@ -275,6 +293,8 @@ def _dispatch_manager(args, services: CliServices) -> int:
             extra.extend(("--vanilla", args.vanilla))
         if args.accept_eula:
             extra.append("--accept-eula")
+        if args.force:
+            extra.append("--force")
     elif args.action == "restore" and args.backup:
         extra.append(args.backup)
     elif args.action == "remove" and args.force:
@@ -395,10 +415,18 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
     if args.module == "manager":
         return _dispatch_manager(args, services)
     if args.module == "local":
-        path = services.local_create(args.pack_id)
+        extra = []
+        if args.vanilla is not None:
+            extra.extend(("--vanilla", args.vanilla))
+        if args.accept_eula:
+            extra.append("--accept-eula")
+        if args.force:
+            extra.append("--force")
+        path = services.local_create(args.pack_id, extra=tuple(extra))
         print(f"已创建本地整合包：{path}")
-        print(f"请覆盖 src/ 内容：{path / 'src'}")
-        print(f"请调整 config.yml 配置：{path / 'config.yml'}")
+        if args.vanilla is None:
+            print(f"请覆盖 src/ 内容：{path / 'src'}")
+            print(f"请调整 config.yml 配置：{path / 'config.yml'}")
         return 0
     if args.module == "monitor":
         if args.action == "add-target":

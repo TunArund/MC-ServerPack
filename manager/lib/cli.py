@@ -39,6 +39,10 @@ def make_parser() -> argparse.ArgumentParser:
         "--accept-eula", action="store_true",
         help="确认接受 Minecraft EULA，并写入 eula=true",
     )
+    create.add_argument(
+        "--force", action="store_true",
+        help="完整替换已存在的同名整合包",
+    )
     for action in ("config", "start", "stop", "status", "backup"):
         command = commands.add_parser(action)
         command.add_argument("pack_id", help="整合包 ID")
@@ -126,6 +130,7 @@ def dispatch(
     if args.action == "create":
         created = service.create(
             args.pack_id, vanilla=args.vanilla, accept_eula=args.accept_eula,
+            force=args.force,
         )
         print(f"已创建：{created}")
         if args.vanilla is None:

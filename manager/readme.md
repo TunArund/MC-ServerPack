@@ -45,6 +45,7 @@ cp config.yml.example config.yml
 ./manager.sh create example
 ./manager.sh create vanilla --vanilla
 ./manager.sh create vanilla-locked --vanilla 1.21.10 --accept-eula
+./manager.sh create vanilla --vanilla --accept-eula --force
 ./manager.sh config example
 ./manager.sh start example
 ./manager.sh status example
@@ -71,6 +72,9 @@ cp config.yml.example config.yml
 `create --vanilla [version]` 从 Mojang 官方元数据下载原版服务端，校验文件大小与
 SHA-1，并自动写入版本、Java 镜像和启动命令。不指定版本时使用最新正式版；默认
 `eula=false`，只有显式添加 `--accept-eula` 才写入 `eula=true`。
+同名整合包默认拒绝创建；`--force` 会在新整合包创建与校验成功后，
+通过 Manager 目录内的 `./tmp` 完整替换旧目录，包括 `src`、`data`、
+`backups` 和配置。
  `export/import` 导入导出整合包完整结构，含src,data,config
 
 

@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -132,7 +133,7 @@ def install_vanilla(directory: Path, requested: str, *, accept_eula: bool) -> st
         r"(?m)^java:\s*.*$", f"java: {_java_version(metadata, requested)}", config,
         count=1,
     )
-    config += "command: [java, '@user_jvm_args.txt', -jar, server.jar, nogui]\n"
+    config += "command: [java, -jar, server.jar, nogui]\n"
     config_file.write_text(config, encoding="utf-8")
     return requested
 
@@ -165,31 +166,54 @@ class ModpackManager:
 
     def create(
         self, pack_id: str, *, vanilla: str | None = None,
-        accept_eula: bool = False,
+        accept_eula: bool = False, force: bool = False,
     ) -> Path:
         validate_pack_id(pack_id)
         target = self.packs_dir / pack_id
-        if target.exists():
+        exists = target.exists() or target.is_symlink()
+        if exists and not force:
             raise ModpackError(f"整合包已存在：{pack_id}")
         template = self.packs_dir / "template"
         if not template.is_dir():
             raise ModpackError("缺少 modpacks/template")
-        shutil.copytree(template, target, ignore=shutil.ignore_patterns("compose.yml", "__pycache__"))
-        config_file = target / "config.yml"
-        content = config_file.read_text(encoding="utf-8")
-        content = re.sub(r"(?m)^name:\s*.*$", f"name: {pack_id}", content, count=1)
-        config_file.write_text(content, encoding="utf-8")
-        for name in ("src", "data", "backups"):
-            (target / name).mkdir(exist_ok=True)
         if accept_eula and vanilla is None:
-            shutil.rmtree(target)
             raise ModpackError("--accept-eula 只能与 --vanilla 一起使用")
-        if vanilla is not None:
+
+        temporary_root = self.manager_root / "tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        staging = temporary_root / f"{pack_id}.create-{uuid.uuid4().hex}"
+        backup: Path | None = None
+        try:
+            shutil.copytree(
+                template, staging,
+                ignore=shutil.ignore_patterns("compose.yml", "__pycache__"),
+            )
+            config_file = staging / "config.yml"
+            content = config_file.read_text(encoding="utf-8")
+            content = re.sub(r"(?m)^name:\s*.*$", f"name: {pack_id}", content, count=1)
+            config_file.write_text(content, encoding="utf-8")
+            for name in ("src", "data", "backups"):
+                (staging / name).mkdir(exist_ok=True)
+            if vanilla is not None:
+                install_vanilla(staging, vanilla, accept_eula=accept_eula)
+
+            if exists:
+                backup = temporary_root / f"{pack_id}.replace-{uuid.uuid4().hex}"
+                target.replace(backup)
             try:
-                install_vanilla(target, vanilla, accept_eula=accept_eula)
+                staging.replace(target)
             except Exception:
-                shutil.rmtree(target)
+                if backup is not None:
+                    backup.replace(target)
                 raise
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        if backup is not None:
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                backup.unlink(missing_ok=True)
         return target
 
     def configure(self, pack_id: str) -> Path:

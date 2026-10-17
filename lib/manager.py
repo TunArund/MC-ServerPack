@@ -91,8 +91,8 @@ class Manager:
             [str(ROOT / "manager/manager.sh"), *arguments], capture=capture,
         )
 
-    def create_local(self, pack_id: str) -> Path:
-        result = self.local(["create", pack_id], capture=True)
+    def create_local(self, pack_id: str, *, extra: Tuple[str, ...] = ()) -> Path:
+        result = self.local(["create", pack_id, *extra], capture=True)
         output = result.stdout.decode("utf-8", "replace")
         match = re.search(r"^已创建：(.+)$", output, re.MULTILINE)
         if not match:

@@ -48,8 +48,8 @@ class FakeServices:
     ) -> None:
         self.calls.append(("manager", action, pack_id, extra, tty))
 
-    def local_create(self, pack_id: str) -> Path:
-        self.calls.append(("local-create", pack_id))
+    def local_create(self, pack_id: str, *, extra=()) -> Path:
+        self.calls.append(("local-create", pack_id, extra))
         return Path("manager/modpacks") / pack_id
 
     def monitor_command(self, action: str) -> None:
@@ -276,12 +276,23 @@ class TerminalCliRedesignTests(unittest.TestCase):
             ("--vanilla", "1.21.10", "--accept-eula"), False,
         )])
 
+    def test_local_vanilla_create_is_forwarded_to_local_manager(self) -> None:
+        services = FakeServices()
+        dispatch([
+            "local", "manager", "create", "Vanilla-01", "--vanilla",
+            "--accept-eula", "--force",
+        ], services)
+        self.assertEqual(services.calls, [(
+            "local-create", "Vanilla-01",
+            ("--vanilla", "latest", "--accept-eula", "--force"),
+        )])
+
     def test_local_namespace_is_explicit(self) -> None:
         services = FakeServices()
         output = io.StringIO()
         with redirect_stdout(output):
             dispatch(["local", "manager", "create", "Pack-01"], services)
-        self.assertEqual(services.calls, [("local-create", "Pack-01")])
+        self.assertEqual(services.calls, [("local-create", "Pack-01", ())])
         self.assertIn("请覆盖 src/ 内容：", output.getvalue())
         self.assertIn("请调整 config.yml 配置：", output.getvalue())
 

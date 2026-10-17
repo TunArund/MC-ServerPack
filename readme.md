@@ -67,7 +67,8 @@ python3 -m pip install -r lib/requirements.txt
 ./mcsp.sh deploy manager               # 完整源码部署（包含 Docker 与 Python）
 
 # 3.上传启动 整合包
-./mcsp.sh local manager create example # 创建
+./mcsp.sh local manager create example # 创建本地整合包骨架
+./mcsp.sh local manager create vanilla --vanilla --accept-eula # 本地创建原版服务端
 ./mcsp.sh deploy modpack example # 上传到manager
 ./mcsp.sh manager start example # 远程启动
 
@@ -126,6 +127,8 @@ zip、tar.gz都行，支持从url下载
 最新正式版；也可用 `--vanilla <version>` 锁定版本。服务端 jar 会校验官方声明的
 文件大小和 SHA-1。默认生成 `eula=false`；只有明确传入 `--accept-eula` 才表示接受
 [Minecraft EULA](https://www.minecraft.net/eula) 并生成 `eula=true`。
+本机可使用 `local manager create`的同样参数。同名目录默认拒绝创建；
+显式添加 `--force` 会完整替换其 `src`、`data`、`backups` 和配置。
 
 ## 账号
 需持有 Linux 服务器与非 root 的免密 sudo 账号；配置中的 `manager.user` 和

@@ -9,3 +9,4 @@ modpacks/template/backups
 .schedule-state.json
 schedule.log
 deploy.log
+tmp
