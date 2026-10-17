@@ -151,8 +151,40 @@ class PackConfigTests(ManagerFixture):
         self.assertEqual(config["version"], "1.21.10")
         self.assertEqual(config["java"], 21)
         self.assertEqual(config["command"], [
-            "java", "@user_jvm_args.txt", "-jar", "server.jar", "nogui",
+            "java", "-jar", "server.jar", "nogui",
         ])
+
+    def test_runtime_entrypoint_injects_editable_jvm_arguments(self) -> None:
+        server = self.root / "server"
+        binaries = self.root / "bin"
+        server.mkdir()
+        binaries.mkdir()
+        (server / "user_jvm_args.txt").write_text(
+            "# custom arguments\n-Xms2G\r\n\n-Dserver.name=My Server\n",
+            encoding="utf-8",
+        )
+        java = binaries / "java"
+        java.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > java-args.txt\n",
+            encoding="utf-8",
+        )
+        java.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update({
+            "PATH": f"{binaries}:{environment['PATH']}",
+            "MC_SERVER_DIR": str(server),
+            "MC_CONSOLE_PIPE": str(self.root / "console.pipe"),
+        })
+
+        subprocess.run([
+            "bash", str(PROJECT_ROOT / "manager/runtime/entrypoint.sh"),
+            "java", "-jar", "server.jar", "nogui",
+        ], env=environment, check=True, capture_output=True, text=True)
+
+        self.assertEqual(
+            (server / "java-args.txt").read_text(encoding="utf-8").splitlines(),
+            ["-Xms2G", "-Dserver.name=My Server", "-jar", "server.jar", "nogui"],
+        )
 
     def test_download_falls_back_to_verified_curl(self) -> None:
         result = subprocess.CompletedProcess(

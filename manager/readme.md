@@ -72,7 +72,10 @@ cp config.yml.example config.yml
 `create --vanilla [version]` 从 Mojang 官方元数据下载原版服务端，校验文件大小与
 SHA-1，并自动写入版本、Java 镜像和启动命令。不指定版本时使用最新正式版；默认
 `eula=false`，只有显式添加 `--accept-eula` 才写入 `eula=true`。
-原版启动命令会读取 `src/user_jvm_args.txt`，可在其中自定义堆大小和 JVM 参数。
+当启动命令的第一项是 `java` 时，Runtime 的 `entrypoint.sh` 会读取
+`src/user_jvm_args.txt`，忽略空行和注释后将每行作为一个 JVM 参数。这也适用于
+Java 8，且用户可直接修改堆大小和其他 JVM 参数。以脚本为启动命令的整合包
+由其自带脚本决定 JVM 参数。
 同名整合包默认拒绝创建；`--force` 会在新整合包创建与校验成功后，
 通过 Manager 目录内的 `./tmp` 完整替换旧目录，包括 `src`、`data`、
 `backups` 和配置。

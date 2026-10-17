@@ -157,7 +157,7 @@ def install_vanilla(directory: Path, requested: str, *, accept_eula: bool) -> st
         r"(?m)^java:\s*.*$", f"java: {_java_version(metadata, requested)}", config,
         count=1,
     )
-    config += "command: [java, '@user_jvm_args.txt', -jar, server.jar, nogui]\n"
+    config += "command: [java, -jar, server.jar, nogui]\n"
     config_file.write_text(config, encoding="utf-8")
     return requested
 

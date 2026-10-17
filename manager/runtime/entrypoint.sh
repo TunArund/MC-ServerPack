@@ -21,6 +21,23 @@ mkfifo -m 600 "$CONSOLE_PIPE"
 exec 3<>"$CONSOLE_PIPE"
 
 cd "$SERVER_DIR"
+
+# Direct Java launches share one editable argument file. Read one literal JVM
+# argument per line here instead of relying on Java's @argfile support, so the
+# same contract also works with the Java 8 runtime image.
+if [[ "${1:-}" == "java" && -f user_jvm_args.txt ]]; then
+  java_command="$1"
+  shift
+  jvm_args=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    jvm_args+=("$line")
+  done < user_jvm_args.txt
+  set -- "$java_command" "${jvm_args[@]}" "$@"
+fi
+
 echo "启动 Minecraft：$*"
 "$@" <&3 &
 server_pid=$!
