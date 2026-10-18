@@ -19,9 +19,9 @@ from pathlib import Path
 
 from .backup import BackupError, backup_id
 from .config import ConfigError
-from .docker import DockerError, DockerInstaller
+from .docker import DockerError
 from .modpacks import ModpackError, ModpackManager
-from .provider import ProviderError, load_provider
+from .power import ProviderError, load_provider
 from . import schedule
 from .transfer import export_pack, import_directory, import_pack
 
@@ -30,8 +30,6 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="manager.sh", description="管理本机 Minecraft 整合包")
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("list", help="列出整合包与运行状态")
-    install = commands.add_parser("install", help="安装 Manager 系统组件")
-    install.add_argument("component", choices=("docker",))
     create = commands.add_parser("create")
     create.add_argument("pack_id", help="整合包 ID")
     create.add_argument(
@@ -84,16 +82,8 @@ def make_parser() -> argparse.ArgumentParser:
 
 def dispatch(
     argv: list[str] | None = None, manager: ModpackManager | None = None,
-    docker_installer: DockerInstaller | None = None,
 ) -> int:
     args = make_parser().parse_args(argv)
-    if args.action == "install":
-        result = (docker_installer or DockerInstaller()).install()
-        state = "已存在并验证" if result.already_installed else "安装完成"
-        print(f"Docker Engine 与 Compose 插件{state}")
-        if result.user_added:
-            print(f"已将 {result.user_added} 加入 docker 组；重新登录后生效")
-        return 0
     service = manager or ModpackManager()
     if args.action == "export":
         print(f"archive: {export_pack(args.pack_id).resolve()}")

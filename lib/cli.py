@@ -19,13 +19,13 @@ from .config import (
     deployment_endpoint, deployment_host, initialize, load, load_monitor,
 )
 from .deploy import (
-    AccountError, AccountProvisioner, DeployError, DockerProvisioner,
-    PythonProvisioner,
+    AccountError, AccountProvisioner, DeployError, PythonProvisioner,
 )
+from .docker import DockerProvisioner
 from .manager import Manager, ManagerError
 from .monitor import Monitor
 from .power import InstanceStatus, PowerError
-from .provider import ProviderError, load_provider
+from .power import ProviderError, load_provider
 from .remote import CommandError, Transport, shell_join
 
 

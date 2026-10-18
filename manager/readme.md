@@ -28,7 +28,6 @@ Manager 独立读取并持有自己的 `config.yml`，不依赖 Terminal 或 Mon
 ```bash
 cp config.yml.example config.yml
 ./manager.sh check
-./manager.sh install docker
 ./manager.sh install
 ./manager.sh create example
 ./manager.sh list
@@ -55,9 +54,8 @@ cp config.yml.example config.yml
 ```
 
 `check` 只验证 Python 3.9+、venv、Docker Engine、Compose 插件和 crontab，不会安装或修改系统软件。
-`install docker` 在 Debian/Ubuntu 上配置 Docker 官方 APT 仓库，安装 Engine、Buildx
-和 Compose 插件，启用服务并将当前非 root 用户加入 `docker` 组。该组具有等同 root
-的 Docker 权限；安装完成后需重新登录，再执行 `./manager.sh check`。
+Manager 不负责准备 Docker 系统环境；Terminal 部署时使用
+`./mcsp.sh deploy manager --install-docker`，手工独立部署则需先自行安装并授权 Docker。
 `install` 在环境检查通过后安装 Manager 自身 Python 依赖并安装聚合调度任务。
 `create` 只创建标准目录骨架，不下载服务端。用户将整合包或原版服务端
 覆盖到 `src/` 后，调整 `config.yml` 中的版本、Java、端口和 EULA。

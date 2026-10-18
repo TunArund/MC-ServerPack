@@ -1,0 +1,16 @@
+menu: |-
+  # Monitor
+  Manager状态：**{state}**
+  请选择操作：
+permission: 只有配置中的管理员可以执行电源操作。
+confirm: 确认关机？60s后取消
+confirm-expired: 关机确认超时
+working: 正在{action}，请稍候。
+done: '{action}请求已提交，当前状态：{state}'
+error: '{action}失败：{reason}'
+alert: |-
+  # Monitor
+  警告
+  {alerts}
+recovered: 电源检查已恢复正常。
+verified: 验证成功，您已订阅Monitor通知

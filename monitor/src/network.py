@@ -6,20 +6,63 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from .targets import Incoming, Target
-
-
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 API_URL = "https://api.sgroup.qq.com"
 # Current protocol reference: https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html
 INTENTS = 1 << 25
 LOGGER = logging.getLogger(__name__)
+MENTION_RE = re.compile(r"^(?:<@!?[^>]+>\s*)+")
+
+
+@dataclass(frozen=True)
+class Target:
+    kind: str
+    identifier: str
+
+
+@dataclass(frozen=True)
+class Incoming:
+    message_id: str
+    target: Target
+    sender_id: str
+    content: str
+
+
+def _command_text(content: str) -> str:
+    return MENTION_RE.sub("", content.strip()).strip()
+
+
+def incoming(event_name: str, event: dict) -> Incoming | None:
+    """Normalize supported QQ gateway events into one transport object."""
+    author = event.get("author") or {}
+    if event_name == "GROUP_AT_MESSAGE_CREATE":
+        kind = "group"
+        target_id = str(event.get("group_openid") or "")
+        sender_id = str(
+            author.get("member_openid") or event.get("group_member_openid") or ""
+        )
+    elif event_name == "C2C_MESSAGE_CREATE":
+        kind = "user"
+        sender_id = str(author.get("user_openid") or "")
+        target_id = sender_id
+    else:
+        return None
+    message_id = str(event.get("id") or "")
+    if not message_id or not target_id or not sender_id:
+        return None
+    return Incoming(
+        message_id,
+        Target(kind, target_id),
+        sender_id,
+        _command_text(str(event.get("content") or "")),
+    )
 
 
 class NetworkError(RuntimeError):

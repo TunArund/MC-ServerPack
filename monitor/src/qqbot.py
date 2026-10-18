@@ -7,16 +7,64 @@ import logging
 import time
 from collections import Counter, OrderedDict
 from collections.abc import Callable
+from pathlib import Path
 
-from . import message
-from .network import Network, Outgoing
-from .targets import Incoming, TargetPolicy, incoming
+import yaml
+
+from .network import Incoming, Network, Outgoing, Target, incoming
 
 
 COMMANDS = frozenset(("菜单", "开机", "关机", "确认关机"))
 CONFIRM_SECONDS = 60
 ALERT_WINDOW_SECONDS = 60
 LOGGER = logging.getLogger(__name__)
+TEMPLATE_FILE = Path(__file__).with_name("message.yml")
+
+
+def _load_templates() -> dict[str, str]:
+    try:
+        value = yaml.safe_load(TEMPLATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"QQ 消息模板读取失败：{exc}") from exc
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(template, str)
+        for key, template in value.items()
+    ):
+        raise RuntimeError("QQ 消息模板必须是字符串对象")
+    return value
+
+
+TEMPLATES = _load_templates()
+
+
+def render(name: str, **values: object) -> str:
+    try:
+        template = TEMPLATES[name]
+    except KeyError as exc:
+        raise RuntimeError(f"缺少 QQ 消息模板：{name}") from exc
+    try:
+        return template.format(**values)
+    except KeyError as exc:
+        raise RuntimeError(f"QQ 消息模板 {name} 缺少参数：{exc.args[0]}") from exc
+
+
+class TargetPolicy:
+    def __init__(
+        self, targets: tuple[Target, ...], admins: tuple[str, ...],
+        alert_routes: dict[str, frozenset[Target]] | None = None,
+    ) -> None:
+        self.targets = frozenset(targets)
+        self.admins = frozenset(admins)
+        self.alert_routes = alert_routes or {}
+
+    def allows(self, received: Incoming) -> bool:
+        return received.target in self.targets
+
+    def is_admin(self, received: Incoming) -> bool:
+        return received.sender_id in self.admins
+
+    def alert_targets(self, kind: str) -> frozenset[Target]:
+        return self.alert_routes.get(kind, frozenset())
 
 
 def _button(identifier: str, command: str) -> dict:
@@ -46,11 +94,11 @@ def menu_keyboard() -> dict:
 
 
 def text(name: str, **values: object) -> Outgoing:
-    return Outgoing(message.render(name, **values))
+    return Outgoing(render(name, **values))
 
 
 def menu(state: str) -> Outgoing:
-    return Outgoing(message.render("menu", state=state), True, menu_keyboard())
+    return Outgoing(render("menu", state=state), True, menu_keyboard())
 
 
 async def discover_user(network: Network, code: str, timeout: float = 300) -> str:
@@ -120,7 +168,7 @@ class QQBot:
     async def alert(self, kind: str, content: str) -> None:
         """将分类告警加入其配置目标的发送队列。"""
         if kind == "recovered":
-            content = message.render("recovered")
+            content = render("recovered")
         try:
             self.alerts.put_nowait((kind, content))
         except asyncio.QueueFull:
@@ -149,7 +197,7 @@ class QQBot:
             for content, count in Counter(contents).items():
                 suffix = f"（{count} 次）" if count > 1 else ""
                 lines.append(f"- {content}{suffix}")
-            outgoing = Outgoing(message.render("alert", alerts="\n".join(lines)))
+            outgoing = Outgoing(render("alert", alerts="\n".join(lines)))
             try:
                 await self.network.push(target, outgoing)
             except Exception:

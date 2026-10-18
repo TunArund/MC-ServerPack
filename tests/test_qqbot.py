@@ -3,10 +3,8 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from monitor.src.qqbot.message import render
-from monitor.src.qqbot.network import Network, Outgoing
-from monitor.src.qqbot.qqbot import QQBot, discover_user, menu, menu_keyboard
-from monitor.src.qqbot.targets import Target, TargetPolicy, incoming
+from monitor.src.network import Network, Outgoing, Target, incoming
+from monitor.src.qqbot import QQBot, TargetPolicy, discover_user, menu, menu_keyboard, render
 
 
 class FakeNetwork:
@@ -161,7 +159,7 @@ class QQBotTests(unittest.IsolatedAsyncioTestCase):
         now[0] = 161.0
         await bot.handle("GROUP_AT_MESSAGE_CREATE", group_event("m2", "admin-a", "确认关机"))
         self.assertEqual(power.calls, [])
-        self.assertIn("没有待确认", network.replies[-1][1].content)
+        self.assertIn("确认超时", network.replies[-1][1].content)
 
     async def test_alerts_are_aggregated_and_pushed_to_each_target(self) -> None:
         bot, network, _ = self.make_bot()

@@ -157,9 +157,10 @@ Manager 不隐式读取 `run.sh`、`run.bat` 或 `user_jvm_args.txt`。
 管理员需要已经具备免密 sudo。创建后需将配置中的 user 改为刚创建的用户名。
 命令会安装公钥并授予新用户免密 sudo；若服务器已有 `docker` 组，也会将新用户
 加入该组。创建后命令即退出，不会同时部署运行时。
-[Docker 安装](./manager/readme.md#docker-安装)由 Terminal 直接通过 SSH 执行，不依赖
+Docker 安装由 Terminal 直接通过 SSH 执行，不依赖
 远端已存在 Manager 或 Monitor 源码；可分别使用 `deploy manager --install-docker`
-和 `deploy monitor --install-docker`。完整部署也会幂等安装或验证 Docker。
+和 `deploy monitor --install-docker`。完整部署也会幂等安装或验证 Docker；
+自动安装目前支持 Debian/Ubuntu，其他 Linux 可在手工准备 Docker 后继续部署。
 [账号创建](./manager/readme.md#账号创建)
 
 ## 腾讯云API密钥获取

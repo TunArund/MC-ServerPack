@@ -27,6 +27,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_terminal_runtime_adapters_are_flat_modules(self) -> None:
         shared = (ROOT / "lib/deploy.py").read_text(encoding="utf-8")
+        docker = (ROOT / "lib/docker.py").read_text(encoding="utf-8")
+        docker_script = (ROOT / "lib/docker-install.sh").read_text(encoding="utf-8")
         tree = ast.parse(shared, filename="lib/deploy.py")
         imports = {
             alias.name
@@ -34,8 +36,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
             if isinstance(node, ast.Import)
             for alias in node.names
         }
-        self.assertIn("class DockerProvisioner", shared)
-        self.assertIn("apt-get", shared)
+        self.assertNotIn("class DockerProvisioner", shared)
+        self.assertIn("class DockerProvisioner", docker)
+        self.assertIn('resource("docker-install.sh")', docker)
+        self.assertNotIn("apt-get", docker)
+        self.assertIn("apt-get", docker_script)
         self.assertIn("class PythonProvisioner", shared)
         self.assertIn("python3-venv", shared)
         self.assertNotIn("docker", imports)
@@ -44,17 +49,25 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertFalse((ROOT / "lib/manager/service.py").exists())
         self.assertFalse((ROOT / "lib/monitor/service.py").exists())
 
+    def test_only_terminal_installs_docker(self) -> None:
+        terminal = (ROOT / "lib/docker.py").read_text(encoding="utf-8")
+        installer = (ROOT / "lib/docker-install.sh").read_text(encoding="utf-8")
+        manager = (ROOT / "manager/lib/docker.py").read_text(encoding="utf-8")
+        manager_entry = (ROOT / "manager/manager.sh").read_text(encoding="utf-8")
+        monitor_entry = (ROOT / "monitor/monitor.sh").read_text(encoding="utf-8")
+        self.assertIn("DockerProvisioner", terminal)
+        self.assertIn("apt-get", installer)
+        self.assertNotIn("apt-get", terminal)
+        for source in (manager, manager_entry, monitor_entry):
+            self.assertNotIn("apt-get", source)
+            self.assertNotIn("download.docker.com", source)
+        self.assertNotIn("install docker", manager_entry)
+
     def test_power_core_is_identical_in_all_runtimes(self) -> None:
         expected = (ROOT / "lib/power.py").read_bytes()
         self.assertEqual(expected, (ROOT / "manager/lib/power.py").read_bytes())
-        self.assertEqual(expected, (ROOT / "monitor/src/monitor/power.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "monitor/src/power.py").read_bytes())
 
-        expected_provider = (ROOT / "lib/provider.py").read_bytes()
-        self.assertEqual(expected_provider, (ROOT / "manager/lib/provider.py").read_bytes())
-        self.assertEqual(
-            expected_provider,
-            (ROOT / "monitor/src/monitor/provider.py").read_bytes(),
-        )
         self.assertNotIn(b"load_adapter", expected)
 
     def test_shared_provider_implementations_are_identical(self) -> None:
@@ -63,7 +76,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             with self.subTest(name=name, runtime="manager"):
                 self.assertEqual(expected, (ROOT / "manager/lib/providers" / name).read_bytes())
             with self.subTest(name=name, runtime="monitor"):
-                self.assertEqual(expected, (ROOT / "monitor/src/monitor/providers" / name).read_bytes())
+                self.assertEqual(expected, (ROOT / "monitor/src/providers" / name).read_bytes())
 
         tencent = (ROOT / "lib/providers/tencent.py").read_text(encoding="utf-8")
         self.assertIn("def _request(", tencent)
@@ -104,13 +117,21 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     for name in imports:
                         self.assertFalse(name.startswith(prefixes), f"{path}: cross-runtime import {name}")
 
-    def test_monitor_source_root_contains_only_global_modules(self) -> None:
+    def test_monitor_uses_one_flat_source_root(self) -> None:
         modules = sorted(path.name for path in (ROOT / "monitor/src").glob("*.py"))
-        self.assertEqual(modules, ["app.py", "config.py"])
-        self.assertFalse((ROOT / "monitor/src/state.py").exists())
+        self.assertEqual(
+            modules,
+            [
+                "app.py", "config.py", "network.py", "power.py", "qqbot.py",
+                "schedule.py",
+            ],
+        )
+        self.assertFalse((ROOT / "monitor/src/monitor").exists())
+        self.assertFalse((ROOT / "monitor/src/qqbot").exists())
+        self.assertFalse((ROOT / "monitor/lib").exists())
 
     def test_monitor_domain_does_not_import_global_config(self) -> None:
-        for path in (ROOT / "monitor/src/monitor").rglob("*.py"):
+        for path in (ROOT / "monitor/src").glob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
@@ -119,7 +140,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_provider_implementations_do_not_import_power_state_machine(self) -> None:
         for directory in (
             ROOT / "lib/providers", ROOT / "manager/lib/providers",
-            ROOT / "monitor/src/monitor/providers",
+            ROOT / "monitor/src/providers",
         ):
             for path in directory.glob("*.py"):
                 with self.subTest(path=path):

@@ -12,12 +12,10 @@ import sys
 from pathlib import Path
 
 from .config import CONFIG_FILE, ConfigError, load, qq_credentials, secrets
-from .monitor.power import PowerTarget, create_power
-from .monitor.schedule import PowerSchedule, StateStore
-from .monitor.service import MonitorService
-from .qqbot.network import Network
-from .qqbot.qqbot import QQBot, discover_user
-from .qqbot.targets import Target, TargetPolicy
+from .network import Network, Target
+from .power import PowerTarget, create_power
+from .qqbot import QQBot, TargetPolicy, discover_user
+from .schedule import MonitorService, PowerSchedule, StateStore
 
 
 DATA_DIR = Path(os.environ.get("MCSP_DATA", "/app/data"))
@@ -115,7 +113,7 @@ async def main() -> None:
 async def add_target(code: str | None = None) -> None:
     credentials = qq_credentials()
     if credentials is None:
-        raise ConfigError("add-target 需要 QQBOT_SECRET_ID 与 QQBOT_SECRET_KEY")
+        raise ConfigError("add-target 需要 QQBOT_APP_ID 与 QQBOT_APP_KEY")
     code = code or token_secrets.token_hex(2)
     if not re.fullmatch(r"[0-9a-f]{4}", code):
         raise ConfigError("验证码必须是四位小写十六进制字符")

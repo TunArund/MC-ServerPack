@@ -38,16 +38,8 @@ case "${1:-}" in
     exit 0
     ;;
   install)
-    if [[ "${2:-}" == "docker" ]]; then
-      if (( $# != 2 )); then
-        echo "用法：./manager.sh install docker" >&2
-        exit 2
-      fi
-      cd "$ROOT_DIR"
-      exec python3 -m lib.cli install docker
-    fi
     if (( $# != 1 )); then
-      echo "用法：./manager.sh install [docker]" >&2
+      echo "用法：./manager.sh install" >&2
       exit 2
     fi
     check_requirements

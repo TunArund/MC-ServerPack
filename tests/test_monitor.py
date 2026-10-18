@@ -10,9 +10,8 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from monitor.src.config import ConfigError, load, qq_credentials
-from monitor.src.monitor.power import InstanceStatus, PowerError
-from monitor.src.monitor.schedule import PowerSchedule, StateStore, latest_event
-from monitor.src.monitor.service import MonitorService
+from monitor.src.power import InstanceStatus, PowerError
+from monitor.src.schedule import MonitorService, PowerSchedule, StateStore, latest_event
 
 
 ZONE = ZoneInfo("Asia/Shanghai")
@@ -123,13 +122,13 @@ class MonitorConfigTests(unittest.TestCase):
 
     def test_qq_credentials_use_existing_secret_names(self) -> None:
         with patch.dict("os.environ", {
-            "QQBOT_SECRET_ID": "app-id",
-            "QQBOT_SECRET_KEY": "app-key",
+            "QQBOT_APP_ID": "app-id",
+            "QQBOT_APP_KEY": "app-key",
         }, clear=True):
             self.assertEqual(qq_credentials(), ("app-id", "app-key"))
 
     def test_partial_qq_credentials_are_rejected(self) -> None:
-        with patch.dict("os.environ", {"QQBOT_SECRET_ID": "app-id"}, clear=True):
+        with patch.dict("os.environ", {"QQBOT_APP_ID": "app-id"}, clear=True):
             with self.assertRaisesRegex(ConfigError, "必须同时配置"):
                 qq_credentials()
 

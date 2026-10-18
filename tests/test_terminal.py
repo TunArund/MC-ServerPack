@@ -146,7 +146,7 @@ class TerminalCliTests(unittest.TestCase):
         )
         (config_path.parent / ".env").write_text(
             "POWER_SECRET_ID=id\nPOWER_SECRET_KEY=key\n"
-            "QQBOT_SECRET_ID=bot\nQQBOT_SECRET_KEY=token\n",
+            "QQBOT_APP_ID=bot\nQQBOT_APP_KEY=token\n",
             encoding="utf-8",
         )
         services = Monitor.__new__(Monitor)
@@ -168,7 +168,7 @@ class TerminalCliTests(unittest.TestCase):
         self.assertEqual(owner["id"], "new-openid")
         config_text, environment = services.deployment.configure.call_args.args
         self.assertIn("qqbot:", config_text)
-        self.assertIn("QQBOT_SECRET_KEY=token", environment)
+        self.assertIn("QQBOT_APP_KEY=token", environment)
 
     def test_pack_arguments_are_forwarded_without_shell_joining(self) -> None:
         service = FakeService()
@@ -355,7 +355,7 @@ class DeploymentTests(unittest.TestCase):
     def test_manager_config_sync_includes_filtered_environment(self) -> None:
         (self.root / ".env").write_text(
             "POWER_SECRET_ID=id\nPOWER_SECRET_KEY=key\n"
-            "QQBOT_SECRET_KEY=not-for-manager\n",
+            "QQBOT_APP_KEY=not-for-manager\n",
             encoding="utf-8",
         )
         service = Manager(self.config, transport=FakeTransport(self.archive))
@@ -409,6 +409,18 @@ class DeploymentTests(unittest.TestCase):
         service.command(["add-target", "a1b2"], capture=True)
         command = " ".join(transport.ssh_calls[-1][1])
         self.assertIn("./monitor.sh add-target a1b2", command)
+
+    def test_monitor_deploy_uses_qqbot_app_environment_names(self) -> None:
+        (self.root / ".env").write_text(
+            "QQBOT_APP_ID=legacy-id\nQQBOT_APP_KEY=legacy-key\n",
+            encoding="utf-8",
+        )
+        service = Monitor.__new__(Monitor)
+        service.config_path = self.config
+        self.assertEqual(
+            service._environment(),
+            "QQBOT_APP_ID=legacy-id\nQQBOT_APP_KEY=legacy-key\n",
+        )
 
     def test_pack_deploy_rejects_path_traversal_before_remote_access(self) -> None:
         transport = FakeTransport(self.archive)

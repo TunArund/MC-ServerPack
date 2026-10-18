@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from manager.lib.config import ManagerLimits
 from manager.lib.power import Power, PowerError, PowerTarget
-from manager.lib.provider import ProviderError, list_providers, load_provider
+from manager.lib.power import ProviderError, list_providers, load_provider
 from manager.lib.providers import tencent
 from manager.lib.schedule import create_power
 

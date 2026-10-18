@@ -1,6 +1,6 @@
 # Monitor
 
-Monitor 是可独立部署的云主机电源控制器。它只调用 `power-api` 查询、开启或关闭
+Monitor 是可独立运行的云主机电源控制器。它只调用 `power-api` 查询、开启或关闭
 Manager 云主机，不使用 SSH、TAT，也不执行 `manager.sh`。
 
 ## 部署与命令
@@ -17,6 +17,8 @@ cp .env.example .env
 ```
 
 `check` 只验证 Docker Engine 与 Compose 插件是否可用，不会安装或修改系统软件。
+Monitor 不负责准备 Docker 系统环境；Terminal 部署时使用
+`./mcsp.sh deploy monitor --install-docker`，手工独立部署则需先自行安装并授权 Docker。
 `install` 在检查通过后构建并启动 Monitor 容器；日常启停使用 `start`、`stop`，它们
 只操作 Monitor 容器，不关闭这台 7x24h 主机。
 
@@ -36,7 +38,7 @@ QQ 单聊目标应从顶层终端验证并写回唯一配置源：
 
 ## 容器边界
 
-Docker 构建时将 `src/` 和依赖复制进镜像。运行时仅挂载：
+Docker 构建时将 `src/` 和 `src/requirements.txt` 复制进镜像。运行时仅挂载：
 
 - `config.yml`：只读配置；
 - `data/`：调度状态与健康检查文件。
@@ -46,7 +48,7 @@ Docker 构建时将 `src/` 和依赖复制进镜像。运行时仅挂载：
 
 ## 源码边界
 
-`src/` 顶层只保存进程入口 `app.py` 和共享配置 `config.py`。`monitor/` 包含电源、
-provider、定时器及其事件状态；`qqbot/` 独立负责 QQ 鉴权、收发、权限和菜单。
-QQ Bot 不读取调度状态，也不调用 `MonitorService`，两个服务只在 `app.py` 中获得
-同一个电源控制对象并由进程入口管理生命周期。
+`src/` 是唯一 Python 源码根目录：`app.py` 负责组装，`config.py` 负责加载配置，
+`power.py` 负责电源及 Provider 加载，`schedule.py` 负责日程、状态与服务循环，`network.py` 负责 QQ
+网络收发，`qqbot.py` 负责权限、菜单和消息路由，`message.yml` 保存可编辑模板。
+QQ Bot 不读取调度状态，两者只在 `app.py` 中获得同一个电源控制对象。

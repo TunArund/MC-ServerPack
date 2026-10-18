@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 import unittest
 import io
@@ -11,8 +12,9 @@ from unittest.mock import patch
 
 from lib.config import Endpoint
 from lib.deploy import (
-    DockerProvisioner, PythonProvisioner, RuntimeDeployment,
+    PythonProvisioner, RuntimeDeployment,
 )
+from lib.docker import DockerProvisioner, _resource
 from lib.remote import CommandError, _REMOTE_MANIFEST, _ignored, run_logged
 
 
@@ -95,6 +97,14 @@ class RuntimeDeploymentTests(unittest.TestCase):
         subprocess.run(
             ["bash", "-n"], input=options["input_text"], text=True, check=True,
         )
+
+    def test_docker_script_can_be_loaded_from_one_file_bundle(self) -> None:
+        bundle = self.root / "bundle"
+        resource = bundle / "lib/docker-install.sh"
+        resource.parent.mkdir(parents=True)
+        resource.write_text("#!/bin/sh\necho bundled\n", encoding="utf-8")
+        with patch.object(sys, "_MEIPASS", str(bundle), create=True):
+            self.assertEqual(_resource("docker-install.sh"), resource)
 
     def test_python_provisioner_installs_system_and_venv_dependencies(self) -> None:
         requirements = self.root / "requirements.txt"

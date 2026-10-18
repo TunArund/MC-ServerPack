@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 import shutil
 import subprocess
@@ -18,7 +17,7 @@ from manager.lib.config import (
     ConfigError, load_pack, normalize_persistent, parse_interval, render_compose,
     validate_pack_id,
 )
-from manager.lib.docker import DockerClient, DockerInstaller
+from manager.lib.docker import DockerClient
 from manager.lib.modpacks import ModpackError, ModpackManager
 from manager.lib.transfer import export_pack, import_pack
 
@@ -368,114 +367,6 @@ class DockerClientTests(ManagerFixture):
         self.assertTrue(any(command[:2] == ["docker", "inspect"] for command in commands))
         self.assertIn("等待 Java 退出", output.getvalue())
         self.assertIn("退出码为 0", output.getvalue())
-
-
-class DockerInstallRunner:
-    def __init__(self, *, installed: bool = False) -> None:
-        self.installed = installed
-        self.calls: list[tuple[list[str], dict]] = []
-
-    def __call__(self, arguments: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        self.calls.append((arguments, kwargs))
-        output, error, code = "", "", 0
-        if arguments == ["dpkg", "--print-architecture"]:
-            output = "amd64\n"
-        elif arguments[:2] == ["dpkg-query", "-W"]:
-            code = 1
-        elif arguments[:2] == ["docker", "--version"]:
-            code = 0 if self.installed else 1
-        elif arguments[:3] == ["docker", "compose", "version"]:
-            code = 0 if self.installed else 1
-        elif arguments[:4] == ["apt-get", "install", "-y", "docker-ce"]:
-            self.installed = True
-        return subprocess.CompletedProcess(arguments, code, output, error)
-
-
-class DockerInstallerTests(unittest.TestCase):
-    def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.os_release = Path(temporary.name) / "os-release"
-        self.os_release.write_text(
-            'ID=debian\nVERSION_CODENAME="bookworm"\n', encoding="utf-8",
-        )
-
-    def test_installs_from_official_repository_and_verifies(self) -> None:
-        runner = DockerInstallRunner()
-        result = DockerInstaller(
-            runner, os_release=self.os_release, effective_uid=0,
-            invoking_user="root",
-        ).install()
-        commands = [arguments for arguments, _ in runner.calls]
-        self.assertFalse(result.already_installed)
-        self.assertIn([
-            "curl", "-fsSL", "https://download.docker.com/linux/debian/gpg",
-            "-o", "/etc/apt/keyrings/docker.asc",
-        ], commands)
-        install = next(
-            arguments for arguments in commands
-            if arguments[:4] == ["apt-get", "install", "-y", "docker-ce"]
-        )
-        self.assertIn("docker-compose-plugin", install)
-        tee_index = commands.index(["tee", "/etc/apt/sources.list.d/docker.sources"])
-        source = runner.calls[tee_index][1]["input"]
-        self.assertIn("Suites: bookworm", source)
-        self.assertIn("Architectures: amd64", source)
-        self.assertIn([
-            "systemctl", "enable", "--now", "docker.service", "containerd.service",
-        ], commands)
-        self.assertIn(["docker", "info"], commands)
-        daemon_call = next(
-            arguments for arguments in commands
-            if arguments[:3] == ["python3", "-c", DockerInstaller.CONFIGURE_DAEMON]
-        )
-        self.assertIn("docker.m.daocloud.io", daemon_call[-1])
-
-    def test_existing_install_is_kept_and_user_gets_access(self) -> None:
-        runner = DockerInstallRunner(installed=True)
-        result = DockerInstaller(
-            runner, os_release=self.os_release, effective_uid=0,
-            invoking_user="steam",
-        ).install()
-        commands = [arguments for arguments, _ in runner.calls]
-        self.assertTrue(result.already_installed)
-        self.assertEqual(result.user_added, "steam")
-        self.assertIn(
-            ["usermod", "--append", "--groups", "docker", "steam"], commands,
-        )
-        self.assertFalse(any("apt-get" in arguments for arguments in commands))
-
-    def test_registry_mirror_config_preserves_existing_daemon_fields(self) -> None:
-        daemon = self.os_release.parent / "docker/daemon.json"
-        daemon.parent.mkdir()
-        daemon.write_text(
-            '{"log-driver":"local","registry-mirrors":["https://private.example"]}\n',
-            encoding="utf-8",
-        )
-        subprocess.run(
-            [
-                "python3", "-c", DockerInstaller.CONFIGURE_DAEMON,
-                str(daemon), json.dumps(DockerInstaller.REGISTRY_MIRRORS),
-            ],
-            text=True, check=True, capture_output=True,
-        )
-        configured = json.loads(daemon.read_text(encoding="utf-8"))
-        self.assertEqual(configured["log-driver"], "local")
-        self.assertEqual(
-            configured["registry-mirrors"][0], "https://private.example",
-        )
-        self.assertIn("https://docker.m.daocloud.io", configured["registry-mirrors"])
-
-    def test_rejects_unsupported_distribution_before_mutation(self) -> None:
-        self.os_release.write_text("ID=arch\nVERSION_CODENAME=rolling\n")
-        runner = DockerInstallRunner()
-        with self.assertRaisesRegex(RuntimeError, "Debian 或 Ubuntu"):
-            DockerInstaller(
-                runner, os_release=self.os_release, effective_uid=0,
-                invoking_user="root",
-            ).install()
-        commands = [arguments for arguments, _ in runner.calls]
-        self.assertFalse(any("apt-get" in arguments for arguments in commands))
 
 
 if __name__ == "__main__":

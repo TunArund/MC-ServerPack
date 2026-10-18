@@ -56,14 +56,18 @@ class Monitor:
 
     def _environment(self) -> str:
         values = load_env(self.config_path.parent / ".env")
-        return "".join(
+        environment = "".join(
             f"{key}={values.get(key, '')}\n"
-            for key in (
-                "POWER_SECRET_ID", "POWER_SECRET_KEY",
-                "QQBOT_SECRET_ID", "QQBOT_SECRET_KEY",
-            )
+            for key in ("POWER_SECRET_ID", "POWER_SECRET_KEY")
             if key in values
         )
+        qq_id = values.get("QQBOT_APP_ID")
+        qq_key = values.get("QQBOT_APP_KEY")
+        if qq_id is not None:
+            environment += f"QQBOT_APP_ID={qq_id}\n"
+        if qq_key is not None:
+            environment += f"QQBOT_APP_KEY={qq_key}\n"
+        return environment
 
     def command(self, arguments: list[str], *, capture: bool = False):
         command = (

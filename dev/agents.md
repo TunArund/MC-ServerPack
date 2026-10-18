@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests
 - Monitor 业务命令在远端部署目录写入 `monitor.log`，容器服务输出由 Docker 日志管理。
   Terminal 只展示实时尾部，不替代远端业务日志。
 # 目录结构
-/lib/{cli.py,config.py,deploy.py,manager.py,monitor.py,power.py,remote.py,providers/}
+/lib/{cli.py,config.py,deploy.py,docker.py,docker-install.sh,manager.py,monitor.py,power.py,remote.py,providers/}
 /lib/providers/{tencent.py,example.py}
 
 /mcsp.{sh,exe}
@@ -39,8 +39,7 @@ runtime/{java{8,17,21}.dockerfile,entrypoint.sh}
 modpacks/template/{src/,data/,backups/,config.yml}
 
 /monitor/{src/,data/,Dockerfile,compose.yml,monitor.sh}
-src/{app.py,config.py,monitor/,qqbot/,requirements.txt}
-src/monitor/{service.py,power.py,schedule.py,providers/}
+src/{app.py,config.py,network.py,power.py,schedule.py,qqbot.py,message.yml,providers/,requirements.txt}
 后续可能改go实现
 
 /dev存放开发工具，无需关注
@@ -117,8 +116,6 @@ power-api:
   - 失败容器的删除应进入 Manager 公共接口，Terminal 不应直接实现 Docker 操作；需区分
     删除容器/网络与删除整合包数据，默认绝不能删除 bind mount 数据。
   - 备份和恢复必须统一通过 Manager；新增备份列表、短 ID 和安全的自动停服恢复重启。
-  - 当前使用 bind mount；Docker daemon/Compose 没有通用的存档快照回档。`docker commit`
-    不包含挂载数据；ZFS/Btrfs/LVM 或 volume driver 快照只能作为可选后端，不能替代通用备份。
   - `read-only.enabled=false` 时整个 `src/` 可写，`persistent` 仍决定哪些路径分离到 `data/`
     并进入备份；`enabled=true` 时 `src/` 只读，只有 persistent 挂载路径可写。
   - 部署迁移目录且已开启自动备份时，聚合调度可能在最终切换前立即生成首份备份；部署
@@ -128,12 +125,10 @@ power-api:
   - Docker daemon 重启会使部署 SSH 会话提前断开，而远端后续命令可能仍在运行；Terminal
     需要明确识别连接中断，禁止把未知结果当成功并发起第二次部署。
 - monitor qqbot
-重排src目录与文件
-app.py config.py network.py power.py
-schedule.py( orchestra power qqbot by state machine ) qqbot.py(recv_msg send_msg qq relate stuff) message.yml(msg template)
-qqbot实现 取消预订 告警时可忽略1/2/5h
-参照添加docker安装
-manager/lib/docker.py#DockerInstaller
+  - qqbot实现取消预订，告警时可忽略 1/2/5h。
+- Docker 环境准备只属于 Terminal `lib/docker.py`；Manager/Monitor 仅检查并使用 Docker，
+  不内含系统安装逻辑。Shell bootstrap 作为 `lib/docker-install.sh` 资源在源码版
+  动态读取；release 必须把它打入单文件产物，不在发行目录外显。
 - 更新*.md /test/
 - 实现release.py
 release.py 构建发行版（未实现）
@@ -144,5 +139,5 @@ release.py 构建发行版（未实现）
 去掉.monitor.manager的power-api
 只填.monitor.manager
 去掉.manager.power-api
-
+- 统一命令回显与日志记录规范
 - 实现cos备份整合包或存档
