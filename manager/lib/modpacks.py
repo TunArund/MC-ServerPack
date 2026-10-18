@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path, PurePosixPath
 
-from .backup import create_backup, resolve_backup, restore_backup
+from .backup import create_backup, list_backups, resolve_backup, restore_backup
 from .config import (
     MANAGER_ROOT,
     PACKS_DIR,
@@ -294,14 +294,26 @@ class ModpackManager:
             if running:
                 self.docker.console(spec, "save-on")
 
-    def restore(self, pack_id: str, name: str | None = None) -> Path:
+    def backups(self, pack_id: str) -> list[Path]:
+        return list_backups(self.spec(pack_id))
+
+    def restore(
+        self, pack_id: str, name: str | None = None, *, auto_restart: bool = False,
+    ) -> Path:
         spec = self.spec(pack_id)
-        if self.docker.running(spec):
-            raise ModpackError("恢复前必须先停止整合包")
+        was_running = self.docker.running(spec)
+        if was_running and not auto_restart:
+            raise ModpackError("恢复前必须先停止整合包，或使用 --auto-restart")
+        # Resolve the selector before changing runtime state. A typo or an
+        # ambiguous short ID must never stop a healthy server.
         source = resolve_backup(spec, name)
+        if was_running:
+            self.docker.stop(spec, timeout=self.limits.stop_timeout)
         if (spec.directory / "data").exists():
             create_backup(spec, prune=False)
         restored = restore_backup(spec, source.name)
+        if was_running:
+            self.start(pack_id)
         return restored
 
     def remove(self, pack_id: str, *, force: bool = False) -> None:

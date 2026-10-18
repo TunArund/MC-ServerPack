@@ -4,6 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from manager.lib.cli import dispatch
 
@@ -33,6 +34,18 @@ class FakeManager:
             "memory": "2g", "version": "1.20.1", "name": "Example",
         })()
         return [(spec, True)]
+
+    def backups(self, pack_id: str):
+        self.call = ("backups", pack_id)
+        temporary = TemporaryDirectory()
+        self._temporary = temporary
+        path = Path(temporary.name) / "example-20261018-110710-000000.tar.gz"
+        path.write_bytes(b"x" * 2048)
+        return [path]
+
+    def restore(self, pack_id: str, backup=None, *, auto_restart: bool = False):
+        self.call = ("restore", pack_id, backup, auto_restart)
+        return Path("/runtime/backups") / (backup or "latest.tar.gz")
 
 
 class ManagerCliTests(unittest.TestCase):
@@ -80,6 +93,26 @@ class ManagerCliTests(unittest.TestCase):
         self.assertEqual(manager.call, ("list",))
         self.assertIn("ID\tSTATE\tPORT", output.getvalue())
         self.assertIn("example\trunning\t25565\t17\t2g\t1.20.1\tExample", output.getvalue())
+
+    def test_backup_list_prints_creation_time_size_and_name(self) -> None:
+        manager = FakeManager()
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(dispatch(["backup", "list", "example"], manager), 0)
+        self.assertEqual(manager.call, ("backups", "example"))
+        self.assertIn("ID\tCREATED\tSIZE\tNAME", output.getvalue())
+        self.assertIn("2.0 KiB", output.getvalue())
+        self.assertIn("example-20261018-110710-000000.tar.gz", output.getvalue())
+        manager._temporary.cleanup()
+
+    def test_restore_auto_restart_is_forwarded(self) -> None:
+        manager = FakeManager()
+        self.assertEqual(dispatch([
+            "restore", "example", "snapshot.tar.gz", "--auto-restart",
+        ], manager), 0)
+        self.assertEqual(
+            manager.call, ("restore", "example", "snapshot.tar.gz", True),
+        )
 
 
 if __name__ == "__main__":

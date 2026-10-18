@@ -203,6 +203,23 @@ class TerminalCliTests(unittest.TestCase):
         )
         self.assertTrue(transport.ssh_calls[-1][2]["capture"])
 
+    def test_backup_list_preserves_multiline_remote_output(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config = Path(temporary.name) / "config.yml"
+        config.write_text(
+            (Path(__file__).resolve().parents[1] / "config.yml.example").read_text(),
+            encoding="utf-8",
+        )
+        transport = FakeTransport(Path(temporary.name) / "unused.tar.gz")
+        transport.ssh_stdout = b"ID\tCREATED\tSIZE\tNAME\na1b2\tnow\t2 GiB\tbackup.tar.gz\n"
+        service = Manager(config, transport=transport)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            service.run("backup", "list", extra=("example",))
+        self.assertEqual(output.getvalue(), transport.ssh_stdout.decode())
+        self.assertTrue(transport.ssh_calls[-1][2]["capture"])
+
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
         dispatch(["stop", "manager", "--force"], service)

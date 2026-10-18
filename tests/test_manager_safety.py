@@ -92,6 +92,38 @@ class ManagerSafetyTests(unittest.TestCase):
         self.manager.remove("example", force=True)
         self.assertFalse((self.packs / "example").exists())
 
+    def test_restore_can_safely_stop_and_restart_a_running_pack(self) -> None:
+        self.make_pack("example")
+        data = self.packs / "example/data"
+        (data / "state.txt").write_text("before", encoding="utf-8")
+        backup = self.manager.backup("example")
+        (data / "state.txt").write_text("after", encoding="utf-8")
+        self.docker.active.add("example")
+
+        restored = self.manager.restore(
+            "example", backup.name, auto_restart=True,
+        )
+
+        self.assertEqual(restored, backup)
+        self.assertEqual((data / "state.txt").read_text(), "before")
+        self.assertEqual(self.docker.active, {"example"})
+
+    def test_restore_running_pack_requires_auto_restart(self) -> None:
+        self.make_pack("example")
+        self.docker.active.add("example")
+
+        with self.assertRaisesRegex(ModpackError, "--auto-restart"):
+            self.manager.restore("example")
+
+    def test_invalid_backup_id_does_not_stop_running_pack(self) -> None:
+        self.make_pack("example")
+        self.docker.active.add("example")
+
+        with self.assertRaisesRegex(Exception, "找不到备份"):
+            self.manager.restore("example", "deadbeef", auto_restart=True)
+
+        self.assertEqual(self.docker.active, {"example"})
+
     def test_broadcast_only_targets_running_packs(self) -> None:
         self.make_pack("running")
         self.make_pack("stopped", port=25566)

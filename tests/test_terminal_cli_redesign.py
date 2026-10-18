@@ -4,7 +4,7 @@ import ast
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -78,14 +78,61 @@ class FakeServices:
 
 
 class TerminalCliRedesignTests(unittest.TestCase):
+    def test_backup_list_is_forwarded_without_terminal_business_logic(self) -> None:
+        services = FakeServices()
+        self.assertEqual(
+            dispatch(["manager", "backup", "list", "example"], services), 0,
+        )
+        self.assertEqual(
+            services.calls, [("manager", "backup", "list", ("example",), False)],
+        )
+
+    def test_restore_auto_restart_is_forwarded(self) -> None:
+        services = FakeServices()
+        self.assertEqual(dispatch([
+            "manager", "restore", "example", "snapshot.tar.gz", "--auto-restart",
+        ], services), 0)
+        self.assertEqual(services.calls, [(
+            "manager", "restore", "example",
+            ("snapshot.tar.gz", "--auto-restart"), False,
+        )])
+
     def test_main_audits_every_command_and_exit_code(self) -> None:
-        with patch("lib.cli.audit") as audit, patch(
-            "lib.cli.dispatch", return_value=0,
+        with (
+            patch("lib.cli.audit") as audit,
+            patch("lib.cli.dispatch", return_value=0),
+            patch("lib.cli.operation_log", return_value=nullcontext()),
         ):
             self.assertEqual(main(["config", "check"]), 0)
         self.assertEqual(audit.call_args_list, [
             call("$ mcsp config check"), call("exit=0"),
         ])
+
+    def test_main_records_output_in_one_operation_block(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        log = root / "terminal.log"
+
+        def fake_dispatch(_arguments):
+            print("部署阶段：已完成")
+            return 0
+
+        with (
+            patch("lib.cli.ROOT", root),
+            patch("lib.cli.TERMINAL_LOG", log),
+            patch("lib.cli.dispatch", side_effect=fake_dispatch),
+        ):
+            self.assertEqual(main(["deploy", "monitor"]), 0)
+
+        content = log.read_text(encoding="utf-8")
+        self.assertIn("command: mcsp deploy monitor", content)
+        self.assertIn("部署阶段：已完成", content)
+        self.assertIn("exit=0", content)
+        self.assertIn("duration:", content)
+        self.assertEqual(content.count("=== operation "), 1)
+        self.assertEqual(content.count("=== end operation "), 1)
+        self.assertEqual(list((root / "tmp/terminal-logs").glob("*.log")), [])
 
     def test_config_init_creates_both_local_files(self) -> None:
         temporary = tempfile.TemporaryDirectory()

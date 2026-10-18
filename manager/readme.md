@@ -41,8 +41,10 @@ cp config.yml.example config.yml
 ./manager.sh property example online-mode
 ./manager.sh property example online-mode false
 ./manager.sh backup example
+./manager.sh backup list example
 ./manager.sh stop example
 ./manager.sh restore example
+./manager.sh restore example <备份ID或文件名> --auto-restart
 ./manager.sh remove example --force
 ./manager.sh stop-all
 ./manager.sh export example
@@ -138,6 +140,12 @@ backup:
 
 `interval` 是相对周期，不是每天的固定时刻。开启自动备份但尚无任何备份的整合包，
 会在下一次聚合检查时立即建立首份备份；某个整合包失败不会阻止其他包继续备份。
+
+`backup list <id>` 按时间倒序列出备份的 12 位 ID、创建时间、大小和完整文件名。
+短 ID 由文件名生成，用于便捷选择，不是内容校验值。`restore` 同时接受完整文件名或
+不少于 4 位的唯一 ID 前缀；前缀匹配多个备份时会拒绝执行。
+运行中的整合包默认拒绝恢复；添加 `--auto-restart` 后，Manager 会依次执行优雅停服、
+保存恢复前状态、恢复指定备份和重新启动并等待健康。恢复过程失败时不会启动半恢复状态。
 
 ## 定时关服与关机
 

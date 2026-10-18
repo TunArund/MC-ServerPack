@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tarfile
@@ -14,6 +15,11 @@ from .config import PackSpec
 
 class BackupError(RuntimeError):
     pass
+
+
+def backup_id(path: Path) -> str:
+    """返回稳定的短 ID；它用于选择备份，不作为归档内容校验值。"""
+    return hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:12]
 
 
 def _reject_links(root: Path) -> None:
@@ -64,8 +70,16 @@ def prune_backups(spec: PackSpec, *, keep: Path | None = None) -> None:
 def resolve_backup(spec: PackSpec, name: str | None) -> Path:
     if name:
         if Path(name).name != name:
-            raise BackupError("只能指定 backups/ 中的文件名")
+            raise BackupError("只能指定 backups/ 中的文件名或备份 ID")
         source = spec.directory / "backups" / name
+        if not source.is_file():
+            if len(name) < 4 or any(character not in "0123456789abcdef" for character in name):
+                raise BackupError(f"找不到备份：{name}")
+            matches = [path for path in list_backups(spec) if backup_id(path).startswith(name)]
+            if len(matches) > 1:
+                raise BackupError(f"备份 ID 前缀不唯一，请补充更多字符：{name}")
+            if matches:
+                source = matches[0]
     else:
         candidates = list_backups(spec)
         if not candidates:

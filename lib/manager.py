@@ -133,7 +133,7 @@ class Manager:
         if pack_id is not None:
             arguments.append(pack_id)
         arguments.extend(extra)
-        if action == "list":
+        if action == "list" or (action == "backup" and pack_id == "list"):
             result = self.command(arguments, capture=True)
             raw = result.stdout or b""
             output = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)

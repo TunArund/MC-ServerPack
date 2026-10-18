@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from .backup import BackupError
+from .backup import BackupError, backup_id
 from .config import ConfigError
 from .docker import DockerError, DockerInstaller
 from .modpacks import ModpackError, ModpackManager
@@ -37,9 +38,12 @@ def make_parser() -> argparse.ArgumentParser:
         "--force", action="store_true",
         help="完整替换已存在的同名整合包",
     )
-    for action in ("config", "stop", "status", "backup"):
+    for action in ("config", "stop", "status"):
         command = commands.add_parser(action)
         command.add_argument("pack_id", help="整合包 ID")
+    backup = commands.add_parser("backup", help="创建或列出备份")
+    backup.add_argument("target", help="整合包 ID，或 list")
+    backup.add_argument("pack_id", nargs="?", help="使用 list 时指定整合包 ID")
     start = commands.add_parser("start")
     start.add_argument("pack_id", help="整合包 ID")
     logs = commands.add_parser("logs")
@@ -56,6 +60,10 @@ def make_parser() -> argparse.ArgumentParser:
     restore = commands.add_parser("restore")
     restore.add_argument("pack_id")
     restore.add_argument("backup", nargs="?", help="备份文件名；默认使用最新备份")
+    restore.add_argument(
+        "--auto-restart", action="store_true",
+        help="运行中自动优雅停服、恢复并重新启动",
+    )
     remove = commands.add_parser("remove")
     remove.add_argument("pack_id")
     remove.add_argument("--force", action="store_true", help="确认删除持久化数据和备份")
@@ -183,9 +191,38 @@ def dispatch(
                 f"（生效文件：{path}）{restart}"
             )
     elif args.action == "backup":
-        print(f"备份完成：{service.backup(args.pack_id)}")
+        if args.target == "list":
+            if args.pack_id is None:
+                raise ModpackError("用法：./manager.sh backup list <整合包ID>")
+            backups = service.backups(args.pack_id)
+            if not backups:
+                print(f"没有备份：{args.pack_id}")
+            else:
+                print("ID\tCREATED\tSIZE\tNAME")
+                for path in backups:
+                    stat = path.stat()
+                    created = datetime.fromtimestamp(stat.st_mtime).astimezone()
+                    size = stat.st_size
+                    units = ("B", "KiB", "MiB", "GiB", "TiB")
+                    value = float(size)
+                    unit = units[0]
+                    for unit in units:
+                        if value < 1024 or unit == units[-1]:
+                            break
+                        value /= 1024
+                    shown = f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+                    print(
+                        f"{backup_id(path)}\t{created:%Y-%m-%d %H:%M:%S %z}"
+                        f"\t{shown}\t{path.name}"
+                    )
+        elif args.pack_id is not None:
+            raise ModpackError("创建备份的用法：./manager.sh backup <整合包ID>")
+        else:
+            print(f"备份完成：{service.backup(args.target)}")
     elif args.action == "restore":
-        print(f"恢复完成：{service.restore(args.pack_id, args.backup)}")
+        print(
+            f"恢复完成：{service.restore(args.pack_id, args.backup, auto_restart=args.auto_restart)}"
+        )
     elif args.action == "remove":
         service.remove(args.pack_id, force=args.force)
         print(f"已删除：{args.pack_id}")

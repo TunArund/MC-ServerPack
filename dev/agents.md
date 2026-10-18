@@ -17,7 +17,9 @@ python3 -m unittest discover -s tests
   已输出的远端错误不得再包装成无信息的“SSH 失败”。
 - Terminal 每次调用都将命令、时间与退出结果追加到项目目录的
   `terminal.log`；由 Terminal 执行的本地编排、SSH/SFTP、系统准备与部署过程也将完整
-  输出追加到该文件。
+  输出追加到该文件。每次调用先写入 `tmp/terminal-logs/` 中的独立片段，结束后持锁整块
+  合并，禁止多个进程直接交叉追加；日志块必须包含 operation ID、命令、实际回显、退出
+  结果和耗时，成功记录不能只有 `exit=0`。
 - Manager 业务命令在远端部署目录写入 `manager.log`；聚合调度另写 `schedule.log`，
   Minecraft 自身输出仍由整合包/Docker 日志管理。
 - Monitor 业务命令在远端部署目录写入 `monitor.log`，容器服务输出由 Docker 日志管理。
@@ -89,10 +91,12 @@ power-api:
   `root@mc.tunarund.top`；均已配置免密登录。
 - 2026-10-18 已将 `/root/closing-song` 迁移为 Manager 整合包 `closing-song`：
   Docker 容器使用 Java 17、端口 27015、13G 内存上限和 Runtime 默认 JVM 参数。
-- 旧 `/root/closing-song` 保留作回滚源；旧 `minecraft.service`、`mc-watchdog.timer`
-  和 `mc-nightly-shutdown.timer` 已停用，它们的原始 unit 文件仍保留在旧目录。
+- 迁移、回档与进服验证完成后，旧 `/root/closing-song` 以及旧 `minecraft`、`mc-watchdog`、
+  `mc-nightly-shutdown` 的 systemd unit/备份文件已删除；新 Manager 备份是唯一回档来源。
 - 首份 Manager 备份已经过 gzip 完整性校验；迁移后根分区剩余约 31 GB。
 - 为缩短最终停服同步，主机额外安装了 Debian `rsync`；MCSP 本身不依赖它。
+- Manager 每天 23:00 优雅停止全部整合包；Monitor 每天 20:00 开机、23:05 关机。
+  Lighthouse 旧 MC 开关机/guard cron 块已移除，ACME cron 与旧 QQ Bot 暂时保留。
 
 # 测试原则
 - 先在 Ubuntu 虚拟机验证 Terminal 源码安装、配置检查、帮助信息和错误提示。
@@ -101,6 +105,28 @@ power-api:
 - 发行版测试留到 `release.py` 实现之后。
 
 # TODO
+- Manager 迁移实测问题（2026-10-18）
+  - 整合包 ID 在 Terminal 与 Manager 两层都要检查；这是跨 SSH 信任边界的重复校验，
+    统一规则为大小写字母、数字和减号，`template` 保留。
+  - Manager/Docker 以执行 `manager.sh` 的用户 UID/GID 运行。嵌套文件 bind mount 的
+    目标若不存在，Docker 会在外层 `src/` 创建 root 占位文件；Manager 必须预创建目标。
+  - `mcsp manager start` 在长时间 Forge 初始化期间的终端回显不足；Manager 已每两秒产生
+    健康进度，仍需检查 Terminal 固定尾部在真实交互终端中的刷新和 SSH 分块行为。
+  - 启动超时必须覆盖大型整合包冷启动；本次 264 模组正常约 85 秒，网络无限等待则在
+    300 秒后失败。Runtime 默认加入连接/读取超时和 Forge 自动确认，GC 参数保持精简。
+  - 失败容器的删除应进入 Manager 公共接口，Terminal 不应直接实现 Docker 操作；需区分
+    删除容器/网络与删除整合包数据，默认绝不能删除 bind mount 数据。
+  - 备份和恢复必须统一通过 Manager；新增备份列表、短 ID 和安全的自动停服恢复重启。
+  - 当前使用 bind mount；Docker daemon/Compose 没有通用的存档快照回档。`docker commit`
+    不包含挂载数据；ZFS/Btrfs/LVM 或 volume driver 快照只能作为可选后端，不能替代通用备份。
+  - `read-only.enabled=false` 时整个 `src/` 可写，`persistent` 仍决定哪些路径分离到 `data/`
+    并进入备份；`enabled=true` 时 `src/` 只读，只有 persistent 挂载路径可写。
+  - 部署迁移目录且已开启自动备份时，聚合调度可能在最终切换前立即生成首份备份；部署
+    流程需要“未激活/维护中”状态，避免把预复制中的数据标为可恢复备份。
+  - Monitor 在首次部署时会把实例收敛到当前游玩窗口应有的电源状态；窗口外维护可能立即
+    触发关机。需要维护模式或“首次启动不补执行旧事件”，部署文档也必须先停止旧调度。
+  - Docker daemon 重启会使部署 SSH 会话提前断开，而远端后续命令可能仍在运行；Terminal
+    需要明确识别连接中断，禁止把未知结果当成功并发起第二次部署。
 - monitor qqbot
 重排src目录与文件
 app.py config.py network.py power.py

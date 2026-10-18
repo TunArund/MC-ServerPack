@@ -10,7 +10,9 @@ from pathlib import Path
 
 import yaml
 
-from manager.lib.backup import BackupError, create_backup, restore_backup
+from manager.lib.backup import (
+    BackupError, backup_id, create_backup, resolve_backup, restore_backup,
+)
 from manager.lib.config import load_pack, render_compose
 
 
@@ -47,6 +49,13 @@ class BackupTests(unittest.TestCase):
         restore_backup(self.spec)
         self.assertEqual(world.read_text(encoding="utf-8"), "changed")
         self.assertEqual(len(list((self.spec.directory / "backups").glob("*.tar.gz"))), 2)
+
+    def test_backup_can_be_resolved_by_stable_short_id(self) -> None:
+        backup = create_backup(self.spec)
+
+        self.assertEqual(resolve_backup(self.spec, backup_id(backup)), backup)
+        self.assertEqual(resolve_backup(self.spec, backup_id(backup)[:4]), backup)
+        self.assertEqual(len(backup_id(backup)), 12)
 
     def test_restore_rejects_path_traversal(self) -> None:
         backup = self.spec.directory / "backups/example-malicious.tar.gz"

@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
+import shutil
 import sys
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import IO, Iterator, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from .config import (
@@ -26,6 +31,102 @@ from .remote import CommandError, Transport, shell_join
 
 SOURCE_MODE = not getattr(sys, "frozen", False)
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
+TERMINAL_LOG = ROOT / "terminal.log"
+_ACTIVE_LOG: Path | None = None
+
+
+class _TeeBuffer:
+    def __init__(self, original, log: IO[str]) -> None:
+        self.original = original
+        self.log = log
+
+    def write(self, value: bytes) -> int:
+        written = self.original.write(value)
+        self.log.write(value.decode("utf-8", "replace"))
+        self.log.flush()
+        return written
+
+    def flush(self) -> None:
+        self.original.flush()
+        self.log.flush()
+
+
+class _Tee:
+    """在不改变终端行为的同时记录普通 print 与 buffer 输出。"""
+
+    def __init__(self, original, log: IO[str]) -> None:
+        self.original = original
+        self.log = log
+        self.buffer = _TeeBuffer(original.buffer, log)
+        self.encoding = original.encoding
+        self.errors = original.errors
+
+    def write(self, value: str) -> int:
+        written = self.original.write(value)
+        self.log.write(value)
+        self.log.flush()
+        return written
+
+    def flush(self) -> None:
+        self.original.flush()
+        self.log.flush()
+
+    def isatty(self) -> bool:
+        return self.original.isatty()
+
+    def fileno(self) -> int:
+        return self.original.fileno()
+
+
+def _append_operation(source: Path) -> None:
+    TERMINAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as incoming, TERMINAL_LOG.open("ab") as output:
+        try:
+            import fcntl
+            fcntl.flock(output.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        shutil.copyfileobj(incoming, output)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+@contextlib.contextmanager
+def operation_log(arguments: list[str]) -> Iterator[None]:
+    """每次调用独立记录，结束后整块合并，防止并发日志交叉。"""
+    global _ACTIVE_LOG
+    directory = ROOT / "tmp/terminal-logs"
+    directory.mkdir(parents=True, exist_ok=True)
+    operation_id = (
+        f"{datetime.now(DISPLAY_TIMEZONE):%Y%m%d-%H%M%S}-"
+        f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    )
+    temporary = directory / f"{operation_id}.log"
+    previous = _ACTIVE_LOG
+    _ACTIVE_LOG = temporary
+    started = time.monotonic()
+    try:
+        with temporary.open("a", encoding="utf-8") as detail:
+            detail.write(
+                f"\n=== operation {operation_id} ===\n"
+                f"command: mcsp {shell_join(arguments)}\n"
+            )
+            detail.flush()
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            sys.stdout = _Tee(original_stdout, detail)
+            sys.stderr = _Tee(original_stderr, detail)
+            try:
+                yield
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                sys.stdout, sys.stderr = original_stdout, original_stderr
+                detail.write(f"duration: {time.monotonic() - started:.3f}s\n")
+                detail.write(f"=== end operation {operation_id} ===\n")
+        _append_operation(temporary)
+    finally:
+        _ACTIVE_LOG = previous
+        temporary.unlink(missing_ok=True)
 
 
 def progress(message: str) -> None:
@@ -33,7 +134,7 @@ def progress(message: str) -> None:
 
 
 def audit(message: str) -> None:
-    path = ROOT / "terminal.log"
+    path = _ACTIVE_LOG or TERMINAL_LOG
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as output:
         output.write(
@@ -49,7 +150,7 @@ class CliServices:
     ) -> None:
         self.config_path = config_path
         self.source_mode = source_mode
-        self.transport = Transport(ROOT / "terminal.log")
+        self.transport = Transport(_ACTIVE_LOG or TERMINAL_LOG)
         self.accounts = AccountProvisioner(self.transport)
         self.manager: Optional[Manager] = None
         self._monitor_instance: Optional[Monitor] = None
@@ -244,9 +345,12 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
         "--force", action="store_true",
         help="完整替换远端已存在的同名整合包",
     )
-    for action in ("config", "stop", "status", "backup"):
+    for action in ("config", "stop", "status"):
         item = manager_commands.add_parser(action)
         item.add_argument("pack_id")
+    backup = manager_commands.add_parser("backup", help="创建或列出备份")
+    backup.add_argument("target", help="整合包 ID，或 list")
+    backup.add_argument("pack_id", nargs="?", help="使用 list 时指定整合包 ID")
     manager_start = manager_commands.add_parser("start")
     manager_start.add_argument("pack_id")
     logs = manager_commands.add_parser("logs")
@@ -263,6 +367,7 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     restore = manager_commands.add_parser("restore")
     restore.add_argument("pack_id")
     restore.add_argument("backup", nargs="?")
+    restore.add_argument("--auto-restart", action="store_true")
     remove = manager_commands.add_parser("remove")
     remove.add_argument("pack_id")
     remove.add_argument("--force", action="store_true")
@@ -319,8 +424,15 @@ def _dispatch_manager(args, services: CliServices) -> int:
     elif args.action == "create":
         if args.force:
             extra.append("--force")
-    elif args.action == "restore" and args.backup:
-        extra.append(args.backup)
+    elif args.action == "backup":
+        pack_id = args.target
+        if args.pack_id is not None:
+            extra.append(args.pack_id)
+    elif args.action == "restore":
+        if args.backup:
+            extra.append(args.backup)
+        if args.auto_restart:
+            extra.append("--auto-restart")
     elif args.action == "remove" and args.force:
         extra.append("--force")
     services.manager_command(
@@ -453,6 +565,11 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
 
 def main(argv: Optional[list[str]] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    with operation_log(arguments):
+        return _main(arguments)
+
+
+def _main(arguments: list[str]) -> int:
     audit(f"$ mcsp {shell_join(arguments)}")
     try:
         result = dispatch(arguments)

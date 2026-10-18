@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -358,10 +360,14 @@ class DockerClientTests(ManagerFixture):
 
     def test_stop_checks_for_clean_container_exit(self) -> None:
         self.runner.running = True
-        self.client.stop(self.spec)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.client.stop(self.spec)
         commands = [call[0] for call in self.runner.calls]
         self.assertTrue(any("stop" in command for command in commands))
         self.assertTrue(any(command[:2] == ["docker", "inspect"] for command in commands))
+        self.assertIn("等待 Java 退出", output.getvalue())
+        self.assertIn("退出码为 0", output.getvalue())
 
 
 class DockerInstallRunner:

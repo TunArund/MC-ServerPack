@@ -372,14 +372,24 @@ class DockerClient:
     def stop(self, spec: PackSpec, *, timeout: int = 180) -> None:
         self.check()
         if not self.running(spec):
+            print(f"[停止 3/3] {spec.pack_id} 已处于停止状态", flush=True)
             return
+        started = time.monotonic()
+        print(
+            f"[停止 1/3] 向 {spec.pack_id} 发送停止信号并等待 Java 退出"
+            f"（最长 {timeout}s）",
+            flush=True,
+        )
         self.compose(spec, "stop", "minecraft", stop_timeout=timeout)
+        elapsed = int(time.monotonic() - started)
+        print(f"[停止 2/3] 容器已停止，耗时 {elapsed}s；校验退出码", flush=True)
         container = self.compose(spec, "ps", "-a", "-q", "minecraft", capture=True).stdout.strip()
         if not container:
             raise DockerError(f"停止 {spec.pack_id} 后找不到容器")
         result = self._run(["docker", "inspect", "-f", "{{.State.ExitCode}}", container], capture=True)
         if result.stdout.strip() != "0":
             raise DockerError(f"{spec.pack_id} 退出码为 {result.stdout.strip()}，可能未完成存档")
+        print(f"[停止 3/3] 已确认 {spec.pack_id} 退出码为 0", flush=True)
 
     def status(self, spec: PackSpec) -> str:
         self.check()
