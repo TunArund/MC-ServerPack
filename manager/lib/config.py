@@ -326,8 +326,16 @@ def prepare_persistent(spec: PackSpec) -> None:
         else:
             if not source_path.is_file() and not data_path.is_file():
                 raise ConfigError(f"持久化文件不存在：{item.path}")
-            if source_path.is_dir() or data_path.is_dir():
+            if (
+                source_path.is_symlink() or data_path.is_symlink()
+                or (source_path.exists() and not source_path.is_file())
+                or (data_path.exists() and not data_path.is_file())
+            ):
                 raise ConfigError(f"持久化路径类型冲突：{item.path}")
+            # 先在外层 src bind 中创建目标，避免 Docker 为嵌套文件挂载
+            # 生成 root:root 的空占位文件，导致后续 Manager 无法更新配置。
+            if not source_path.exists():
+                source_path.touch()
             if not data_path.exists():
                 shutil.copy2(source_path, data_path)
     for name, default in EMPTY_JSON_DEFAULTS.items():

@@ -28,6 +28,9 @@ resolve_auto_command() {
   local -a automatic_jvm_args=(
     -XX:InitialRAMPercentage=25.0
     -XX:MaxRAMPercentage=75.0
+    -Dsun.net.client.defaultConnectTimeout=5000
+    -Dsun.net.client.defaultReadTimeout=10000
+    -Dfml.queryResult=confirm
   )
 
   mapfile -d '' -t argument_files < <(

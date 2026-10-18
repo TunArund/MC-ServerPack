@@ -85,11 +85,14 @@ power-api:
 
 ## Manager
 - 腾讯云 CVM，2 核 16 GB，按量计费 Debian 实例，随用随开。
-- SSH：`root@mc.tunarund.top`，已配置免密登录；目前只有 root 用户。
-- 尚未安装 Docker。
-- `/root/closing-song` 正在运行大型 Minecraft 整合包，由 systemd 设置开机自启。
-- 现有 cronjob 可能负责定时备份；部署或迁移前必须先只读检查 systemd、cron、端口、磁盘空间和备份目录，不得影响现有实例。
-- 2026-10-17 盘点时主机 22 端口连接超时，推定实例处于关机或未开放状态；未主动开机，其他项目待开机后检查。
+- SSH：部署使用 `steam@mc.tunarund.top`，应急迁移与回滚可用
+  `root@mc.tunarund.top`；均已配置免密登录。
+- 2026-10-18 已将 `/root/closing-song` 迁移为 Manager 整合包 `closing-song`：
+  Docker 容器使用 Java 17、端口 27015、13G 内存上限和 Runtime 默认 JVM 参数。
+- 旧 `/root/closing-song` 保留作回滚源；旧 `minecraft.service`、`mc-watchdog.timer`
+  和 `mc-nightly-shutdown.timer` 已停用，它们的原始 unit 文件仍保留在旧目录。
+- 首份 Manager 备份已经过 gzip 完整性校验；迁移后根分区剩余约 31 GB。
+- 为缩短最终停服同步，主机额外安装了 Debian `rsync`；MCSP 本身不依赖它。
 
 # 测试原则
 - 先在 Ubuntu 虚拟机验证 Terminal 源码安装、配置检查、帮助信息和错误提示。

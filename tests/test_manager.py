@@ -107,6 +107,22 @@ class PackConfigTests(ManagerFixture):
         self.assertEqual((directory / "src/usernamecache.json").read_text(), "{}\n")
         self.assertEqual((directory / "data/usernamecache.json").read_text(), "{}\n")
 
+    def test_render_creates_user_owned_targets_for_persistent_files(self) -> None:
+        directory = self.make_pack()
+        config_file = directory / "config.yml"
+        document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        document["read-only"]["persistent"].append("server.properties")
+        config_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        (directory / "data").mkdir()
+        (directory / "data/server.properties").write_text(
+            "server-port=25565\n", encoding="utf-8",
+        )
+
+        render_compose(load_pack("example", self.packs))
+
+        self.assertTrue((directory / "src/server.properties").is_file())
+        self.assertEqual((directory / "src/server.properties").read_text(), "")
+
     def test_rejects_path_traversal(self) -> None:
         for value in ("../world", "/etc/passwd", "world/../ops.json"):
             with self.subTest(value=value), self.assertRaises(ConfigError):
@@ -163,6 +179,9 @@ class PackConfigTests(ManagerFixture):
             (server / "java-args.txt").read_text(encoding="utf-8").splitlines(),
             [
                 "-XX:InitialRAMPercentage=25.0", "-XX:MaxRAMPercentage=75.0",
+                "-Dsun.net.client.defaultConnectTimeout=5000",
+                "-Dsun.net.client.defaultReadTimeout=10000",
+                "-Dfml.queryResult=confirm",
                 "-jar", "minecraft-1.20.1.jar", "nogui",
             ],
         )
@@ -203,6 +222,9 @@ class PackConfigTests(ManagerFixture):
             (server / "java-args.txt").read_text(encoding="utf-8").splitlines(),
             [
                 "-XX:InitialRAMPercentage=25.0", "-XX:MaxRAMPercentage=75.0",
+                "-Dsun.net.client.defaultConnectTimeout=5000",
+                "-Dsun.net.client.defaultReadTimeout=10000",
+                "-Dfml.queryResult=confirm",
                 "@libraries/forge/test/unix_args.txt", "nogui",
             ],
         )
