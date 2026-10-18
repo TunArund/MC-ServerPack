@@ -37,6 +37,16 @@ class ManagerConfigTests(unittest.TestCase):
         self.assertFalse(settings.poweroff_enabled)
         self.assertEqual(settings.stop_at, "23:00")
 
+    def test_legacy_flat_limits_report_migration_instructions(self) -> None:
+        path = self.write({
+            "max-running": 1,
+            "mem-limit": "4g",
+            "start-timeout": 300,
+            "stop-timeout": 180,
+        })
+        with self.assertRaisesRegex(ConfigError, "旧版平铺配置.*移入 modpack"):
+            load_limits(path)
+
     def test_schedule_and_poweroff_are_parsed(self) -> None:
         document = self.minimum()
         document.update({

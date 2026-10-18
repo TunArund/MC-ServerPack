@@ -21,7 +21,15 @@ MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
-DEFAULT_COMMAND = ("bash", "./run.sh", "nogui")
+DEFAULT_COMMAND = ("mc-auto",)
+EMPTY_JSON_DEFAULTS = {
+    "banned-ips.json": "[]\n",
+    "banned-players.json": "[]\n",
+    "ops.json": "[]\n",
+    "usercache.json": "[]\n",
+    "usernamecache.json": "{}\n",
+    "whitelist.json": "[]\n",
+}
 
 
 class ConfigError(RuntimeError):
@@ -44,6 +52,8 @@ class PackSpec:
     memory: str
     memory_bytes: int
     port: int
+    eula: bool
+    jvm_args: tuple[str, ...]
     command: tuple[str, ...]
     read_only: bool
     persistent: tuple[PersistentPath, ...]
@@ -149,7 +159,16 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
         raise ConfigError("manager/config.yml 必须是对象")
     modpack = document.get("modpack")
     if not isinstance(modpack, dict):
-        raise ConfigError("modpack 必须是对象")
+        legacy = any(
+            key in document
+            for key in ("max-running", "mem-limit", "start-timeout", "stop-timeout")
+        )
+        if legacy:
+            raise ConfigError(
+                f"{path} 使用了旧版平铺配置；请将 max-running、mem-limit、"
+                "start-timeout 和 stop-timeout 移入 modpack: 对象"
+            )
+        raise ConfigError(f"{path} 的 modpack 必须是对象")
     memory, memory_bytes = parse_memory(modpack.get("mem-limit"))
     schedule_enabled = _boolean(modpack.get("auto-stop"), "modpack.auto-stop")
     poweroff_enabled = _boolean(document.get("auto-stop"), "auto-stop")
@@ -228,6 +247,8 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
     version = document.get("version", "unknown")
     java = document.get("java")
     port = document.get("port", 25565)
+    eula = document.get("eula", False)
+    jvm_args = document.get("jvm-args", [])
     command = document.get("command", list(DEFAULT_COMMAND))
     read_only = document.get("read-only", {})
     backup = document.get("backup", {})
@@ -240,7 +261,15 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
     memory, memory_bytes = parse_memory(document.get("mem-limit"))
     if type(port) is not int or not 1 <= port <= 65535:
         raise ConfigError("port 必须是 1 到 65535 的整数")
-    if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
+    if type(eula) is not bool:
+        raise ConfigError("eula 必须是 true 或 false")
+    if not isinstance(jvm_args, list) or not all(
+        isinstance(item, str) and item.strip() for item in jvm_args
+    ):
+        raise ConfigError("jvm-args 必须是非空字符串数组")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(item, str) and item.strip() for item in command
+    ):
         raise ConfigError("command 必须是非空字符串数组")
     if not isinstance(read_only, dict):
         raise ConfigError("read-only 必须是包含 enabled/persistent 的对象")
@@ -273,7 +302,7 @@ def load_pack(pack_id: str, packs_dir: Path = PACKS_DIR) -> PackSpec:
             raise ConfigError(f"持久化目录 {parent.path}/ 已包含子路径")
     return PackSpec(
         pack_id, directory, name.strip(), str(version), java, memory, memory_bytes,
-        port, tuple(command), enabled, persistent, backup_enabled,
+        port, eula, tuple(jvm_args), tuple(command), enabled, persistent, backup_enabled,
         backup_interval, backup_interval_seconds, backup_retain, quiesce,
     )
 
@@ -301,6 +330,12 @@ def prepare_persistent(spec: PackSpec) -> None:
                 raise ConfigError(f"持久化路径类型冲突：{item.path}")
             if not data_path.exists():
                 shutil.copy2(source_path, data_path)
+    for name, default in EMPTY_JSON_DEFAULTS.items():
+        source_path = source / name
+        data_path = data / name
+        for path in (source_path, data_path):
+            if path.is_file() and not path.is_symlink() and path.stat().st_size == 0:
+                path.write_text(default, encoding="utf-8")
 
 
 def render_compose(spec: PackSpec) -> Path:
@@ -317,16 +352,20 @@ def render_compose(spec: PackSpec) -> Path:
             "target": f"/server/{item.path}", "bind": {"create_host_path": False},
         })
     manager_root = spec.directory.parents[1]
+    command = list(spec.command)
+    if command[0] == "java":
+        command[1:1] = spec.jvm_args
     service = {
         "image": runtime_image(spec.java, manager_root), "init": True, "restart": "unless-stopped",
         "working_dir": "/server", "stop_grace_period": "${MC_DOCKER_GRACE:-190}s",
-        "command": list(spec.command), "user": "${MC_CONTAINER_UID:?}:${MC_CONTAINER_GID:?}",
+        "command": command, "user": "${MC_CONTAINER_UID:?}:${MC_CONTAINER_GID:?}",
         "mem_limit": spec.memory, "ports": [f"{spec.port}:{spec.port}"],
         "environment": {"HOME": "/tmp", "MC_STOP_TIMEOUT": "${MC_STOP_TIMEOUT:-180}",
                         "MC_SERVER_PORT": str(spec.port)},
         "healthcheck": {
             "test": ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/$${MC_SERVER_PORT:-25565}"],
-            "interval": "10s", "timeout": "3s", "start_period": "120s", "retries": 3,
+            "interval": "10s", "timeout": "3s",
+            "start_period": "${MC_START_TIMEOUT:-300}s", "retries": 3,
         },
         "labels": {"mc-manager.managed": "true", "mc-manager.pack": spec.pack_id},
         "volumes": volumes,

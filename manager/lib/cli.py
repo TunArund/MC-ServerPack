@@ -6,6 +6,7 @@ start|stop <modpack>
 stop-all
 backup|restore <modpack>
 logs|status <modpack>
+property <modpack> <key> [value]
 schedule install|run|remove
 """
 
@@ -21,12 +22,13 @@ from .docker import DockerError, DockerInstaller
 from .modpacks import ModpackError, ModpackManager
 from .provider import ProviderError, load_provider
 from . import schedule
-from .transfer import export_pack, import_pack
+from .transfer import export_pack, import_directory, import_pack
 
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="manager.sh", description="管理本机 Minecraft 整合包")
     commands = parser.add_subparsers(dest="action", required=True)
+    commands.add_parser("list", help="列出整合包与运行状态")
     install = commands.add_parser("install", help="安装 Manager 系统组件")
     install.add_argument("component", choices=("docker",))
     create = commands.add_parser("create")
@@ -40,10 +42,6 @@ def make_parser() -> argparse.ArgumentParser:
         command.add_argument("pack_id", help="整合包 ID")
     start = commands.add_parser("start")
     start.add_argument("pack_id", help="整合包 ID")
-    start.add_argument(
-        "--accept-eula", action="store_true",
-        help="确认接受 Minecraft EULA，启动前写入 eula=true",
-    )
     logs = commands.add_parser("logs")
     logs.add_argument("pack_id")
     logs.add_argument("--lines", type=int, default=100, help="日志行数")
@@ -51,6 +49,10 @@ def make_parser() -> argparse.ArgumentParser:
     console = commands.add_parser("console")
     console.add_argument("pack_id")
     console.add_argument("command", nargs=argparse.REMAINDER, help="console 命令")
+    prop = commands.add_parser("property", help="读写实际生效的 server.properties")
+    prop.add_argument("pack_id")
+    prop.add_argument("key")
+    prop.add_argument("value", nargs="?", help="省略时读取属性")
     restore = commands.add_parser("restore")
     restore.add_argument("pack_id")
     restore.add_argument("backup", nargs="?", help="备份文件名；默认使用最新备份")
@@ -64,6 +66,9 @@ def make_parser() -> argparse.ArgumentParser:
     upload.add_argument("pack_id")
     upload.add_argument("archive", type=Path)
     upload.add_argument("--force", action="store_true")
+    upload_dir = commands.add_parser("import-dir", help="从受管暂存目录导入整合包")
+    upload_dir.add_argument("pack_id")
+    upload_dir.add_argument("directory", type=Path)
     scheduled = commands.add_parser("schedule", help="聚合执行备份、定时停服与云关机")
     scheduled.add_argument("command", choices=("run", "install", "remove"))
     return parser
@@ -87,6 +92,11 @@ def dispatch(
         return 0
     if args.action == "import":
         print(f"已导入：{import_pack(service, args.pack_id, args.archive, force=args.force)}")
+        return 0
+    if args.action == "import-dir":
+        print(
+            f"已导入：{import_directory(service, args.pack_id, args.directory)}"
+        )
         return 0
     if args.action == "schedule":
         if args.command == "install":
@@ -123,6 +133,19 @@ def dispatch(
         for pack_id, reason in failed:
             print(f"停服失败：{pack_id}：{reason}", file=sys.stderr)
         return 1 if failed else 0
+    if args.action == "list":
+        packs = service.list_packs()
+        if not packs:
+            print("没有已创建的整合包")
+            return 0
+        print("ID\tSTATE\tPORT\tJAVA\tMEMORY\tVERSION\tNAME")
+        for spec, running in packs:
+            state = "unknown" if running is None else ("running" if running else "stopped")
+            print(
+                f"{spec.pack_id}\t{state}\t{spec.port}\t{spec.java}\t"
+                f"{spec.memory}\t{spec.version}\t{spec.name}"
+            )
+        return 0
     if args.action == "logs" and args.lines < 0:
         raise ModpackError("日志行数不能为负数")
     if args.action == "create":
@@ -134,7 +157,7 @@ def dispatch(
     elif args.action == "config":
         print(f"配置有效：{service.configure(args.pack_id)}")
     elif args.action == "start":
-        service.start(args.pack_id, accept_eula=args.accept_eula)
+        service.start(args.pack_id)
         print(f"已启动：{args.pack_id}")
     elif args.action == "stop":
         service.stop(args.pack_id)
@@ -145,6 +168,20 @@ def dispatch(
         service.logs(args.pack_id, lines=args.lines, follow=args.follow)
     elif args.action == "console":
         service.console(args.pack_id, " ".join(args.command))
+    elif args.action == "property":
+        if args.value is None:
+            value, path = service.get_property(args.pack_id, args.key)
+            print(f"{args.key}={value}（生效文件：{path}）")
+        else:
+            path, running = service.set_property(args.pack_id, args.key, args.value)
+            restart = (
+                f"；整合包正在运行，请执行 ./manager.sh stop {args.pack_id} 后重新启动"
+                if running else ""
+            )
+            print(
+                f"已设置：{args.key}={args.value}"
+                f"（生效文件：{path}）{restart}"
+            )
     elif args.action == "backup":
         print(f"备份完成：{service.backup(args.pack_id)}")
     elif args.action == "restore":

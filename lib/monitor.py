@@ -30,7 +30,7 @@ class Monitor:
         self.endpoint = self.config.endpoint
         self.deployment = RuntimeDeployment(
             ROOT / "monitor", self.endpoint, "monitor.sh",
-            preserve=("data",), transport=self.transport,
+            preserve=("data", "monitor.log"), transport=self.transport,
         )
 
     @property
@@ -70,8 +70,14 @@ class Monitor:
             f"cd {remote.shell_join([self.endpoint.directory])} && "
             f"exec ./monitor.sh {remote.shell_join(arguments)}"
         )
-        return self.transport.ssh(
-            self.destination, ["bash", "-lc", command], capture=capture,
+        remote_command = ["bash", "-lc", command]
+        if capture:
+            return self.transport.ssh(
+                self.destination, remote_command, capture=True,
+            )
+        return self.transport.ssh_tail(
+            self.destination, remote_command,
+            label=f"[Monitor] {' '.join(arguments[:2])}",
         )
 
     def run(self, action: str) -> None:

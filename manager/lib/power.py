@@ -77,8 +77,8 @@ class Power:
                 raise PowerError(f"等待 {expected} 超时；当前为 {current.state}")
             self.sleeper(min(5, max(0, deadline - time.monotonic())))
 
-    def start(self) -> InstanceStatus:
-        current = self.status()
+    def start(self, current: Optional[InstanceStatus] = None) -> InstanceStatus:
+        current = current or self.status()
         if current.state == "STOPPED":
             self.api("start")
             if not self.wait_after_action:

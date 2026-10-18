@@ -3,10 +3,11 @@ __pycache__/
 .venv/
 /.env
 /config.yml
-/deploy.log
+/terminal.log
 /manager/config.yml
 /manager/.schedule-state.json
 /manager/schedule.log
+/manager/manager.log
 /manager/.env
 /manager/tmp/
 /monitor/config.yml

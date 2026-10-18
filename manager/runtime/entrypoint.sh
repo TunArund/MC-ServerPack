@@ -22,20 +22,61 @@ exec 3<>"$CONSOLE_PIPE"
 
 cd "$SERVER_DIR"
 
-# Direct Java launches share one editable argument file. Read one literal JVM
-# argument per line here instead of relying on Java's @argfile support, so the
-# same contract also works with the Java 8 runtime image.
-if [[ "${1:-}" == "java" && -f user_jvm_args.txt ]]; then
-  java_command="$1"
-  shift
-  jvm_args=()
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%$'\r'}"
-    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    jvm_args+=("$line")
-  done < user_jvm_args.txt
-  set -- "$java_command" "${jvm_args[@]}" "$@"
+resolve_auto_command() {
+  local installer jar args_file
+  local -a jars=() argument_files=()
+  local -a automatic_jvm_args=(
+    -XX:InitialRAMPercentage=25.0
+    -XX:MaxRAMPercentage=75.0
+  )
+
+  mapfile -d '' -t argument_files < <(
+    find . -type f -name unix_args.txt -print0 | sort -z
+  )
+  if (( ${#argument_files[@]} > 1 )); then
+    echo "错误：检测到多个 unix_args.txt，无法自动选择启动入口" >&2
+    return 2
+  fi
+  if (( ${#argument_files[@]} == 1 )); then
+    args_file="${argument_files[0]#./}"
+    set -- java "${automatic_jvm_args[@]}" "@$args_file" nogui
+    AUTO_COMMAND=("$@")
+    return 0
+  fi
+
+  mapfile -d '' -t jars < <(
+    find . -maxdepth 1 -type f -name '*.jar' -print0 | sort -z
+  )
+  if (( ${#jars[@]} != 1 )); then
+    echo "错误：自动启动要求 /server 中恰有一个顶层 JAR；当前找到 ${#jars[@]} 个" >&2
+    return 2
+  fi
+  jar="${jars[0]#./}"
+  installer=0
+  if unzip -Z1 "$jar" | grep -qx 'install_profile.json'; then
+    installer=1
+  fi
+  if (( installer )); then
+    echo "检测到服务端安装器，执行一次性安装：$jar --installServer"
+    java -jar "$jar" --installServer
+    mapfile -d '' -t argument_files < <(
+      find . -type f -name unix_args.txt -print0 | sort -z
+    )
+    if (( ${#argument_files[@]} != 1 )); then
+      echo "错误：安装完成后未找到唯一的 unix_args.txt" >&2
+      return 2
+    fi
+    args_file="${argument_files[0]#./}"
+    AUTO_COMMAND=(java "${automatic_jvm_args[@]}" "@$args_file" nogui)
+    return 0
+  fi
+  AUTO_COMMAND=(java "${automatic_jvm_args[@]}" -jar "$jar" nogui)
+}
+
+if [[ "${1:-}" == "mc-auto" ]]; then
+  AUTO_COMMAND=()
+  resolve_auto_command
+  set -- "${AUTO_COMMAND[@]}"
 fi
 
 echo "启动 Minecraft：$*"

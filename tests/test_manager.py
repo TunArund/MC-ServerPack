@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,10 +39,13 @@ class ManagerFixture(unittest.TestCase):
         (source / "world").mkdir(parents=True)
         (source / "world" / "level.dat").write_text("world", encoding="utf-8")
         (source / "eula.txt").write_text("eula=true\n", encoding="utf-8")
+        (source / "server.jar").write_bytes(b"test server")
         document = {
             "name": "Example", "version": "1.0", "java": 17,
             "mem-limit": "4g", "port": 25565,
-            "command": ["bash", "./run.sh", "nogui"],
+            "eula": True,
+            "jvm-args": ["-Xms1G", "-Xmx4G", "-XX:+UseG1GC"],
+            "command": ["java", "-jar", "server.jar", "nogui"],
             "read-only": {"enabled": True, "persistent": ["world/", "eula.txt"]},
         }
         (directory / "config.yml").write_text(
@@ -79,6 +84,28 @@ class PackConfigTests(ManagerFixture):
         self.assertRegex(service["image"], r"^mc-java:17-[0-9a-f]{12}$")
         self.assertEqual(service["mem_limit"], "4g")
         self.assertTrue(service["volumes"][0]["read_only"])
+        self.assertEqual(
+            service["command"],
+            ["java", "-Xms1G", "-Xmx4G", "-XX:+UseG1GC", "-jar", "server.jar", "nogui"],
+        )
+
+    def test_render_repairs_empty_minecraft_json_files(self) -> None:
+        directory = self.make_pack()
+        config_file = directory / "config.yml"
+        document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        document["read-only"]["persistent"].extend([
+            "banned-players.json", "usernamecache.json",
+        ])
+        config_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        (directory / "src/banned-players.json").write_text("", encoding="utf-8")
+        (directory / "src/usernamecache.json").write_text("", encoding="utf-8")
+
+        render_compose(load_pack("example", self.packs))
+
+        self.assertEqual((directory / "src/banned-players.json").read_text(), "[]\n")
+        self.assertEqual((directory / "data/banned-players.json").read_text(), "[]\n")
+        self.assertEqual((directory / "src/usernamecache.json").read_text(), "{}\n")
+        self.assertEqual((directory / "data/usernamecache.json").read_text(), "{}\n")
 
     def test_rejects_path_traversal(self) -> None:
         for value in ("../world", "/etc/passwd", "world/../ops.json"):
@@ -96,18 +123,27 @@ class PackConfigTests(ManagerFixture):
         self.assertIn("name: new-pack", (target / "config.yml").read_text(encoding="utf-8"))
         self.assertTrue((target / "backups").is_dir())
 
-    def test_runtime_entrypoint_injects_editable_jvm_arguments(self) -> None:
+    def test_template_uses_automatic_launch_without_editable_command(self) -> None:
+        document = yaml.safe_load(
+            (PROJECT_ROOT / "manager/modpacks/template/config.yml").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("command", document)
+        self.assertNotIn("jvm-args", document)
+        self.assertIs(document["eula"], False)
+        template_source = PROJECT_ROOT / "manager/modpacks/template/src"
+        for legacy in ("run.sh", "run.bat", "user_jvm_args.txt"):
+            self.assertFalse((template_source / legacy).exists())
+
+    def test_runtime_auto_launches_the_only_server_jar(self) -> None:
         server = self.root / "server"
         binaries = self.root / "bin"
         server.mkdir()
         binaries.mkdir()
-        (server / "user_jvm_args.txt").write_text(
-            "# custom arguments\n-Xms2G\r\n\n-Dserver.name=My Server\n",
-            encoding="utf-8",
-        )
+        with zipfile.ZipFile(server / "minecraft-1.20.1.jar", "w") as archive:
+            archive.writestr("META-INF/MANIFEST.MF", "Main-Class: net.minecraft.Main\n")
         java = binaries / "java"
         java.write_text(
-            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > java-args.txt\n",
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$MC_SERVER_DIR/java-args.txt\"\n",
             encoding="utf-8",
         )
         java.chmod(0o755)
@@ -118,24 +154,58 @@ class PackConfigTests(ManagerFixture):
             "MC_CONSOLE_PIPE": str(self.root / "console.pipe"),
         })
 
-        subprocess.run([
-            "bash", str(PROJECT_ROOT / "manager/runtime/entrypoint.sh"),
-            "java", "-jar", "server.jar", "nogui",
-        ], env=environment, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["bash", str(PROJECT_ROOT / "manager/runtime/entrypoint.sh"), "mc-auto"],
+            env=environment, check=True, capture_output=True, text=True,
+        )
 
         self.assertEqual(
             (server / "java-args.txt").read_text(encoding="utf-8").splitlines(),
-            ["-Xms2G", "-Dserver.name=My Server", "-jar", "server.jar", "nogui"],
+            [
+                "-XX:InitialRAMPercentage=25.0", "-XX:MaxRAMPercentage=75.0",
+                "-jar", "minecraft-1.20.1.jar", "nogui",
+            ],
         )
 
-    def test_default_jvm_arguments_match_template_memory_limit(self) -> None:
-        arguments = (
-            PROJECT_ROOT / "manager/modpacks/template/src/user_jvm_args.txt"
-        ).read_text(encoding="utf-8")
-        self.assertIn("-Xms2G\n", arguments)
-        self.assertIn("-Xmx6G\n", arguments)
-        self.assertIn("-XX:+UseG1GC\n", arguments)
-        self.assertNotIn("Dfml", arguments)
+    def test_runtime_auto_installs_forge_then_launches_generated_arguments(self) -> None:
+        server = self.root / "server"
+        binaries = self.root / "bin"
+        server.mkdir()
+        binaries.mkdir()
+        with zipfile.ZipFile(server / "forge-installer.jar", "w") as archive:
+            archive.writestr("install_profile.json", "{}")
+        java = binaries / "java"
+        java.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"$*\" == *--installServer* ]]; then\n"
+            "  mkdir -p \"$MC_SERVER_DIR/libraries/forge/test\"\n"
+            "  : > \"$MC_SERVER_DIR/libraries/forge/test/unix_args.txt\"\n"
+            "else\n"
+            "  printf '%s\\n' \"$@\" > \"$MC_SERVER_DIR/java-args.txt\"\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        java.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update({
+            "PATH": f"{binaries}:{environment['PATH']}",
+            "MC_SERVER_DIR": str(server),
+            "MC_CONSOLE_PIPE": str(self.root / "console.pipe"),
+        })
+
+        result = subprocess.run(
+            ["bash", str(PROJECT_ROOT / "manager/runtime/entrypoint.sh"), "mc-auto"],
+            env=environment, check=True, capture_output=True, text=True,
+        )
+
+        self.assertIn("检测到服务端安装器", result.stdout)
+        self.assertEqual(
+            (server / "java-args.txt").read_text(encoding="utf-8").splitlines(),
+            [
+                "-XX:InitialRAMPercentage=25.0", "-XX:MaxRAMPercentage=75.0",
+                "@libraries/forge/test/unix_args.txt", "nogui",
+            ],
+        )
 
     def test_force_create_replaces_existing_pack(self) -> None:
         shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
@@ -199,16 +269,17 @@ class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict]] = []
         self.running = False
+        self.image_exists = False
 
     def __call__(self, arguments: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         self.calls.append((arguments, kwargs))
         output, error, code = "", "", 0
         if arguments[:3] == ["docker", "image", "inspect"]:
-            code = 1
+            code = 0 if self.image_exists else 1
         elif "--status" in arguments and "running" in arguments:
             output = "container-id\n" if self.running else ""
         elif arguments[:2] == ["docker", "inspect"]:
-            output = "0\n"
+            output = "running|healthy|0\n" if ".State.Status" in " ".join(arguments) else "0\n"
         elif "up" in arguments:
             self.running = True
         elif "stop" in arguments:
@@ -234,12 +305,26 @@ class DockerClientTests(ManagerFixture):
         commands = [call[0] for call in self.runner.calls]
         self.assertTrue(any(command[:2] == ["docker", "build"] for command in commands))
         up = next(command for command in commands if "up" in command)
-        self.assertEqual(up[-4:], ["-d", "--wait", "--wait-timeout", "300"])
+        self.assertEqual(up[-2:], ["up", "-d"])
+        self.assertTrue(any(".State.Health" in " ".join(command) for command in commands))
 
     def test_start_is_idempotent_when_already_running(self) -> None:
         self.runner.running = True
         self.client.start(self.spec)
         self.assertFalse(any("build" in command or "up" in command for command, _ in self.runner.calls))
+        self.assertTrue(any(
+            ".State.Health" in " ".join(command)
+            for command, _ in self.runner.calls
+        ))
+
+    def test_existing_runtime_image_is_reused_without_building(self) -> None:
+        self.runner.image_exists = True
+
+        self.client.ensure_image(17)
+
+        commands = [command for command, _ in self.runner.calls]
+        self.assertTrue(any(command[:3] == ["docker", "image", "inspect"] for command in commands))
+        self.assertFalse(any(command[:2] == ["docker", "build"] for command in commands))
 
     def test_console_passes_user_text_only_through_stdin(self) -> None:
         self.runner.running = True
@@ -312,6 +397,11 @@ class DockerInstallerTests(unittest.TestCase):
             "systemctl", "enable", "--now", "docker.service", "containerd.service",
         ], commands)
         self.assertIn(["docker", "info"], commands)
+        daemon_call = next(
+            arguments for arguments in commands
+            if arguments[:3] == ["python3", "-c", DockerInstaller.CONFIGURE_DAEMON]
+        )
+        self.assertIn("docker.m.daocloud.io", daemon_call[-1])
 
     def test_existing_install_is_kept_and_user_gets_access(self) -> None:
         runner = DockerInstallRunner(installed=True)
@@ -326,6 +416,27 @@ class DockerInstallerTests(unittest.TestCase):
             ["usermod", "--append", "--groups", "docker", "steam"], commands,
         )
         self.assertFalse(any("apt-get" in arguments for arguments in commands))
+
+    def test_registry_mirror_config_preserves_existing_daemon_fields(self) -> None:
+        daemon = self.os_release.parent / "docker/daemon.json"
+        daemon.parent.mkdir()
+        daemon.write_text(
+            '{"log-driver":"local","registry-mirrors":["https://private.example"]}\n',
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                "python3", "-c", DockerInstaller.CONFIGURE_DAEMON,
+                str(daemon), json.dumps(DockerInstaller.REGISTRY_MIRRORS),
+            ],
+            text=True, check=True, capture_output=True,
+        )
+        configured = json.loads(daemon.read_text(encoding="utf-8"))
+        self.assertEqual(configured["log-driver"], "local")
+        self.assertEqual(
+            configured["registry-mirrors"][0], "https://private.example",
+        )
+        self.assertIn("https://docker.m.daocloud.io", configured["registry-mirrors"])
 
     def test_rejects_unsupported_distribution_before_mutation(self) -> None:
         self.os_release.write_text("ID=arch\nVERSION_CODENAME=rolling\n")

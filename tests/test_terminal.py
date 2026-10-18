@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import io
 import subprocess
-import shutil
-import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -13,12 +13,12 @@ import yaml
 
 from lib.cli import CliServices, dispatch
 from lib.config import load as load_config
-from lib.deploy import RuntimeDeployment, archive_tree
+from lib.deploy import RuntimeDeployment
 from lib.manager import Manager
 from lib.monitor import Monitor
 from lib.power import InstanceStatus, Power, PowerError, PowerTarget
 from lib.providers import tencent
-from lib.remote import CommandError, shell_join
+from lib.remote import CommandError, fit_terminal, shell_join
 from manager.lib.config import ConfigError as ManagerConfigError, validate_pack_id
 
 
@@ -39,6 +39,14 @@ class FakeCloud:
         return InstanceStatus("STOPPED")
 
 
+class TerminalRenderingTests(unittest.TestCase):
+    def test_terminal_truncation_counts_wide_characters(self) -> None:
+        self.assertEqual(fit_terminal("启动 abc", 6), "启动 a")
+
+    def test_terminal_truncation_removes_ansi_control_sequences(self) -> None:
+        self.assertEqual(fit_terminal("\x1b[31merror\x1b[0m", 5), "error")
+
+
 class FakeService:
     def __init__(self) -> None:
         self.calls: list[object] = []
@@ -57,8 +65,8 @@ class FakeService:
     def configure(self, target: str) -> None:
         self.calls.append(("configure", target))
 
-    def deploy_modpack(self, pack_id: str, *, force: bool) -> None:
-        self.calls.append(("deploy-modpack", pack_id, force))
+    def deploy_modpack(self, pack_id: str) -> None:
+        self.calls.append(("deploy-modpack", pack_id))
 
     def install_docker(self, target: str) -> None:
         self.calls.append(("install-docker", target))
@@ -106,8 +114,21 @@ class FakeTransport:
     def ssh_logged(self, target: str, arguments: list[str], **kwargs):
         return self.ssh(target, arguments, **kwargs)
 
+    def ssh_tail(self, target: str, arguments: list[str], **kwargs):
+        return self.ssh(target, arguments, **kwargs)
+
     def scp(self, source: Path, destination: str) -> None:
         self.uploads.append((destination, source.read_bytes()))
+
+    def upload_file(self, source: Path, destination: str, remote_path: str, *, mode=None):
+        self.uploads.append((f"{destination}:{remote_path}", source.read_bytes()))
+        return True
+
+    def sync_tree(
+        self, source: Path, destination: str, remote_root: str, *,
+        preserve=(), exclude=(),
+    ):
+        return 1, 0
 
 class TerminalCliTests(unittest.TestCase):
     def test_monitor_add_target_defaults_to_owner(self) -> None:
@@ -162,6 +183,25 @@ class TerminalCliTests(unittest.TestCase):
         self.assertEqual(service.calls, [
             ("manager", "logs", "demo", ("--lines", "20", "--follow"), True),
         ])
+
+    def test_manager_list_preserves_multiline_remote_output(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config = Path(temporary.name) / "config.yml"
+        config.write_text(
+            (Path(__file__).resolve().parents[1] / "config.yml.example").read_text(),
+            encoding="utf-8",
+        )
+        transport = FakeTransport(Path(temporary.name) / "unused.tar.gz")
+        transport.ssh_stdout = b"ID\tSTATE\nalpha\trunning\nbeta\tstopped\n"
+        service = Manager(config, transport=transport)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            service.run("list")
+        self.assertEqual(
+            output.getvalue(), "ID\tSTATE\nalpha\trunning\nbeta\tstopped\n",
+        )
+        self.assertTrue(transport.ssh_calls[-1][2]["capture"])
 
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
@@ -356,7 +396,7 @@ class DeploymentTests(unittest.TestCase):
     def test_pack_deploy_rejects_path_traversal_before_remote_access(self) -> None:
         transport = FakeTransport(self.archive)
         service = Manager(self.config, transport=transport)
-        with self.assertRaisesRegex(CommandError, "命令执行失败"):
+        with self.assertRaisesRegex(CommandError, "整合包 ID"):
             service.deploy_modpack("../escape")
         self.assertFalse(transport.ssh_calls)
 
@@ -420,22 +460,6 @@ class DeploymentTests(unittest.TestCase):
 
     def test_shell_join_quotes_untrusted_console_text(self) -> None:
         self.assertEqual(shell_join(["console", "demo", "say $(id)"]), "console demo 'say $(id)'")
-
-    def test_source_archive_keeps_template_but_excludes_local_pack(self) -> None:
-        source = self.root / "manager-source"
-        (source / "modpacks/template").mkdir(parents=True)
-        (source / "modpacks/demo").mkdir(parents=True)
-        (source / "modpacks/template/config.yml").write_text("template")
-        (source / "modpacks/demo/config.yml").write_text("demo")
-        archive = archive_tree(source, exclude={"modpacks/demo"})
-        try:
-            with tarfile.open(archive, "r:gz") as bundle:
-                names = bundle.getnames()
-            self.assertIn("modpacks/template/config.yml", names)
-            self.assertNotIn("modpacks/demo/config.yml", names)
-        finally:
-            shutil.rmtree(archive.parent, ignore_errors=True)
-
 
 if __name__ == "__main__":
     unittest.main()

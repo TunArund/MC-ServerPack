@@ -5,8 +5,8 @@ MC服务端管理器
 简易架构图
 ```mermaid
 flowchart LR
-  T[Terminal] -->|ssh:deploy| M[Manager]
-  T -->|ssh:deploy| G[monitor]
+  T[Terminal] -->|Python SSH/SFTP:deploy| M[Manager]
+  T -->|Python SSH/SFTP:deploy| G[monitor]
   G -->|api:power| M
 
   classDef dashed stroke-dasharray:5 5,stroke:#e91e63,stroke-width:2px;
@@ -55,6 +55,9 @@ Python源码用户
 python3 -m pip install -r lib/requirements.txt
 ./mcsp.sh xxx
 ```
+Terminal 使用 Python SSH/SFTP 客户端，不要求本机安装或启用 OpenSSH，也不要求
+远端安装 rsync；远端只需提供 Python 3。首次连接未知主机时会显示主机密钥指纹，
+输入 `yes` 后记录到 `~/.ssh/known_hosts`。
 最小部署仅需manager，要求docker compose环境
 
 ```bash
@@ -68,20 +71,15 @@ python3 -m pip install -r lib/requirements.txt
 
 # 3.上传启动 整合包
 ./mcsp.sh local manager create example # 创建本地整合包骨架
+# 将整合包解压到 src，阅读 EULA 后在 config.yml 中设置 eula
 ./mcsp.sh deploy modpack example # 上传到manager
-./mcsp.sh manager start example --accept-eula # 接受 EULA 并远程启动
+./mcsp.sh manager list                # 列出远端整合包
+./mcsp.sh manager start example       # 根据整合包 config.yml 远程启动
+# 读取或修改实际生效的 server.properties
+./mcsp.sh manager property example online-mode
+./mcsp.sh manager property example online-mode false
 ```
 
-`--install-python` 仅存在于源码入口。源码版完整部署会为远端 Manager 创建
-`.venv` 并安装 `manager/lib/requirements.txt`；发行版携带可执行运行时，不安装
-Python、pip 或 venv。Monitor 的 Python 依赖始终安装在容器镜像内。
-
-部署期间 apt、pip 和镜像构建等长输出以实时尾窗显示：默认约 10 行，并随终端
-高度增加到最多 24 行；步骤成功后折叠为一行。完整输出追加保存在项目目录的
-`deploy.log`，失败时终端保留尾部错误并提示该日志路径。
-
-`stop manager` 会先停服，然后关机。详见
-[manager/readme.md](./manager/readme.md#manager-命令)。
 # 参考
 ## Terminal命令
 ```bash
@@ -108,6 +106,8 @@ Python、pip 或 venv。Monitor 的 Python 依赖始终安装在容器镜像内�
 # 也可以指定其他目标名称
 ./mcsp.sh monitor add-target backup-owner
 ```
+## Manager
+[manager/readme.md](./manager/readme.md#manager-命令)。
 ## Monitor配置
 需要腾讯云API密钥控制manager定时开关机（支持其他厂商API，但需自行参考dev/agents.md#电源API 实现）
 填入 .env POWER_SECRET
@@ -118,15 +118,23 @@ zip、tar.gz都行，支持从url下载
 
 整合包 ID 仅允许大小写英文字母、数字和减号（`A-Z`、`a-z`、`0-9`、`-`）。
 
-`local manager create <id>` 只创建整合包骨架，用户自行覆盖 `src/` 并调整
-`config.yml`。原版服务端从 [Minecraft 官方下载页](https://www.minecraft.net/download/server)
-或所需历史版本的官方发布页下载。启动时添加 `--accept-eula` 表示接受
-[Minecraft EULA](https://www.minecraft.net/eula) 并在最终整合包中写入 `eula=true`。
+`local manager create <id>` 只创建整合包骨架，自行覆盖 `src/` 并调整
+`config.yml`。
+原版服务端从 [Minecraft 官方下载页](https://www.minecraft.net/download/server)
+或所需历史版本的官方发布页下载。在整合包 `config.yml` 中设置 `eula: true`
+表示接受 [Minecraft EULA](https://www.minecraft.net/eula)。默认只需将一个服务端 JAR
+放入 `src/`：普通 JAR 自动启动，Forge 安装器自动以 `--installServer` 准备后启动。
+用户无需维护 `command` 或 `jvm-args`；多个候选入口等特殊情况才使用高级覆盖配置。
+Manager 不隐式读取 `run.sh`、`run.bat` 或 `user_jvm_args.txt`。
 同名目录默认拒绝创建；`create --force` 会完整替换其 `src`、`data`、
 `backups` 和配置。
 
 `local manager <args...>` 会将后续参数原样传给本机 `manager.sh`，因此
 `create`、`remove`、`config`、`start` 等 Manager 命令均可直接使用。
+
+`deploy modpack <id>` 会先调用本地 Manager 校验配置和启动文件，再将 `src/` 与
+`config.yml` 增量同步并更新到远端；重复执行就是更新，不需要 `--force`。远端已有的
+`data/` 和 `backups/` 始终保留；新配置无法应用时会恢复更新前的 `src/` 与配置。
 
 ## 账号
 需持有 Linux 服务器与非 root 的免密 sudo 账号；配置中的 `manager.user` 和

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -16,7 +15,7 @@ from .deploy import RuntimeDeployment
 from .power import Power, PowerError, PowerTarget, create_power
 
 
-class ManagerError(RuntimeError):
+class ManagerError(remote.CommandError):
     """Manager 未遵循约定的公共命令协议。"""
 
 
@@ -33,7 +32,11 @@ class Manager:
         self.endpoint = self.config.endpoint
         self.deployment = RuntimeDeployment(
             ROOT / "manager", self.endpoint, "manager.sh",
-            preserve=("modpacks", ".venv"), transport=self.transport,
+            preserve=(
+                "modpacks", ".venv", "tmp", "manager.log", "schedule.log",
+                ".schedule-state.json",
+            ),
+            transport=self.transport,
         )
 
     @property
@@ -82,8 +85,14 @@ class Manager:
             f"cd {remote.shell_join([self.endpoint.directory])} && "
             f"exec ./manager.sh {remote.shell_join(arguments)}"
         )
-        return self.transport.ssh(
-            self.destination, ["bash", "-lc", command], tty=tty, capture=capture,
+        remote_command = ["bash", "-lc", command]
+        if capture:
+            return self.transport.ssh(
+                self.destination, remote_command, tty=tty, capture=True,
+            )
+        return self.transport.ssh_tail(
+            self.destination, remote_command,
+            label=f"[Manager] {' '.join(arguments[:2])}", tty=tty,
         )
 
     def local(self, arguments: list[str], *, capture: bool = False):
@@ -91,28 +100,30 @@ class Manager:
             [str(ROOT / "manager/manager.sh"), *arguments], capture=capture,
         )
 
-    def export(self, pack_id: str) -> Path:
-        result = self.local(["export", pack_id], capture=True)
-        output = result.stdout.decode("utf-8", "replace")
-        match = re.search(r"^archive:\s*(\S+)\s*$", output, re.MULTILINE)
-        if not match:
-            raise ManagerError("Manager 未返回整合包归档")
-        return Path(match.group(1))
-
-    def deploy_modpack(self, pack_id: str, *, force: bool = False) -> None:
-        archive = self.export(pack_id)
-        remote_archive = self.endpoint.directory + "/.mcsp-pack-upload.tar.gz"
-        try:
-            self.transport.scp(archive, f"{self.destination}:{remote_archive}")
-            arguments = ["import", pack_id, remote_archive]
-            if force:
-                arguments.append("--force")
-            self.command(arguments)
-        finally:
-            shutil.rmtree(archive.parent, ignore_errors=True)
-            self.transport.ssh(
-                self.destination, ["rm", "-f", remote_archive], check=False,
-            )
+    def deploy_modpack(self, pack_id: str) -> None:
+        print(f"[整合包 1/3] 验证本地整合包：{pack_id}", flush=True)
+        if not re.fullmatch(r"[A-Za-z0-9-]+", pack_id):
+            raise ManagerError("整合包 ID 仅允许大小写字母、数字和减号")
+        local = ROOT / "manager/modpacks" / pack_id
+        if not (local / "src").is_dir() or not (local / "config.yml").is_file():
+            raise ManagerError(f"本地整合包不存在或不完整：{pack_id}")
+        self.local(["config", pack_id], capture=True)
+        staging = self.endpoint.directory + f"/tmp/transfers/{pack_id}"
+        print(
+            f"[整合包 2/3] 增量同步到 {self.destination}:{staging}",
+            flush=True,
+        )
+        uploaded, deleted = self.transport.sync_tree(
+            local, self.destination, staging,
+            exclude=("data", "data/*", "backups", "backups/*"),
+        )
+        print(
+            f"[整合包 2/3] 增量同步完成：上传 {uploaded}，删除 {deleted}",
+            flush=True,
+        )
+        arguments = ["import-dir", pack_id, staging]
+        print("[整合包 3/3] 由远端 Manager 验证并导入", flush=True)
+        self.command(arguments)
 
     def run(
         self, action: str, pack_id: Optional[str] = None, *,
@@ -122,4 +133,11 @@ class Manager:
         if pack_id is not None:
             arguments.append(pack_id)
         arguments.extend(extra)
+        if action == "list":
+            result = self.command(arguments, capture=True)
+            raw = result.stdout or b""
+            output = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+            if output:
+                print(output, end="" if output.endswith("\n") else "\n")
+            return
         self.command(arguments, tty=tty)

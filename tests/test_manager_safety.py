@@ -52,8 +52,9 @@ class ManagerSafetyTests(unittest.TestCase):
         directory = self.manager.create(pack_id)
         config_file = directory / "config.yml"
         document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-        document.update({"port": port, "mem-limit": memory})
+        document.update({"port": port, "mem-limit": memory, "eula": True})
         config_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        (directory / "src/server.jar").write_bytes(b"test server")
 
     def test_running_limit_never_stops_another_pack_implicitly(self) -> None:
         self.make_pack("first")
@@ -100,25 +101,112 @@ class ManagerSafetyTests(unittest.TestCase):
         self.assertFalse(failed)
         self.assertEqual(self.docker.commands, [("running", "say 服务器将在 15 分钟后关闭")])
 
-    def test_start_can_accept_eula_after_source_was_replaced(self) -> None:
+    def test_list_packs_excludes_template_and_reports_running_state(self) -> None:
+        self.make_pack("alpha")
+        self.make_pack("beta", port=25566)
+        self.docker.active.add("beta")
+
+        listed = self.manager.list_packs()
+
+        self.assertEqual(
+            [(spec.pack_id, running) for spec, running in listed],
+            [("alpha", False), ("beta", True)],
+        )
+
+    def test_start_writes_eula_after_source_was_replaced(self) -> None:
         self.make_pack("server")
         source_eula = self.packs / "server/src/eula.txt"
         source_eula.write_text("eula=false\n", encoding="utf-8")
 
-        self.manager.start("server", accept_eula=True)
+        self.manager.start("server")
 
         self.assertEqual(source_eula.read_text(encoding="utf-8"), "eula=true\n")
         self.assertEqual(self.docker.active, {"server"})
 
     def test_start_updates_persisted_eula_when_present(self) -> None:
         self.make_pack("server")
+        config_file = self.packs / "server/config.yml"
+        document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        document["read-only"]["persistent"].append("eula.txt")
+        config_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
         persisted = self.packs / "server/data/eula.txt"
         persisted.parent.mkdir(exist_ok=True)
         persisted.write_text("eula=false\n", encoding="utf-8")
 
-        self.manager.start("server", accept_eula=True)
+        self.manager.start("server")
 
         self.assertEqual(persisted.read_text(encoding="utf-8"), "eula=true\n")
+
+    def test_start_sets_configured_server_port_without_template_properties(self) -> None:
+        self.make_pack("server", port=25566)
+
+        self.manager.start("server")
+
+        properties = self.packs / "server/src/server.properties"
+        self.assertEqual(properties.read_text(encoding="utf-8"), "server-port=25566\n")
+
+    def test_start_updates_only_server_port_in_existing_properties(self) -> None:
+        self.make_pack("server", port=25566)
+        properties = self.packs / "server/src/server.properties"
+        properties.write_text(
+            "motd=Hello\nserver-port=25565\nonline-mode=true\n",
+            encoding="utf-8",
+        )
+
+        self.manager.start("server")
+
+        self.assertEqual(
+            properties.read_text(encoding="utf-8"),
+            "motd=Hello\nserver-port=25566\nonline-mode=true\n",
+        )
+
+    def test_property_uses_persistent_server_properties_when_configured(self) -> None:
+        self.make_pack("server")
+        config_file = self.packs / "server/config.yml"
+        document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        document["read-only"]["persistent"].append("server.properties")
+        config_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        persisted = self.packs / "server/data/server.properties"
+        persisted.parent.mkdir(exist_ok=True)
+        persisted.write_text("online-mode=true\nmotd=Hello\n", encoding="utf-8")
+
+        target, running = self.manager.set_property(
+            "server", "online-mode", "false",
+        )
+        value, read_target = self.manager.get_property("server", "online-mode")
+
+        self.assertEqual(target, persisted)
+        self.assertEqual(read_target, persisted)
+        self.assertEqual(value, "false")
+        self.assertFalse(running)
+        self.assertEqual(
+            persisted.read_text(encoding="utf-8"),
+            "online-mode=false\nmotd=Hello\n",
+        )
+
+    def test_property_rejects_newline_and_unsafe_key(self) -> None:
+        self.make_pack("server")
+        with self.assertRaisesRegex(ModpackError, "属性名"):
+            self.manager.set_property("server", "../online-mode", "false")
+        with self.assertRaisesRegex(ModpackError, "换行"):
+            self.manager.set_property("server", "motd", "hello\noperator=true")
+
+    def test_start_requires_eula_in_pack_config(self) -> None:
+        self.make_pack("server")
+        config_file = self.packs / "server/config.yml"
+        document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        document["eula"] = False
+        config_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+        with self.assertRaisesRegex(ModpackError, "eula: true"):
+            self.manager.start("server")
+
+    def test_start_reports_missing_server_jar_before_docker(self) -> None:
+        self.make_pack("server")
+        (self.packs / "server/src/server.jar").unlink()
+
+        with self.assertRaisesRegex(ModpackError, "当前找到 0 个"):
+            self.manager.start("server")
 
 
 if __name__ == "__main__":

@@ -86,4 +86,10 @@ PYTHON="$ROOT_DIR/.venv/bin/python"
 if [[ ! -x "$PYTHON" ]]; then
   PYTHON=python3
 fi
+case "${1:-}" in
+  create|start|stop|backup|restore|remove|stop-all|import|import-dir|console|property)
+    exec > >(tee -a "$ROOT_DIR/manager.log") 2>&1
+    printf '\n[%s] manager %s\n' "$(date --iso-8601=seconds)" "$*"
+    ;;
+esac
 exec "$PYTHON" -m lib.cli "$@"

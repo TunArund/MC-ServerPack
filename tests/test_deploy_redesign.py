@@ -1,25 +1,26 @@
 from __future__ import annotations
 
 import subprocess
-import tarfile
 import tempfile
 import unittest
 import io
+import json
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from lib.config import Endpoint
 from lib.deploy import (
-    DockerProvisioner, PythonProvisioner, RuntimeDeployment, archive_tree,
+    DockerProvisioner, PythonProvisioner, RuntimeDeployment,
 )
-from lib.remote import CommandError, run_logged
+from lib.remote import CommandError, _REMOTE_MANIFEST, _ignored, run_logged
 
 
 class FakeTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str], dict]] = []
         self.uploads: list[tuple[str, bytes]] = []
+        self.syncs: list[tuple[Path, str, str, tuple[str, ...]]] = []
 
     def ssh(self, destination: str, arguments: list[str], **options):
         self.calls.append((destination, arguments, options))
@@ -29,8 +30,23 @@ class FakeTransport:
         self.calls.append((destination, arguments, options))
         return subprocess.CompletedProcess(arguments, 0, stdout=b"")
 
+    def ssh_tail(self, destination: str, arguments: list[str], **options):
+        self.calls.append((destination, arguments, options))
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"")
+
     def scp(self, source: Path, destination: str) -> None:
         self.uploads.append((destination, source.read_bytes()))
+
+    def upload_file(self, source: Path, destination: str, remote_path: str, *, mode=None):
+        self.uploads.append((f"{destination}:{remote_path}", source.read_bytes()))
+        return True
+
+    def sync_tree(
+        self, source: Path, destination: str, remote_root: str, *,
+        preserve=(), exclude=(),
+    ):
+        self.syncs.append((source, destination, remote_root, tuple(preserve)))
+        return 1, 0
 
 class RuntimeDeploymentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -71,6 +87,8 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertEqual(destination, "mcsp@runtime.example")
         self.assertEqual(arguments, ["bash", "-s", "--"])
         self.assertIn("download.docker.com", options["input_text"])
+        self.assertIn("docker.m.daocloud.io", options["input_text"])
+        self.assertIn("os.replace(temporary, path)", options["input_text"])
         self.assertIn("DEBIAN_FRONTEND=noninteractive", options["input_text"])
         self.assertIn("--retry-all-errors", options["input_text"])
         self.assertNotIn("/missing/runtime", options["input_text"])
@@ -99,7 +117,7 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertNotIn("manager.sh", scripts)
 
     def test_logged_command_collapses_success_and_keeps_full_log(self) -> None:
-        log = self.root / "deploy.log"
+        log = self.root / "terminal.log"
         output = io.StringIO()
         with patch("lib.remote.visible_tail_lines", return_value=10), redirect_stdout(output):
             run_logged(
@@ -114,7 +132,7 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertIn("line-15\n", detail)
 
     def test_logged_command_prints_only_error_tail_on_failure(self) -> None:
-        log = self.root / "deploy.log"
+        log = self.root / "terminal.log"
         output = io.StringIO()
         error = io.StringIO()
         with (
@@ -140,7 +158,7 @@ class RuntimeDeploymentTests(unittest.TestCase):
     def test_install_uploads_release_and_invokes_public_install(self) -> None:
         self.deployment.install("value: 1\n", "TOKEN=secret\n")
         destinations = [item[0] for item in self.transport.uploads]
-        self.assertTrue(any(item.endswith("/.mcsp-release.tar.gz") for item in destinations))
+        self.assertEqual(len(self.transport.syncs), 1)
         self.assertTrue(any(item.endswith("/config.yml") for item in destinations))
         self.assertTrue(any(item.endswith("/.env") for item in destinations))
         self.assertIn("./runtime.sh install", self.scripts())
@@ -148,8 +166,8 @@ class RuntimeDeploymentTests(unittest.TestCase):
 
     def test_publish_bootstraps_code_without_remote_requirement_check(self) -> None:
         self.deployment.publish()
-        destinations = [item[0] for item in self.transport.uploads]
-        self.assertTrue(any(item.endswith("/.mcsp-release.tar.gz") for item in destinations))
+        self.assertEqual(len(self.transport.syncs), 1)
+        self.assertFalse(self.transport.uploads)
         self.assertNotIn("bash -s -- check", self.scripts())
         self.assertNotIn("./runtime.sh install", self.scripts())
 
@@ -159,17 +177,29 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertTrue(self.transport.uploads[0][0].endswith("/config.yml"))
         self.assertIn("./runtime.sh apply-config", self.scripts())
 
-    def test_archive_honours_runtime_ignore_file(self) -> None:
-        (self.source / ".mcspignore").write_text("private\n", encoding="utf-8")
-        (self.source / "public").write_text("yes", encoding="utf-8")
-        (self.source / "private").write_text("no", encoding="utf-8")
-        archive = archive_tree(self.source)
-        self.addCleanup(lambda: __import__("shutil").rmtree(archive.parent, ignore_errors=True))
-        import tarfile
-        with tarfile.open(archive, "r:gz") as handle:
-            names = handle.getnames()
-        self.assertIn("public", names)
-        self.assertNotIn("private", names)
+    def test_sync_ignore_supports_template_negation(self) -> None:
+        patterns = ("modpacks/*", "!modpacks/template", "!modpacks/template/*")
+        self.assertTrue(_ignored("modpacks/demo/server.jar", patterns))
+        self.assertFalse(_ignored("modpacks/template/config.yml", patterns))
+
+    def test_remote_manifest_only_enters_explicit_preserved_subtrees(self) -> None:
+        remote_root = self.root / "remote-manifest"
+        (remote_root / "modpacks/template").mkdir(parents=True)
+        (remote_root / "modpacks/live").mkdir(parents=True)
+        (remote_root / "modpacks/template/current.txt").write_text("template")
+        (remote_root / "modpacks/live/world.dat").write_text("world")
+        (remote_root / "obsolete.py").write_text("old")
+        result = subprocess.run(
+            [
+                "python3", "-c", _REMOTE_MANIFEST, str(remote_root),
+                json.dumps(["modpacks"]), json.dumps(["modpacks/template"]),
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        manifest = json.loads(result.stdout)
+        self.assertIn("obsolete.py", manifest["files"])
+        self.assertIn("modpacks/template/current.txt", manifest["files"])
+        self.assertNotIn("modpacks/live/world.dat", manifest["files"])
 
     def test_preserved_paths_are_explicit_constructor_data(self) -> None:
         deployment = RuntimeDeployment(
@@ -178,8 +208,9 @@ class RuntimeDeploymentTests(unittest.TestCase):
             "runtime.sh", preserve=("data",), transport=self.transport,
         )
         deployment.install("value: 1\n", "")
-        self.assertIn(" config.yml .env data ", self.scripts())
-        self.assertNotIn(".mcsp-preserve", self.scripts())
+        self.assertEqual(
+            self.transport.syncs[-1][3], ("config.yml", ".env", "data"),
+        )
 
     def test_preserved_paths_must_be_root_names(self) -> None:
         for name in ("", ".", "..", "data/world", "data\\world"):
@@ -191,43 +222,6 @@ class RuntimeDeploymentTests(unittest.TestCase):
                     Endpoint("runtime.example", "mcsp", "/srv/mcsp/runtime"),
                     "runtime.sh", preserve=(name,), transport=self.transport,
                 )
-
-    def test_extract_replaces_code_and_merges_preserved_directory(self) -> None:
-        remote_root = self.root / "remote"
-        (remote_root / "modpacks/live/data").mkdir(parents=True)
-        (remote_root / "modpacks/live/data/world.dat").write_text("save")
-        (remote_root / "config.yml").write_text("keep")
-        (remote_root / "obsolete.py").write_text("remove")
-
-        release = self.root / "release"
-        (release / "modpacks/template").mkdir(parents=True)
-        (release / "modpacks/template/config.yml").write_text("template")
-        (release / "runtime.sh").write_text("new")
-        archive = remote_root / ".mcsp-release.tar.gz"
-        with tarfile.open(archive, "w:gz") as output:
-            for path in sorted(release.rglob("*")):
-                output.add(path, arcname=path.relative_to(release), recursive=False)
-
-        deployment = RuntimeDeployment(
-            self.source,
-            Endpoint("runtime.example", "mcsp", str(remote_root)),
-            "runtime.sh", preserve=("modpacks",), transport=self.transport,
-        )
-        deployment._extract(str(archive))
-        script = self.transport.calls[-1][1][-1]
-        subprocess.run(["bash", "-lc", script], check=True)
-
-        self.assertEqual((remote_root / "config.yml").read_text(), "keep")
-        self.assertEqual(
-            (remote_root / "modpacks/live/data/world.dat").read_text(), "save",
-        )
-        self.assertEqual(
-            (remote_root / "modpacks/template/config.yml").read_text(), "template",
-        )
-        self.assertEqual((remote_root / "runtime.sh").read_text(), "new")
-        self.assertFalse((remote_root / "obsolete.py").exists())
-        self.assertFalse(archive.exists())
-
 
 if __name__ == "__main__":
     unittest.main()

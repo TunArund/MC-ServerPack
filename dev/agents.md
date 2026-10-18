@@ -6,6 +6,22 @@
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+## 命令回显与日志
+
+- 长任务在交互终端使用固定刷新区域：首行始终为 `[模块 m/n] 当前动作`，下方只显示
+  实时尾部；尾部按终端高度取约三分之一，限制为 10 至 24 行。禁止把完整子进程输出
+  持续追加到终端并淹没当前步骤。截断行时必须按终端显示单元计算中文等宽字符，
+  不能直接按 Python 字符数截断，否则隐式换行会破坏 ANSI 原地刷新。
+- 成功后收起刷新区域并输出一行结果；失败时保留末尾诊断，并明确指出完整日志位置。
+  已输出的远端错误不得再包装成无信息的“SSH 失败”。
+- Terminal 每次调用都将命令、时间与退出结果追加到项目目录的
+  `terminal.log`；由 Terminal 执行的本地编排、SSH/SFTP、系统准备与部署过程也将完整
+  输出追加到该文件。
+- Manager 业务命令在远端部署目录写入 `manager.log`；聚合调度另写 `schedule.log`，
+  Minecraft 自身输出仍由整合包/Docker 日志管理。
+- Monitor 业务命令在远端部署目录写入 `monitor.log`，容器服务输出由 Docker 日志管理。
+  Terminal 只展示实时尾部，不替代远端业务日志。
 # 目录结构
 /lib/{cli.py,config.py,deploy.py,manager.py,monitor.py,power.py,remote.py,providers/}
 /lib/providers/{tencent.py,example.py}
@@ -95,32 +111,6 @@ release.py 构建发行版（未实现）
 将`/**/lib` python运行环境打包，生成`*.sh`的二进制
 然后将manager monitor env config readme打包压缩，发布Linux和Windows版
 二期
-- terminal mcsp回显规范化
-```
-./mcsp.sh deploy --test monitor
-错误：manager.user 必须是非空字符串
-```
-未显示执行步骤与报错来源
-```
-加载config.yml
-加载config.yml错误：xxx
-```
-
-```
-steam@ubuntu:~/Minecraft/MC-ServerPack$ ./mcsp.sh deploy monitor --test
-部署检查通过：monitor
-```
-未显示执行步骤
-```
-ssh连接 ssh username@hostaddr
-检查xxx
-检查yyy
-```
-```
-steam@ubuntu:~/Minecraft/MC-ServerPack$ ./mcsp.sh start manager
-Manager 云主机：RUNNING，公网 IP=119.45.115.65
-```
-未显示执行步骤，等待40s后才打印一行
 - 扁平化config.yml
 去掉.monitor.manager的power-api
 只填.monitor.manager

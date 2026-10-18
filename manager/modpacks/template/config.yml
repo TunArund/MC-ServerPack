@@ -1,27 +1,16 @@
 name: 整合包名称
-version: 版本
 java: 17
 mem-limit: 8g
 port: 25565
+eula: false
+version: 自定义版本名称
 backup:
   enabled: false
   interval: 6h
   retain: 7
   # 在线备份执行 save-all flush 后等待的秒数。
   quiesce-seconds: 5
-# 默认整个 src/ 可写；enabled=true 时只有 persistent 列表可写。
+# 默认关闭，开启后限制persistent列出路径可在运行中变动，列表外只读
 read-only:
   enabled: false
-  persistent:
-  - config/
-  - world/
-  - logs/
-  - crash-reports/
-  - usercache.json
-  - usernamecache.json
-  - banned-ips.json
-  - banned-players.json
-  - ops.json
-  - whitelist.json
-  - eula.txt
-  - server.properties
+  persistent: []

@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from lib.cli import CliServices, dispatch, make_parser
+from lib.cli import CliServices, dispatch, main, make_parser
 from lib.power import InstanceStatus
 
 
@@ -28,8 +28,8 @@ class FakeServices:
     def configure(self, target: str) -> None:
         self.calls.append(("configure", target))
 
-    def deploy_modpack(self, pack_id: str, *, force: bool = False) -> None:
-        self.calls.append(("deploy-modpack", pack_id, force))
+    def deploy_modpack(self, pack_id: str) -> None:
+        self.calls.append(("deploy-modpack", pack_id))
 
     def install_docker(self, target: str) -> None:
         self.calls.append(("install-docker", target))
@@ -78,6 +78,15 @@ class FakeServices:
 
 
 class TerminalCliRedesignTests(unittest.TestCase):
+    def test_main_audits_every_command_and_exit_code(self) -> None:
+        with patch("lib.cli.audit") as audit, patch(
+            "lib.cli.dispatch", return_value=0,
+        ):
+            self.assertEqual(main(["config", "check"]), 0)
+        self.assertEqual(audit.call_args_list, [
+            call("$ mcsp config check"), call("exit=0"),
+        ])
+
     def test_config_init_creates_both_local_files(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -238,8 +247,12 @@ class TerminalCliRedesignTests(unittest.TestCase):
 
     def test_modpack_deploy_is_a_single_adapter_call(self) -> None:
         services = FakeServices()
-        dispatch(["deploy", "modpack", "Pack-01", "--force"], services)
-        self.assertEqual(services.calls, [("deploy-modpack", "Pack-01", True)])
+        dispatch(["deploy", "modpack", "Pack-01"], services)
+        self.assertEqual(services.calls, [("deploy-modpack", "Pack-01")])
+
+    def test_modpack_deploy_no_longer_has_force_flag(self) -> None:
+        with self.assertRaises(SystemExit):
+            dispatch(["deploy", "modpack", "Pack-01", "--force"], FakeServices())
 
     def test_top_level_manager_target_controls_cloud_power(self) -> None:
         services = FakeServices()
@@ -278,11 +291,28 @@ class TerminalCliRedesignTests(unittest.TestCase):
             "local-manager", ["remove", "Server-01", "--force"],
         )])
 
-    def test_manager_start_can_accept_eula(self) -> None:
+    def test_manager_start_is_forwarded_without_terminal_business_flags(self) -> None:
         services = FakeServices()
-        dispatch(["manager", "start", "Server-01", "--accept-eula"], services)
+        dispatch(["manager", "start", "Server-01"], services)
         self.assertEqual(services.calls, [(
-            "manager", "start", "Server-01", ("--accept-eula",), False,
+            "manager", "start", "Server-01", (), False,
+        )])
+
+    def test_manager_property_is_forwarded_to_remote_manager(self) -> None:
+        services = FakeServices()
+        dispatch([
+            "manager", "property", "Server-01", "online-mode", "false",
+        ], services)
+        self.assertEqual(services.calls, [(
+            "manager", "property", "Server-01",
+            ("online-mode", "false"), False,
+        )])
+
+    def test_manager_list_is_forwarded_without_pack_id(self) -> None:
+        services = FakeServices()
+        dispatch(["manager", "list"], services)
+        self.assertEqual(services.calls, [(
+            "manager", "list", None, (), False,
         )])
 
     def test_local_namespace_is_explicit(self) -> None:

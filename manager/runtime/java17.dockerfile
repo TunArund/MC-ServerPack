@@ -1,7 +1,7 @@
 FROM eclipse-temurin:17-jre-jammy
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates coreutils findutils \
+    && apt-get install -y --no-install-recommends bash ca-certificates coreutils findutils unzip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY runtime/entrypoint.sh /usr/local/bin/mc-entrypoint

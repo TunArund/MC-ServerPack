@@ -8,6 +8,13 @@ else
 fi
 cd "$ROOT_DIR"
 
+case "${1:-}" in
+  install|apply-config|start|stop|restart|add-target)
+    exec > >(tee -a "$ROOT_DIR/monitor.log") 2>&1
+    printf '\n[%s] monitor %s\n' "$(date --iso-8601=seconds)" "$*"
+    ;;
+esac
+
 check_requirements() {
   if ! command -v docker >/dev/null 2>&1 ||
      ! docker compose version >/dev/null 2>&1 ||

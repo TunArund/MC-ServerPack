@@ -6,7 +6,7 @@ import re
 import shutil
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .backup import create_backup, resolve_backup, restore_backup
 from .config import (
@@ -19,7 +19,7 @@ from .config import (
     render_compose,
     validate_pack_id,
 )
-from .docker import DockerClient
+from .docker import DockerClient, DockerError
 
 
 class ModpackError(RuntimeError):
@@ -50,6 +50,16 @@ class ModpackManager:
         for config_file in sorted(self.packs_dir.glob("*/config.yml")):
             if config_file.parent.name != "template":
                 result.append(self.spec(config_file.parent.name))
+        return result
+
+    def list_packs(self) -> list[tuple[PackSpec, bool | None]]:
+        result: list[tuple[PackSpec, bool | None]] = []
+        for spec in self.specs():
+            try:
+                running: bool | None = self.docker.running(spec)
+            except DockerError:
+                running = None
+            result.append((spec, running))
         return result
 
     def create(
@@ -98,7 +108,9 @@ class ModpackManager:
         return target
 
     def configure(self, pack_id: str) -> Path:
-        return render_compose(self.spec(pack_id))
+        spec = self.spec(pack_id)
+        self._validate_launch(spec)
+        return render_compose(spec)
 
     def _running(self) -> list[PackSpec]:
         return [spec for spec in self.specs() if self.docker.running(spec)]
@@ -125,21 +137,135 @@ class ModpackManager:
         if total > self.limits.memory_bytes:
             raise ModpackError(f"启动后内存上限将超过 {self.limits.memory}")
 
-    def start(self, pack_id: str, *, accept_eula: bool = False) -> None:
-        wanted = self.spec(pack_id)
-        if self.docker.running(wanted):
-            return
-        if accept_eula:
-            candidates = (
-                wanted.directory / "data/eula.txt",
-                wanted.directory / "src/eula.txt",
+    @staticmethod
+    def _source_file(spec: PackSpec, value: str, field: str) -> Path:
+        relative = PurePosixPath(value)
+        if relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+            raise ModpackError(f"{field} 必须引用 src/ 内的安全相对路径：{value}")
+        target = spec.directory / "src" / relative.as_posix()
+        if not target.is_file() or target.is_symlink():
+            raise ModpackError(f"缺少启动文件：src/{relative.as_posix()}")
+        return target
+
+    def _validate_launch(self, spec: PackSpec) -> None:
+        command = spec.command
+        if command == ("mc-auto",):
+            arguments = [
+                path for path in (spec.directory / "src").rglob("unix_args.txt")
+                if path.is_file() and not path.is_symlink()
+            ]
+            jars = [
+                path for path in (spec.directory / "src").glob("*.jar")
+                if path.is_file() and not path.is_symlink()
+            ]
+            if len(arguments) > 1:
+                raise ModpackError("检测到多个 unix_args.txt，无法自动选择启动入口")
+            if not arguments and len(jars) != 1:
+                raise ModpackError(
+                    f"自动启动要求 src/ 中恰有一个顶层 JAR；当前找到 {len(jars)} 个"
+                )
+        elif command[0] == "java" and "-jar" in command:
+            index = command.index("-jar") + 1
+            if index >= len(command):
+                raise ModpackError("command 中 -jar 后必须指定服务端文件")
+            self._source_file(spec, command[index], "command")
+        elif command[0] in ("bash", "sh") and len(command) > 1:
+            self._source_file(spec, command[1].removeprefix("./"), "command")
+
+    @staticmethod
+    def _runtime_file(spec: PackSpec, name: str) -> Path:
+        persistent = any(item.path == name for item in spec.persistent)
+        return spec.directory / ("data" if persistent else "src") / name
+
+    @classmethod
+    def _accept_eula(cls, spec: PackSpec) -> None:
+        if not spec.eula:
+            raise ModpackError(
+                "未接受 Minecraft EULA；请在整合包 config.yml 中设置 eula: true"
             )
-            target = next((path for path in candidates if path.is_file()), candidates[1])
-            if target.is_symlink():
-                raise ModpackError(f"EULA 文件不能是符号链接：{target}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("eula=true\n", encoding="utf-8")
+        target = cls._runtime_file(spec, "eula.txt")
+        if target.is_symlink():
+            raise ModpackError(f"EULA 文件不能是符号链接：{target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("eula=true\n", encoding="utf-8")
+
+    @classmethod
+    def _set_server_port(cls, spec: PackSpec) -> None:
+        cls._write_server_property(spec, "server-port", str(spec.port))
+
+    @classmethod
+    def _write_server_property(cls, spec: PackSpec, key: str, value: str) -> Path:
+        target = cls._runtime_file(spec, "server.properties")
+        if target.is_symlink():
+            raise ModpackError(f"服务端配置不能是符号链接：{target}")
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            lines = []
+        updated: list[str] = []
+        replaced = False
+        for line in lines:
+            if re.match(rf"^\s*{re.escape(key)}\s*[=:]", line):
+                if not replaced:
+                    updated.append(f"{key}={value}")
+                    replaced = True
+                continue
+            updated.append(line)
+        if not replaced:
+            updated.append(f"{key}={value}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp-{uuid.uuid4().hex}")
+        try:
+            temporary.write_text("\n".join(updated) + "\n", encoding="utf-8")
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
+    @staticmethod
+    def _validate_property(key: str, value: str | None = None) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", key):
+            raise ModpackError("服务端属性名仅允许字母、数字、点、下划线和减号")
+        if value is not None and ("\n" in value or "\r" in value):
+            raise ModpackError("服务端属性值不能包含换行")
+
+    def get_property(self, pack_id: str, key: str) -> tuple[str, Path]:
+        self._validate_property(key)
+        spec = self.spec(pack_id)
+        target = self._runtime_file(spec, "server.properties")
+        if target.is_symlink():
+            raise ModpackError(f"服务端配置不能是符号链接：{target}")
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError as exc:
+            raise ModpackError(f"服务端配置尚未生成：{target}") from exc
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*[=:](.*)$")
+        for line in lines:
+            match = pattern.match(line)
+            if match:
+                return match.group(1).strip(), target
+        raise ModpackError(f"服务端属性不存在：{key}")
+
+    def set_property(self, pack_id: str, key: str, value: str) -> tuple[Path, bool]:
+        self._validate_property(key, value)
+        spec = self.spec(pack_id)
+        target = self._write_server_property(spec, key, value)
+        return target, self.docker.running(spec)
+
+    def start(self, pack_id: str) -> None:
+        print(f"[启动 1/4] 读取并验证整合包配置：{pack_id}", flush=True)
+        wanted = self.spec(pack_id)
+        self._validate_launch(wanted)
+        self._set_server_port(wanted)
+        print("[启动 2/4] 检查运行状态、端口与内存限额", flush=True)
+        if self.docker.running(wanted):
+            print("[启动 4/4] 容器进程已运行，等待健康检查", flush=True)
+            self.docker.start(wanted, timeout=self.limits.start_timeout)
+            return
+        print("[启动 3/4] 准备 EULA 与运行目录", flush=True)
+        self._accept_eula(wanted)
         self._check_capacity(wanted, self._running())
+        print("[启动 4/4] 准备 Java 镜像并启动容器", flush=True)
         self.docker.start(wanted, timeout=self.limits.start_timeout)
 
     def stop(self, pack_id: str) -> None:

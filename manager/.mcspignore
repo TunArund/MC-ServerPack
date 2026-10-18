@@ -8,5 +8,5 @@ modpacks/template/data
 modpacks/template/backups
 .schedule-state.json
 schedule.log
-deploy.log
+manager.log
 tmp

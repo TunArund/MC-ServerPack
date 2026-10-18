@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from manager.lib.modpacks import ModpackError, ModpackManager
-from manager.lib.transfer import export_pack, import_pack
+from manager.lib.transfer import export_pack, import_directory, import_pack
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,40 @@ class ManagerTransferTests(unittest.TestCase):
                 ModpackManager(self.root), "target",
                 export_pack("source", self.packs), force=True,
             )
+
+    def test_directory_import_is_limited_to_managed_staging_and_preserves_data(self) -> None:
+        manager = ModpackManager(self.root)
+        staging = self.root / "tmp/transfers/target"
+        shutil.copytree(self.packs / "source", staging)
+        imported = import_directory(manager, "target", staging)
+        (imported / "data/world.dat").write_text("keep", encoding="utf-8")
+        (staging / "src/new.txt").write_text("new", encoding="utf-8")
+
+        import_directory(manager, "target", staging)
+
+        self.assertEqual((imported / "data/world.dat").read_text(), "keep")
+        self.assertEqual((imported / "src/new.txt").read_text(), "new")
+        with self.assertRaisesRegex(ModpackError, "受管范围"):
+            import_directory(manager, "other", self.packs / "source")
+
+    def test_directory_update_rolls_back_when_new_config_cannot_render(self) -> None:
+        manager = ModpackManager(self.root)
+        staging = self.root / "tmp/transfers/target"
+        shutil.copytree(self.packs / "source", staging)
+        imported = import_directory(manager, "target", staging)
+        old_config = (imported / "config.yml").read_text(encoding="utf-8")
+        (staging / "src/server.jar").write_bytes(b"new jar")
+        document = yaml.safe_load((staging / "config.yml").read_text(encoding="utf-8"))
+        document["read-only"] = {"enabled": True, "persistent": ["missing.txt"]}
+        (staging / "config.yml").write_text(
+            yaml.safe_dump(document, sort_keys=False), encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(Exception, "持久化文件不存在"):
+            import_directory(manager, "target", staging)
+
+        self.assertEqual((imported / "src/server.jar").read_bytes(), b"jar")
+        self.assertEqual((imported / "config.yml").read_text(encoding="utf-8"), old_config)
 
 
 if __name__ == "__main__":

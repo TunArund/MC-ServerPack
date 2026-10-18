@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from .config import (
     CONFIG_FILE, ROOT, ConfigError, deployment_connection,
@@ -19,10 +21,24 @@ from .manager import Manager, ManagerError
 from .monitor import Monitor
 from .power import InstanceStatus, PowerError
 from .provider import ProviderError, load_provider
-from .remote import CommandError, Transport
+from .remote import CommandError, Transport, shell_join
 
 
 SOURCE_MODE = not getattr(sys, "frozen", False)
+DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def progress(message: str) -> None:
+    print(f"[{datetime.now(DISPLAY_TIMEZONE):%H:%M:%S}] {message}", flush=True)
+
+
+def audit(message: str) -> None:
+    path = ROOT / "terminal.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as output:
+        output.write(
+            f"[{datetime.now(DISPLAY_TIMEZONE).isoformat(timespec='seconds')}] {message}\n"
+        )
 
 
 class CliServices:
@@ -33,18 +49,20 @@ class CliServices:
     ) -> None:
         self.config_path = config_path
         self.source_mode = source_mode
-        self.transport = Transport(ROOT / "deploy.log")
+        self.transport = Transport(ROOT / "terminal.log")
         self.accounts = AccountProvisioner(self.transport)
         self.manager: Optional[Manager] = None
         self._monitor_instance: Optional[Monitor] = None
 
     def manager_runtime(self) -> Manager:
         if self.manager is None:
+            progress(f"[配置] 加载 {self.config_path}")
             self.manager = Manager(self.config_path, transport=self.transport)
         return self.manager
 
     def monitor(self) -> Monitor:
         if self._monitor_instance is None:
+            progress(f"[配置] 加载 {self.config_path}")
             self._monitor_instance = Monitor(
                 self.config_path, transport=self.transport,
             )
@@ -65,10 +83,11 @@ class CliServices:
     def configure(self, target: str) -> None:
         (self.manager_runtime() if target == "manager" else self.monitor()).configure()
 
-    def deploy_modpack(self, pack_id: str, *, force: bool = False) -> None:
-        self.manager_runtime().deploy_modpack(pack_id, force=force)
+    def deploy_modpack(self, pack_id: str) -> None:
+        self.manager_runtime().deploy_modpack(pack_id)
 
     def install_docker(self, target: str) -> None:
+        progress(f"[配置] 读取 {target} 部署连接：{self.config_path}")
         host, user = deployment_connection(self.config_path, target)
         DockerProvisioner(host, user, transport=self.transport).install()
 
@@ -98,6 +117,7 @@ class CliServices:
     def account_context(
         self, target: str, key_path: Optional[Path] = None,
     ) -> tuple[str, Path]:
+        progress(f"[配置] 读取 {target} 部署主机：{self.config_path}")
         return (
             deployment_host(self.config_path, target),
             self.accounts.prepare_key(key_path),
@@ -114,6 +134,7 @@ class CliServices:
         self.accounts.create(host, username, administrator, key_path)
 
     def deployment_targets(self) -> tuple[str, ...]:
+        progress(f"[配置] 读取已启用部署目标：{self.config_path}")
         targets = ["manager"]
         if load_monitor(self.config_path).enabled:
             targets.append("monitor")
@@ -123,21 +144,37 @@ class CliServices:
         self, target: str, action: str, *, force: bool = False,
     ) -> Optional[InstanceStatus]:
         if target == "monitor":
-            self.monitor_command(action)
+            monitor = self.monitor()
+            progress("[容器 1/2] 连接 Monitor 服务器")
+            progress(f"[容器 2/2] 执行 Monitor {action}")
+            monitor.run(action)
             return None
+        total = 2 if action == "status" else (3 if action == "start" else 4)
         manager = self.manager_runtime()
+        progress(f"[电源 1/{total}] 加载 Manager 电源 Provider")
         power = manager.power()
-        if action == "status":
-            return power.status()
-        if action == "start":
-            return power.start()
+        progress(f"[电源 2/{total}] 查询 Manager 云主机状态")
         current = power.status()
+        address = f"，公网 IP={current.public_ip}" if current.public_ip else ""
+        if action == "status":
+            return current
+        progress(f"[电源 2/{total}] 当前状态：{current.state}{address}")
+        if action == "start":
+            if current.state == "RUNNING":
+                progress("[电源 3/3] 云主机已运行，无需重复开机")
+            else:
+                progress("[电源 3/3] 提交开机并等待 RUNNING")
+            return power.start(current)
         if current.state == "RUNNING":
+            progress("[电源 3/4] 停止全部运行中的整合包")
             try:
                 manager.run("stop-all")
             except CommandError:
                 if not force:
                     raise
+        else:
+            progress(f"[电源 3/4] 当前为 {current.state}，无需停服")
+        progress("[电源 4/4] 提交关机并等待 STOPPED")
         return power.stop(current)
 
 
@@ -191,7 +228,6 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
         )
     deploy_pack = deploy_commands.add_parser("modpack", help="上传整合包")
     deploy_pack.add_argument("pack_id")
-    deploy_pack.add_argument("--force", action="store_true", help="覆盖远端现有文件")
 
     for action in ("start", "stop", "status"):
         control = commands.add_parser(action, help=f"{action} Manager 云主机或 Monitor 容器")
@@ -201,6 +237,7 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
 
     manager = commands.add_parser("manager", help="调用远端 Manager")
     manager_commands = manager.add_subparsers(dest="action", required=True)
+    manager_commands.add_parser("list", help="列出远端整合包")
     manager_create = manager_commands.add_parser("create")
     manager_create.add_argument("pack_id")
     manager_create.add_argument(
@@ -212,10 +249,6 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
         item.add_argument("pack_id")
     manager_start = manager_commands.add_parser("start")
     manager_start.add_argument("pack_id")
-    manager_start.add_argument(
-        "--accept-eula", action="store_true",
-        help="确认接受 Minecraft EULA，启动前写入 eula=true",
-    )
     logs = manager_commands.add_parser("logs")
     logs.add_argument("pack_id")
     logs.add_argument("--lines", type=int, default=100)
@@ -223,6 +256,10 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     console = manager_commands.add_parser("console")
     console.add_argument("pack_id")
     console.add_argument("command", nargs=argparse.REMAINDER)
+    prop = manager_commands.add_parser("property", help="读写服务端属性")
+    prop.add_argument("pack_id")
+    prop.add_argument("key")
+    prop.add_argument("value", nargs="?")
     restore = manager_commands.add_parser("restore")
     restore.add_argument("pack_id")
     restore.add_argument("backup", nargs="?")
@@ -249,7 +286,9 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
 
 
 def _check_config(path: Path) -> None:
+    print(f"[配置 1/2] 读取并校验 {path}", flush=True)
     loaded = load(path)
+    print("[配置 2/2] 检查电源 Provider", flush=True)
     configured = (loaded.manager.power_api, loaded.monitor.power_api)
     for settings in configured:
         if settings:
@@ -273,11 +312,13 @@ def _dispatch_manager(args, services: CliServices) -> int:
         if not args.command:
             raise ManagerError("控制台命令不能为空")
         extra.extend(args.command)
+    elif args.action == "property":
+        extra.append(args.key)
+        if args.value is not None:
+            extra.append(args.value)
     elif args.action == "create":
         if args.force:
             extra.append("--force")
-    elif args.action == "start" and args.accept_eula:
-        extra.append("--accept-eula")
     elif args.action == "restore" and args.backup:
         extra.append(args.backup)
     elif args.action == "remove" and args.force:
@@ -373,7 +414,7 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
                 services.install(args.deploy_kind)
                 print(f"部署完成：{args.deploy_kind}")
             return 0
-        services.deploy_modpack(args.pack_id, force=args.force)
+        services.deploy_modpack(args.pack_id)
         print(f"整合包已部署：{args.pack_id}")
         return 0
 
@@ -392,7 +433,7 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
             print(f"Monitor 容器操作已提交：{args.module}")
         else:
             suffix = f"，公网 IP={result.public_ip}" if result.public_ip else ""
-            print(f"Manager 云主机：{result.state}{suffix}")
+            progress(f"Manager 云主机：{result.state}{suffix}")
         return 0
 
     if args.module == "manager":
@@ -411,14 +452,29 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    audit(f"$ mcsp {shell_join(arguments)}")
     try:
-        return dispatch(argv)
+        result = dispatch(arguments)
+    except SystemExit as exc:
+        audit(f"exit={exc.code}")
+        raise
     except (
         AccountError, CommandError, ConfigError, DeployError, ManagerError, PowerError,
         ProviderError, OSError,
     ) as exc:
-        print(f"错误：{exc}", file=sys.stderr)
+        if not getattr(exc, "reported", False):
+            print(f"错误：{exc}", file=sys.stderr)
+        audit(f"exit=2 error={exc}")
         return 2
+    except KeyboardInterrupt:
+        audit("exit=130 interrupted")
+        raise
+    except Exception as exc:
+        audit(f"exit=1 exception={type(exc).__name__}: {exc}")
+        raise
+    audit(f"exit={result}")
+    return result
 
 
 if __name__ == "__main__":

@@ -8,8 +8,6 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
-import tarfile
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 
@@ -147,44 +145,6 @@ printf 'user=%s home=%s\n' "$user" "$home"
             raise AccountError(f"远端未确认部署用户存在：{username}@{host}")
 
 
-def archive_tree(source: Path, *, exclude: set[str] | None = None) -> Path:
-    if not source.is_dir():
-        raise CommandError(f"归档源目录不存在：{source}")
-    temporary = Path(tempfile.mkdtemp(prefix="mcsp-upload-"))
-    output = temporary / "source.tar.gz"
-    patterns = list(exclude or ())
-    ignore_file = source / ".mcspignore"
-    if ignore_file.is_file():
-        patterns.extend(
-            line.strip() for line in ignore_file.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-
-    def ignored(name: str) -> bool:
-        matched = False
-        path = Path(name)
-        candidates = [path.as_posix(), *(item.as_posix() for item in path.parents)]
-        for pattern in patterns:
-            negate = pattern.startswith("!")
-            rule = pattern[1:] if negate else pattern
-            if any(
-                fnmatch(candidate, rule) or fnmatch(candidate + "/", rule)
-                for candidate in candidates
-            ):
-                matched = not negate
-        return matched
-
-    with tarfile.open(output, "w:gz") as archive:
-        for path in sorted(source.rglob("*")):
-            relative = path.relative_to(source)
-            if "__pycache__" in relative.parts or path.suffix == ".pyc":
-                continue
-            if ignored(relative.as_posix()):
-                continue
-            archive.add(path, arcname=relative.as_posix(), recursive=False)
-    return output
-
-
 class DeployError(RuntimeError):
     pass
 
@@ -218,13 +178,76 @@ apt_get() {
     apt-get -o Dpkg::Use-Pty=0 "$@"
 }
 
+configure_registry_mirrors() {
+  STEP=配置DockerHub镜像加速
+  echo '[Docker] 合并 Docker Hub 镜像加速配置'
+  as_root install -d -m 0755 /etc/docker
+  as_root python3 - /etc/docker/daemon.json <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+path = sys.argv[1]
+mirrors = [
+    "https://docker.1ms.run",
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.link",
+    "https://free.hubfast.cn",
+    "https://proxy.vvvv.ee",
+    "https://docker.jiaxin.site",
+    "https://docker.xuanyuan.me",
+    "https://registry.cyou",
+    "https://cf-workers-docker-io-apl.pages.dev",
+]
+try:
+    with open(path, encoding="utf-8") as source:
+        config = json.load(source)
+except FileNotFoundError:
+    config = {}
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"无法安全合并 {path}：{exc}")
+if not isinstance(config, dict):
+    raise SystemExit(f"{path} 顶层必须是 JSON 对象")
+existing = config.get("registry-mirrors", [])
+if not isinstance(existing, list) or not all(isinstance(item, str) for item in existing):
+    raise SystemExit(f"{path} 的 registry-mirrors 必须是字符串数组")
+merged = list(dict.fromkeys([*existing, *mirrors]))
+changed = merged != existing
+config["registry-mirrors"] = merged
+if "max-concurrent-downloads" not in config:
+    config["max-concurrent-downloads"] = 10
+    changed = True
+if "max-concurrent-uploads" not in config:
+    config["max-concurrent-uploads"] = 5
+    changed = True
+if changed:
+    descriptor, temporary = tempfile.mkstemp(prefix="daemon.json.mcsp-", dir="/etc/docker")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(config, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+print("changed" if changed else "unchanged")
+PY
+}
+
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   STEP=验证现有安装
-  echo '[Docker] 验证现有 Engine 与 Compose'
+  echo '[Docker 1/2] 验证现有 Engine 与 Compose'
   as_root systemctl enable --now docker.service containerd.service
   if [ "$(id -un)" != root ]; then
     as_root usermod --append --groups docker "$(id -un)"
   fi
+  mirror_state=$(configure_registry_mirrors | tee /dev/stderr | tail -n 1)
+  if [ "$mirror_state" = changed ]; then
+    as_root systemctl restart docker.service
+  fi
+  echo '[Docker 2/2] 验证镜像加速后的 Docker Engine'
   as_root docker info >/dev/null
   echo 'Docker Engine 与 Compose 插件已存在并验证'
   exit 0
@@ -246,7 +269,7 @@ case "$architecture" in
 esac
 
 STEP=准备下载工具
-echo '[Docker 1/5] 准备 ca-certificates 与 curl'
+echo '[Docker 1/6] 准备 ca-certificates 与 curl'
 apt_get update
 apt_get install -y ca-certificates curl
 conflicts=
@@ -261,7 +284,7 @@ if [ -n "$conflicts" ]; then
 fi
 
 STEP=下载仓库密钥
-echo '[Docker 2/5] 下载 Docker 官方仓库密钥'
+echo '[Docker 2/6] 下载 Docker 官方仓库密钥'
 as_root install -m 0755 -d /etc/apt/keyrings
 key_url="https://download.docker.com/linux/$distribution/gpg"
 if ! as_root curl --fail --show-error --location \
@@ -287,15 +310,18 @@ else
 fi
 
 STEP=更新Docker仓库
-echo '[Docker 3/5] 更新 Docker 软件仓库'
+echo '[Docker 3/6] 更新 Docker 软件仓库'
 apt_get update
 STEP=安装Docker
-echo '[Docker 4/5] 安装 Engine、Buildx 与 Compose'
+echo '[Docker 4/6] 安装 Engine、Buildx 与 Compose'
 apt_get install -y \
   docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 STEP=启动并验证Docker
-echo '[Docker 5/5] 启动并验证 Docker'
+echo '[Docker 5/6] 配置 Docker Hub 镜像加速'
+configure_registry_mirrors
+STEP=启动并验证Docker
+echo '[Docker 6/6] 启动并验证 Docker'
 as_root systemctl enable --now docker.service containerd.service
 if [ "$(id -un)" != root ]; then
   as_root usermod --append --groups docker "$(id -un)"
@@ -425,47 +451,65 @@ class RuntimeDeployment:
     def destination(self) -> str:
         return remote.target(self.endpoint.user, self.endpoint.host)
 
+    @property
+    def runtime_name(self) -> str:
+        return self.entrypoint.removesuffix(".sh").title()
+
     def _check_source(self) -> None:
         script = self.source / self.entrypoint
         if not script.is_file() or script.stat().st_size == 0:
             raise DeployError(f"缺少运行时入口：{script}")
 
     def check(self) -> None:
+        print(f"[检查 1/3] 检查本地 {self.runtime_name} 入口", flush=True)
         self._check_source()
         script = self.source / self.entrypoint
+        print(f"[检查 2/3] 连接 {self.destination}", flush=True)
         self.transport.ssh(self.destination, ["true"], capture=True)
+        print(f"[检查 3/3] 验证远端 {self.runtime_name} 运行环境", flush=True)
         self.transport.ssh(
             self.destination, ["bash", "-s", "--", "check"],
             input_text=script.read_text(encoding="utf-8"), capture=True,
         )
 
     def publish(self) -> None:
-        """发布运行时代码，不要求目标运行环境已经完整。"""
+        """按文件内容增量发布运行时代码。"""
+        print(f"[源码 1/3] 检查本地 {self.runtime_name} 源码", flush=True)
         self._check_source()
-        archive = archive_tree(self.source)
-        remote_archive = self.endpoint.directory + "/.mcsp-release.tar.gz"
-        try:
-            self.transport.ssh(
-                self.destination, ["mkdir", "-p", self.endpoint.directory],
-            )
-            self.transport.scp(archive, f"{self.destination}:{remote_archive}")
-            self._extract(remote_archive)
-        finally:
-            shutil.rmtree(archive.parent, ignore_errors=True)
+        print(
+            f"[源码 2/3] 对比 {self.destination} 清单并上传变化文件",
+            flush=True,
+        )
+        uploaded, deleted = self.transport.sync_tree(
+            self.source, self.destination, self.endpoint.directory,
+            preserve=self.preserve,
+        )
+        print(f"[源码 3/3] 增量同步完成：上传 {uploaded}，删除 {deleted}")
 
     def install(self, config: str, environment: str) -> None:
-        """上传完整运行时及配置，然后调用运行时自己的安装逻辑。"""
+        """同步运行时及配置，然后调用运行时自己的安装逻辑。"""
         self.check()
         self.publish()
+        print(f"[部署] 同步 {self.runtime_name} 配置与密钥", flush=True)
         self.upload_config(config)
         self.upload_environment(environment)
+        print(f"[部署] 调用 {self.runtime_name} install", flush=True)
         self._invoke("install")
 
     def configure(self, config: str, environment: str | None = None) -> None:
         """只更新运行时配置；校验及重载行为由运行时自己负责。"""
-        self.upload_config(config)
+        print(f"[配置 1/3] 同步 {self.runtime_name} config.yml", flush=True)
+        config_changed = self.upload_config(config)
+        config_state = "已更新" if config_changed else "无变化"
+        print(f"[配置 1/3] config.yml {config_state}", flush=True)
         if environment is not None:
-            self.upload_environment(environment)
+            print(f"[配置 2/3] 同步 {self.runtime_name} .env", flush=True)
+            environment_changed = self.upload_environment(environment)
+            environment_state = "已更新" if environment_changed else "无变化"
+            print(f"[配置 2/3] .env {environment_state}", flush=True)
+        else:
+            print("[配置 2/3] 无 .env 更新，跳过", flush=True)
+        print(f"[配置 3/3] 调用 {self.runtime_name} apply-config", flush=True)
         self._invoke("apply-config")
 
     def _invoke(self, action: str) -> None:
@@ -482,56 +526,23 @@ class RuntimeDeployment:
                 label=f"安装 {runtime} 运行时：{self.destination}",
             )
         else:
-            self.transport.ssh(self.destination, ["bash", "-lc", command])
+            self.transport.ssh_tail(
+                self.destination, ["bash", "-lc", command],
+                label=f"[{self.runtime_name}] apply-config",
+            )
 
-    def upload_config(self, content: str) -> None:
-        self._upload(content, "config.yml")
+    def upload_config(self, content: str) -> bool:
+        return self._upload(content, "config.yml")
 
-    def upload_environment(self, content: str) -> None:
-        self._upload(content, ".env", mode=0o600)
+    def upload_environment(self, content: str) -> bool:
+        return self._upload(content, ".env", mode=0o600)
 
-    def _extract(self, remote_archive: str) -> None:
-        directory = remote.shell_join([self.endpoint.directory])
-        archive = remote.shell_join([remote_archive])
-        preserve = remote.shell_join([" " + " ".join(self.preserve) + " "])
-        script = f"""set -Eeuo pipefail
-root={directory}
-archive={archive}
-stage="$root/.mcsp-stage"
-rm -rf -- "$stage"
-mkdir -p "$stage"
-tar -xzf "$archive" -C "$stage"
-rm -f -- "$archive"
-preserve={preserve}
-for path in "$root"/* "$root"/.[!.]*; do
-  [ -e "$path" ] || continue
-  name="${{path##*/}}"
-  case "$name" in .mcsp-stage|.mcsp-release.tar.gz) continue;; esac
-  case "$preserve" in *" $name "*) continue;; esac
-  rm -rf -- "$path"
-done
-for path in "$stage"/* "$stage"/.[!.]*; do
-  [ -e "$path" ] || continue
-  name="${{path##*/}}"
-  case "$preserve" in
-    *" $name "*)
-      if [ -d "$path" ]; then mkdir -p "$root/$name"; cp -a "$path/." "$root/$name/"; fi
-      ;;
-    *) rm -rf -- "$root/$name"; mv -- "$path" "$root/$name";;
-  esac
-done
-rm -rf -- "$stage"
-"""
-        self.transport.ssh(self.destination, ["bash", "-lc", script])
-
-    def _upload(self, content: str, name: str, *, mode: int = 0o644) -> None:
+    def _upload(self, content: str, name: str, *, mode: int = 0o644) -> bool:
         with tempfile.TemporaryDirectory(prefix="mcsp-runtime-") as directory:
             output = Path(directory) / name
             output.write_text(content, encoding="utf-8")
             output.chmod(mode)
-            destination = f"{self.destination}:{self.endpoint.directory}/{name}"
-            self.transport.scp(output, destination)
-        self.transport.ssh(
-            self.destination,
-            ["chmod", f"{mode:o}", self.endpoint.directory + "/" + name],
-        )
+            return self.transport.upload_file(
+                output, self.destination, self.endpoint.directory + "/" + name,
+                mode=mode,
+            )

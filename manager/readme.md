@@ -7,19 +7,7 @@ template/
 ├── config.yml
 ├── data/
 └── src/
-    ├── banned-ips.json
-    ├── banned-players.json
-    ├── config/
-    ├── crash-reports/
-    ├── eula.txt
-    ├── logs/
-    ├── ops.json
-    ├── server.properties
-    ├── usercache.json
-    ├── user_jvm_args.txt # 个性化java启动参数
-    ├── usernamecache.json
-    ├── whitelist.json
-    └── world/ # 重要：你的存档
+    └── .gitkeep
 ```
 |目录|作用|
 ----|----
@@ -31,8 +19,8 @@ compose.yml | 由config.yml自动生成，指导docker容器创建
 
 # Manager 命令
 
-`compose.yml` 是生成物，不要手工修改。将服务端文件放入 `src/`，并根据实际
-启动脚本修改 `config.yml` 中的 `command`。
+`compose.yml` 是生成物，不要手工修改。将服务端文件放入 `src/`；默认无需填写
+启动命令或 JVM 参数。
 
 Manager 独立读取并持有自己的 `config.yml`，不依赖 Terminal 或 Monitor 的运行时文件。
 通过 Terminal 部署时，只提取 Terminal 配置中的 `manager` 段初始化该文件；手工独立部署时执行：
@@ -43,12 +31,15 @@ cp config.yml.example config.yml
 ./manager.sh install docker
 ./manager.sh install
 ./manager.sh create example
+./manager.sh list
 ./manager.sh config example
-./manager.sh start example --accept-eula
+./manager.sh start example
 ./manager.sh status example
 ./manager.sh logs example --lines 100
 ./manager.sh logs example --follow
 ./manager.sh console example say hello
+./manager.sh property example online-mode
+./manager.sh property example online-mode false
 ./manager.sh backup example
 ./manager.sh stop example
 ./manager.sh restore example
@@ -67,16 +58,47 @@ cp config.yml.example config.yml
 的 Docker 权限；安装完成后需重新登录，再执行 `./manager.sh check`。
 `install` 在环境检查通过后安装 Manager 自身 Python 依赖并安装聚合调度任务。
 `create` 只创建标准目录骨架，不下载服务端。用户将整合包或原版服务端
-覆盖到 `src/` 后，调整 `config.yml` 中的版本、Java、端口和启动命令。
+覆盖到 `src/` 后，调整 `config.yml` 中的版本、Java、端口和 EULA。
 原版服务端可从 [Minecraft 官方下载页](https://www.minecraft.net/download/server)
-或对应历史版本的官方发布页下载。`start --accept-eula` 会在启动前将
-最终生效的 `eula.txt` 写为 `eula=true`，不会被后续覆盖 `src/` 撤销。
-当启动命令的第一项是 `java` 时，Runtime 的 `entrypoint.sh` 会读取
-`src/user_jvm_args.txt`，忽略空行和注释后将每行作为一个 JVM 参数。这也适用于
-Java 8，且用户可直接修改堆大小和其他 JVM 参数。以脚本为启动命令的整合包
-由其自带脚本决定 JVM 参数。
-模板默认为 8G 容器使用 `-Xms2G` / `-Xmx6G`；修改 `mem-limit` 时应同步
-调整 `Xmx`，并为 JVM 非堆内存和容器进程留出空间。
+或对应历史版本的官方发布页下载。将 `eula: true` 视为接受
+[Minecraft EULA](https://www.minecraft.net/eula)；`start` 会将最终生效的
+`eula.txt` 写为 `eula=true`。未明确接受时拒绝启动。
+默认自动启动规则如下：若存在唯一的 `unix_args.txt`，直接按它启动；否则要求
+`src/` 顶层恰有一个 JAR。普通 JAR 以 `java -jar <文件> nogui` 启动；包含
+`install_profile.json` 的 Forge 安装器会先自动执行一次 `--installServer`，再按生成的
+`unix_args.txt` 启动。多个 JAR 或多个参数文件会报错，不会猜测。
+`command` 与 `jvm-args` 仍可作为特殊整合包的高级覆盖项，但模板不再要求用户维护。
+Runtime 不读取 `run.sh`、`run.bat` 或 `user_jvm_args.txt`。`mem-limit` 限制容器总内存，
+自动启动会按容器额度设置初始堆 25%、最大堆 75%，为非堆内存和其他进程开销留出空间。
+`port` 是唯一的服务端口配置；Manager 在启动前会同步更新实际生效的
+`server.properties` 中的 `server-port`，无需用户维护两处数值。
+`property <整合包> <属性> [值]` 会根据 `persistent` 自动定位 `src/` 或 `data/`
+中真正生效的 `server.properties`。省略值时读取，提供值时修改；运行中
+修改会提示重启整合包，不会自动中断服务。
+
+模板的 `src/` 和 `read-only.persistent` 默认均为空。普通可写模式不需要配置
+`persistent`；开启 `read-only.enabled` 或需要把运行数据与整合包源码分离时，按实际
+服务端选择常见路径，例如：
+
+```yaml
+read-only:
+  enabled: true
+  persistent:
+    - world/
+    - config/
+    - logs/
+    - crash-reports/
+    - server.properties
+    - ops.json
+    - whitelist.json
+    - banned-ips.json
+    - banned-players.json
+    - usercache.json
+```
+
+`world/` 是最重要的存档目录；模组整合包还可能需要 `mods/`、`defaultconfigs/`、
+`kubejs/` 等路径，应以该整合包实际会修改的内容为准。`eula.txt` 由 Manager 根据
+`eula` 配置维护，无需放进模板。
 同名整合包默认拒绝创建；`--force` 会在新整合包创建与校验成功后，
 通过 Manager 目录内的 `./tmp` 完整替换旧目录，包括 `src`、`data`、
 `backups` 和配置。
@@ -85,6 +107,9 @@ Java 8，且用户可直接修改堆大小和其他 JVM 参数。以脚本为启
 
 `start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
 修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。
+启动前会检查自动入口是否唯一，或检查显式 `java -jar` 指向的文件是否确实位于
+`src/`，因此缺失和歧义会在构建镜像前直接报错。Manager 操作的完整输出记录在
+部署目录的 `manager.log`。
 
 # 定时任务cronjob
 
