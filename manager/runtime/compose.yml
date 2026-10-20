@@ -1,0 +1,34 @@
+services:
+  manager:
+    container_name: mcsp-manager
+    image: mc-serverpack-manager:local
+    restart: unless-stopped
+    user: "${MC_CONTAINER_UID:-1000}:${MC_CONTAINER_GID:-1000}"
+    group_add:
+      - "${MC_DOCKER_GID:?}"
+    env_file:
+      - path: ${MCSP_MANAGER_ROOT:?}/data/.env
+        required: false
+    environment:
+      HOME: /tmp
+      MCSP_MANAGER_ROOT: "${MCSP_MANAGER_ROOT:?}"
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MCSP_MANAGER_ROOT:?}/data:${MCSP_MANAGER_ROOT:?}/data
+      - ${MCSP_MANAGER_ROOT:?}/modpacks:${MCSP_MANAGER_ROOT:?}/modpacks
+      - ${MCSP_MANAGER_ROOT:?}/runtime:${MCSP_MANAGER_ROOT:?}/runtime:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,socket; p=os.environ['MCSP_MANAGER_ROOT']+'/data/run/manager.sock'; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.close()"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    command: ["python", "-m", "src.app"]

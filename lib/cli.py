@@ -16,13 +16,14 @@ from zoneinfo import ZoneInfo
 
 from .config import (
     CONFIG_FILE, ROOT, ConfigError, deployment_connection,
-    deployment_endpoint, deployment_host, initialize, load, load_monitor,
+    deployment_host, initialize, load, load_monitor,
 )
 from .deploy import (
-    AccountError, AccountProvisioner, DeployError, PythonProvisioner,
+    AccountError, AccountProvisioner, DeployError,
 )
 from .docker import DockerProvisioner
 from .manager import Manager, ManagerError
+from .manager_sdk import ManagerSdkError
 from .monitor import Monitor
 from .power import InstanceStatus, PowerError
 from .power import ProviderError, load_provider
@@ -174,8 +175,6 @@ class CliServices:
 
     def install(self, target: str) -> None:
         self.install_docker(target)
-        if target == "manager" and self.source_mode:
-            self.install_python()
         (self.manager_runtime() if target == "manager" else self.monitor()).install()
 
     def publish(self, target: str) -> None:
@@ -187,18 +186,16 @@ class CliServices:
     def deploy_modpack(self, pack_id: str) -> None:
         self.manager_runtime().deploy_modpack(pack_id)
 
+    def export_modpack(self, pack_id: str, destination: Path, **options) -> None:
+        self.manager_runtime().export_archive(pack_id, destination, **options)
+
+    def import_modpack(self, archive: Path, *, force: bool) -> None:
+        self.manager_runtime().import_archive(archive, force=force)
+
     def install_docker(self, target: str) -> None:
         progress(f"[配置] 读取 {target} 部署连接：{self.config_path}")
         host, user = deployment_connection(self.config_path, target)
         DockerProvisioner(host, user, transport=self.transport).install()
-
-    def install_python(self) -> None:
-        if not self.source_mode:
-            raise DeployError("--install-python 仅供源码版 Manager 使用")
-        PythonProvisioner(
-            deployment_endpoint(self.config_path, "manager"),
-            ROOT / "manager/lib/requirements.txt", transport=self.transport,
-        ).install()
 
     def local_manager(self, arguments: list[str]) -> None:
         self.manager_runtime().local(arguments)
@@ -212,8 +209,15 @@ class CliServices:
     def monitor_command(self, action: str) -> None:
         self.monitor().run(action)
 
-    def add_monitor_target(self, name: str) -> str:
-        return self.monitor().add_target(name)
+    def add_monitor_admin(self) -> str:
+        return self.monitor().add_admin()
+
+    def reset_monitor(self) -> None:
+        self.monitor().reset()
+
+    def reset_monitor_messages(self) -> None:
+        self.monitor().reset_messages()
+
 
     def account_context(
         self, target: str, key_path: Optional[Path] = None,
@@ -319,11 +323,6 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
             "--install-docker", action="store_true",
             help="只安装或验证远端 Docker Engine 与 Compose 插件",
         )
-        if target == "manager" and source_mode:
-            mode.add_argument(
-                "--install-python", action="store_true",
-                help="只安装源码版 Manager 的 Python、pip、venv 与依赖",
-            )
         runtime.add_argument(
             "--key", type=Path, help="创建用户所用 SSH 公钥；默认自动寻找",
         )
@@ -345,9 +344,11 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
         "--force", action="store_true",
         help="完整替换远端已存在的同名整合包",
     )
-    for action in ("config", "stop", "status"):
+    for action in ("config", "stop", "status", "enable", "disable", "remove-container"):
         item = manager_commands.add_parser(action)
         item.add_argument("pack_id")
+        if action in ("enable", "disable"):
+            item.add_argument("--now", action="store_true")
     backup = manager_commands.add_parser("backup", help="创建或列出备份")
     backup.add_argument("target", help="整合包 ID，或 list")
     backup.add_argument("pack_id", nargs="?", help="使用 list 时指定整合包 ID")
@@ -355,8 +356,7 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     manager_start.add_argument("pack_id")
     logs = manager_commands.add_parser("logs")
     logs.add_argument("pack_id")
-    logs.add_argument("--lines", type=int, default=100)
-    logs.add_argument("--follow", action="store_true")
+    logs.add_argument("--lines", type=int, default=100, help="读取末尾 N 行")
     console = manager_commands.add_parser("console")
     console.add_argument("pack_id")
     console.add_argument("command", nargs=argparse.REMAINDER)
@@ -372,6 +372,13 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     remove.add_argument("pack_id")
     remove.add_argument("--force", action="store_true")
     manager_commands.add_parser("stop-all")
+    export = manager_commands.add_parser("export", help="下载标准整合包归档")
+    export.add_argument("pack_id"); export.add_argument("destination", type=Path)
+    export.add_argument("--source-only", action="store_true")
+    export.add_argument("--include-backups", action="store_true")
+    export.add_argument("--auto-stop", action="store_true")
+    import_command = manager_commands.add_parser("import", help="上传并导入标准整合包归档")
+    import_command.add_argument("archive", type=Path); import_command.add_argument("--force", action="store_true")
 
     local = commands.add_parser("local", help="调用本机运行时")
     local_runtime = local.add_subparsers(dest="runtime", required=True)
@@ -385,8 +392,12 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     monitor_commands = monitor.add_subparsers(dest="action", required=True)
     for action in ("start", "stop", "status"):
         monitor_commands.add_parser(action)
-    add_target = monitor_commands.add_parser("add-target", help="验证并加入 QQ 单聊目标")
-    add_target.add_argument("name", nargs="?", default="owner")
+    monitor_commands.add_parser("add-admin", help="通过 QQ 私聊验证码添加管理员")
+    monitor_commands.add_parser("test-alert", help="向目标发送一条安全测试告警")
+    monitor_commands.add_parser("reset-targets", help="清空 QQ 管理员与订阅目标")
+    monitor_commands.add_parser(
+        "reset-messages", help="备份自定义文案并恢复当前版本默认模板",
+    )
     return parser
 
 
@@ -403,16 +414,19 @@ def _check_config(path: Path) -> None:
 
 
 def _dispatch_manager(args, services: CliServices) -> int:
+    if args.action == "export":
+        services.export_modpack(args.pack_id, args.destination, source_only=args.source_only,
+                                include_backups=args.include_backups, auto_stop=args.auto_stop)
+        return 0
+    if args.action == "import":
+        services.import_modpack(args.archive, force=args.force)
+        return 0
     pack_id = getattr(args, "pack_id", None)
     extra = []
-    tty = False
     if args.action == "logs":
         if args.lines < 0:
             raise ManagerError("日志行数不能为负数")
         extra.extend(("--lines", str(args.lines)))
-        if args.follow:
-            extra.append("--follow")
-            tty = True
     elif args.action == "console":
         if not args.command:
             raise ManagerError("控制台命令不能为空")
@@ -424,6 +438,8 @@ def _dispatch_manager(args, services: CliServices) -> int:
     elif args.action == "create":
         if args.force:
             extra.append("--force")
+    elif args.action in ("enable", "disable") and args.now:
+        extra.append("--now")
     elif args.action == "backup":
         pack_id = args.target
         if args.pack_id is not None:
@@ -435,9 +451,7 @@ def _dispatch_manager(args, services: CliServices) -> int:
             extra.append("--auto-restart")
     elif args.action == "remove" and args.force:
         extra.append("--force")
-    services.manager_command(
-        args.action, pack_id, extra=tuple(extra), tty=tty,
-    )
+    services.manager_command(args.action, pack_id, extra=tuple(extra))
     return 0
 
 
@@ -470,12 +484,6 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
                     raise DeployError("--key 只能与 --create-user 同时使用")
                 services.configure(args.deploy_kind)
                 print(f"配置已同步并应用：{args.deploy_kind}")
-                return 0
-            if getattr(args, "install_python", False):
-                if args.key is not None:
-                    raise DeployError("--key 只能与 --create-user 同时使用")
-                services.install_python()
-                print("Manager Python 环境已就绪")
                 return 0
             if args.install_docker:
                 if args.key is not None:
@@ -554,9 +562,15 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
         services.local_manager(args.arguments)
         return 0
     if args.module == "monitor":
-        if args.action == "add-target":
-            identifier = services.add_monitor_target(args.name)
-            print(f"已更新 Monitor QQ 目标：{args.name} ({identifier})")
+        if args.action == "add-admin":
+            identifier = services.add_monitor_admin()
+            print(f"已添加 Monitor QQ 管理员：{identifier}")
+        elif args.action == "reset-targets":
+            services.reset_monitor()
+            print("已重置 Monitor QQ 管理员与订阅目标")
+        elif args.action == "reset-messages":
+            services.reset_monitor_messages()
+            print("已重置 Monitor QQ 消息模板")
         else:
             services.monitor_command(args.action)
         return 0
@@ -577,8 +591,8 @@ def _main(arguments: list[str]) -> int:
         audit(f"exit={exc.code}")
         raise
     except (
-        AccountError, CommandError, ConfigError, DeployError, ManagerError, PowerError,
-        ProviderError, OSError,
+        AccountError, CommandError, ConfigError, DeployError, ManagerError,
+        ManagerSdkError, PowerError, ProviderError, OSError,
     ) as exc:
         if not getattr(exc, "reported", False):
             print(f"错误：{exc}", file=sys.stderr)

@@ -19,7 +19,7 @@ from lib.monitor import Monitor
 from lib.power import InstanceStatus, Power, PowerError, PowerTarget
 from lib.providers import tencent
 from lib.remote import CommandError, fit_terminal, shell_join
-from manager.lib.config import ConfigError as ManagerConfigError, validate_pack_id
+from manager.src.config import ConfigError as ManagerConfigError, validate_pack_id
 
 
 class FakeCloud:
@@ -71,9 +71,6 @@ class FakeService:
     def install_docker(self, target: str) -> None:
         self.calls.append(("install-docker", target))
 
-    def install_python(self) -> None:
-        self.calls.append(("install-python", "manager"))
-
     def local_manager(self, arguments: list[str]) -> None:
         self.calls.append(("local-manager", arguments))
 
@@ -91,9 +88,12 @@ class FakeService:
             "STOPPED" if action == "stop" else "RUNNING"
         )
 
-    def add_monitor_target(self, name: str) -> str:
-        self.calls.append(("add-monitor-target", name))
+    def add_monitor_admin(self) -> str:
+        self.calls.append(("add-monitor-admin",))
         return "user-openid"
+
+    def reset_monitor(self) -> None:
+        self.calls.append(("reset-monitor",))
 
 
 class FakeTransport:
@@ -131,12 +131,49 @@ class FakeTransport:
         return 1, 0
 
 class TerminalCliTests(unittest.TestCase):
-    def test_monitor_add_target_defaults_to_owner(self) -> None:
+    def test_monitor_add_admin(self) -> None:
         service = FakeService()
-        self.assertEqual(dispatch(["monitor", "add-target"], service), 0)
-        self.assertEqual(service.calls, [("add-monitor-target", "owner")])
+        self.assertEqual(dispatch(["monitor", "add-admin"], service), 0)
+        self.assertEqual(service.calls, [("add-monitor-admin",)])
 
-    def test_monitor_add_target_discovers_updates_and_refreshes(self) -> None:
+    def test_monitor_reset(self) -> None:
+        service = FakeService()
+        self.assertEqual(dispatch(["monitor", "reset-targets"], service), 0)
+        self.assertEqual(service.calls, [("reset-monitor",)])
+
+    def test_monitor_reset_uses_remote_force_flag(self) -> None:
+        services = Monitor.__new__(Monitor)
+        services.command = Mock(return_value=subprocess.CompletedProcess([], 0))
+        services.reset()
+        services.command.assert_called_once_with(["reset-targets", "--force"])
+
+    def test_monitor_message_reset_uses_remote_force_flag(self) -> None:
+        services = Monitor.__new__(Monitor)
+        services.command = Mock(return_value=subprocess.CompletedProcess([], 0))
+        services.reset_messages()
+        services.command.assert_called_once_with(["reset-messages", "--force"])
+
+    def test_monitor_check_uses_public_check_command(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.yml"
+        document = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "config.yml.example").read_text(
+                encoding="utf-8",
+            )
+        )
+        document["monitor"]["enabled"] = True
+        document["monitor"]["host"] = "monitor.example"
+        config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+        transport = FakeTransport(Path(temporary.name) / "unused.tar.gz")
+        service = Monitor(config_path, transport=transport)
+        service.check()
+        self.assertTrue(any(
+            call[1] == ["bash", "-s", "--", "check"]
+            for call in transport.ssh_calls
+        ))
+
+    def test_monitor_add_admin_uses_remote_verification(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         config_path = Path(temporary.name) / "config.yml"
@@ -153,22 +190,15 @@ class TerminalCliTests(unittest.TestCase):
         services.config_path = config_path
         services.deployment = Mock()
         services.command = Mock(return_value=subprocess.CompletedProcess(
-            [], 0, stdout=b"user_openid: new-openid\n",
+            [], 0, stdout=b"admin_openid: new-openid\n",
         ))
         with patch("lib.monitor.secrets.token_hex", return_value="a1b2"):
-            result = services.add_target("owner")
+            result = services.add_admin()
         self.assertEqual(result, "new-openid")
-        services.command.assert_any_call(["add-target", "a1b2"], capture=True)
-        services.deployment.configure.assert_called_once()
-        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        owner = next(
-            item for item in document["monitor"]["qqbot"]["targets"]
-            if item["name"] == "owner"
+        services.command.assert_any_call(
+            ["add-admin", "a1b2"], capture=True,
         )
-        self.assertEqual(owner["id"], "new-openid")
-        config_text, environment = services.deployment.configure.call_args.args
-        self.assertIn("qqbot:", config_text)
-        self.assertIn("QQBOT_APP_KEY=token", environment)
+        services.deployment.configure.assert_not_called()
 
     def test_pack_arguments_are_forwarded_without_shell_joining(self) -> None:
         service = FakeService()
@@ -177,14 +207,14 @@ class TerminalCliTests(unittest.TestCase):
             ("manager", "console", "demo", ("say", "hello world"), False),
         ])
 
-    def test_follow_logs_requests_tty(self) -> None:
+    def test_logs_forwards_lines_without_tty(self) -> None:
         service = FakeService()
-        dispatch(["manager", "logs", "demo", "--lines", "20", "--follow"], service)
+        dispatch(["manager", "logs", "demo", "--lines", "20"], service)
         self.assertEqual(service.calls, [
-            ("manager", "logs", "demo", ("--lines", "20", "--follow"), True),
+            ("manager", "logs", "demo", ("--lines", "20"), False),
         ])
 
-    def test_manager_list_preserves_multiline_remote_output(self) -> None:
+    def test_manager_list_uses_api_response(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         config = Path(temporary.name) / "config.yml"
@@ -193,17 +223,16 @@ class TerminalCliTests(unittest.TestCase):
             encoding="utf-8",
         )
         transport = FakeTransport(Path(temporary.name) / "unused.tar.gz")
-        transport.ssh_stdout = b"ID\tSTATE\nalpha\trunning\nbeta\tstopped\n"
         service = Manager(config, transport=transport)
         output = io.StringIO()
-        with redirect_stdout(output):
+        with patch.object(service, "_api_request", return_value={"modpacks": [
+            {"id": "alpha", "state": "running"}, {"id": "beta", "state": "stopped"},
+        ]}), redirect_stdout(output):
             service.run("list")
-        self.assertEqual(
-            output.getvalue(), "ID\tSTATE\nalpha\trunning\nbeta\tstopped\n",
-        )
-        self.assertTrue(transport.ssh_calls[-1][2]["capture"])
+        self.assertIn('"alpha"', output.getvalue())
+        self.assertFalse(transport.ssh_calls)
 
-    def test_backup_list_preserves_multiline_remote_output(self) -> None:
+    def test_backup_list_uses_api_response(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         config = Path(temporary.name) / "config.yml"
@@ -212,13 +241,14 @@ class TerminalCliTests(unittest.TestCase):
             encoding="utf-8",
         )
         transport = FakeTransport(Path(temporary.name) / "unused.tar.gz")
-        transport.ssh_stdout = b"ID\tCREATED\tSIZE\tNAME\na1b2\tnow\t2 GiB\tbackup.tar.gz\n"
         service = Manager(config, transport=transport)
         output = io.StringIO()
-        with redirect_stdout(output):
+        with patch.object(service, "_api_request", return_value={"backups": [
+            {"id": "a1b2", "created_at": "now", "size": 2, "name": "backup.tar.gz"},
+        ]}), redirect_stdout(output):
             service.run("backup", "list", extra=("example",))
-        self.assertEqual(output.getvalue(), transport.ssh_stdout.decode())
-        self.assertTrue(transport.ssh_calls[-1][2]["capture"])
+        self.assertIn('"a1b2"', output.getvalue())
+        self.assertFalse(transport.ssh_calls)
 
     def test_force_poweroff_is_explicit(self) -> None:
         service = FakeService()
@@ -329,6 +359,7 @@ class DeploymentTests(unittest.TestCase):
         self.config.write_text(yaml.safe_dump({
             "manager": {
                 "host": "manager.example", "user": "minecraft", "dir": "/srv/mcsp/manager",
+                "timezone": "Asia/Shanghai",
                 "auto-stop": False, "stop-at": "23:05",
                 "power-api": {
                     "provider": "tencent", "instance-region": "ap-test",
@@ -336,7 +367,8 @@ class DeploymentTests(unittest.TestCase):
                 },
                 "modpack": {"auto-stop": False, "java": [17], "mem-limit": "4g"},
             },
-            "monitor": {"enabled": False}, "cos": {"enabled": False},
+            "monitor": {"enabled": False, "timezone": "Asia/Shanghai"},
+            "cos": {"enabled": False},
         }), encoding="utf-8")
         (self.root / ".env").write_text("", encoding="utf-8")
         self.archive = self.root / "source.tar.gz"
@@ -345,12 +377,49 @@ class DeploymentTests(unittest.TestCase):
     def test_manager_deploy_uploads_only_manager_section_and_preserves_runtime_data(self) -> None:
         service = Manager(self.config, transport=FakeTransport(self.archive))
         service.deployment = Mock()
-        service.install()
+        with patch.object(service, "_fetch_bootstrap"):
+            service.install()
         config_text, environment = service.deployment.install.call_args.args
         deployed = yaml.safe_load(config_text)
         self.assertIn("modpack", deployed)
         self.assertNotIn("monitor", deployed)
         self.assertEqual(environment, "")
+
+    def test_manager_bootstrap_fetch_stores_key_and_optional_ca(self) -> None:
+        class Deployment:
+            def __init__(self, with_ca: bool) -> None:
+                self.with_ca = with_ca
+
+            def download_path(self, name, local_path, *, mode=0o600, optional=False):
+                if name == "data/.env":
+                    local_path.write_text(
+                        "MANAGER_API_KEY=" + "k" * 48 + "\n",
+                        encoding="utf-8",
+                    )
+                    return True
+                if name == "data/tls/ca.crt":
+                    if not self.with_ca:
+                        return False
+                    local_path.write_text("ca\n", encoding="utf-8")
+                    return True
+                raise AssertionError(name)
+
+        service = Manager(self.config, transport=FakeTransport(self.archive))
+        service.tls_directory = self.root / "tls"
+        service.tls_directory.mkdir()
+        stale = service.tls_directory / "ca.crt"
+        stale.write_text("stale\n", encoding="utf-8")
+        service.deployment = Deployment(with_ca=False)
+        service._fetch_bootstrap()
+        self.assertIn(
+            "MANAGER_API_KEY=" + "k" * 48,
+            (self.root / ".env").read_text(encoding="utf-8"),
+        )
+        self.assertFalse(stale.exists())
+
+        service.deployment = Deployment(with_ca=True)
+        service._fetch_bootstrap()
+        self.assertEqual(stale.read_text(encoding="utf-8"), "ca\n")
 
     def test_manager_config_sync_includes_filtered_environment(self) -> None:
         (self.root / ".env").write_text(
@@ -360,7 +429,8 @@ class DeploymentTests(unittest.TestCase):
         )
         service = Manager(self.config, transport=FakeTransport(self.archive))
         service.deployment = Mock()
-        service.configure()
+        with patch.object(service, "_fetch_bootstrap"):
+            service.configure()
         config_text, environment = service.deployment.configure.call_args.args
         self.assertIn("modpack:", config_text)
         self.assertEqual(
@@ -387,28 +457,30 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("check", scripts)
         self.assertIn("install", scripts)
 
-    def test_monitor_user_discovery_parses_remote_openid(self) -> None:
+    def test_monitor_admin_discovery_parses_remote_openid(self) -> None:
         document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
         document["monitor"] = {
             "enabled": True,
             "host": "monitor.example",
             "user": "monitor",
             "dir": "/srv/mcsp/monitor",
+            "timezone": "Asia/Shanghai",
             "manager": {
                 "power-api": {
                     "provider": "tencent",
                     "instance-region": "ap-test",
                     "instance-id": "ins-test",
                 },
+                "api": {"host": "manager.example", "port": 27016},
             },
         }
         self.config.write_text(yaml.safe_dump(document), encoding="utf-8")
         transport = FakeTransport(self.archive)
-        transport.ssh_stdout = b"user_openid: discovered-user\n"
+        transport.ssh_stdout = b"admin_openid: discovered-user\n"
         service = Monitor(self.config, transport=transport)
-        service.command(["add-target", "a1b2"], capture=True)
+        self.assertEqual(service.add_admin(), "discovered-user")
         command = " ".join(transport.ssh_calls[-1][1])
-        self.assertIn("./monitor.sh add-target a1b2", command)
+        self.assertIn("./monitor.sh add-admin", command)
 
     def test_monitor_deploy_uses_qqbot_app_environment_names(self) -> None:
         (self.root / ".env").write_text(

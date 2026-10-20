@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .remote import HOST_RE
 
@@ -26,8 +26,6 @@ TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
 REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
-TARGET_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
-ALERT_KINDS = ("check-failed", "state-mismatch", "recovered")
 
 
 class ConfigError(RuntimeError):
@@ -109,10 +107,13 @@ class ModpackDefaults:
 @dataclass(frozen=True)
 class ManagerConfig:
     endpoint: Endpoint
+    timezone: str
     auto_stop: bool
     stop_at: str | None
     power_api: PowerApiConfig | None
     modpack: ModpackDefaults
+    api_host: str
+    api_port: int
 
 
 @dataclass(frozen=True)
@@ -124,27 +125,12 @@ class MonitorSchedule:
 
 
 @dataclass(frozen=True)
-class QQTarget:
-    name: str
-    kind: str
-    identifier: str
-
-
-@dataclass(frozen=True)
-class QQAlertRoute:
-    kind: str
-    targets: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class MonitorConfig:
     enabled: bool
     endpoint: Endpoint | None
+    timezone: str
     manager: MonitorSchedule
     power_api: PowerApiConfig | None
-    targets: tuple[QQTarget, ...]
-    admins: tuple[str, ...]
-    alerts: tuple[QQAlertRoute, ...]
 
 
 @dataclass(frozen=True)
@@ -224,6 +210,15 @@ def _user(value: object, field: str) -> str:
     return user
 
 
+def _timezone(value: object, field: str) -> str:
+    name = _text(value, field)
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(f"{field} 必须是有效的 IANA 时区，例如 Asia/Shanghai") from exc
+    return name
+
+
 def _endpoint(section: dict[str, Any], field: str) -> Endpoint:
     directory = _text(section.get("dir"), f"{field}.dir")
     path = PurePosixPath(directory)
@@ -263,7 +258,11 @@ def _read_root(path: str | Path) -> dict[str, Any]:
 
 
 def runtime_section(path: str | Path, runtime: str) -> dict[str, Any]:
-    """原样返回一个运行时的配置子树，供部署时序列化。"""
+    """原样返回一个运行时的配置子树，供部署时序列化。
+
+    monitor 段保持自包含，包含与 manager 段重复的地址配置，方便整段复制到
+    Monitor 独立部署目录。
+    """
     if runtime not in ("manager", "monitor"):
         raise ConfigError(f"未知运行时：{runtime}")
     return _mapping(_read_root(path).get(runtime), runtime)
@@ -278,86 +277,25 @@ def render_runtime_section(path: str | Path, runtime: str) -> str:
     )
 
 
-def upsert_monitor_user_target(path: str | Path, name: str, identifier: str) -> None:
-    """更新指定 Monitor 用户目标，不重排无关 YAML。"""
-    if not TARGET_NAME_RE.fullmatch(name):
-        raise ConfigError("target name 仅允许大小写字母、数字和减号")
-    identifier = _text(identifier, "user_openid")
-    source = Path(path)
-    text = source.read_text(encoding="utf-8")
-    document = yaml.compose(text) if yaml is not None else None
-
-    def pair(node, key: str):
-        if node is None or node.id != "mapping":
-            raise ConfigError(f"缺少 monitor.qqbot.{key}")
-        for item_key, value in node.value:
-            if item_key.value == key:
-                return item_key, value
-        raise ConfigError(f"缺少 monitor.qqbot.{key}")
-
-    _, monitor = pair(document, "monitor")
-    _, qqbot = pair(monitor, "qqbot")
-    targets_key, targets = pair(qqbot, "targets")
-    if targets.id != "sequence":
-        raise ConfigError("monitor.qqbot.targets 必须是数组")
-    quoted_id = "'" + identifier.replace("'", "''") + "'"
-    updated = None
-    for item in targets.value:
-        if item.id != "mapping":
-            continue
-        fields = {key.value: value for key, value in item.value}
-        if fields.get("name") is None or fields["name"].value != name:
-            continue
-        if fields.get("type") is None or fields["type"].value != "user":
-            raise ConfigError(f"monitor.qqbot.targets.{name} 不是 user 目标")
-        target_id = fields.get("id")
-        if target_id is None:
-            raise ConfigError(f"monitor.qqbot.targets.{name} 缺少 id")
-        updated = (
-            text[:target_id.start_mark.index] + quoted_id
-            + text[target_id.end_mark.index:]
-        )
-        break
-    if updated is None:
-        indent = " " * targets_key.start_mark.column
-        entry = (
-            f"{indent}- name: {name}\n"
-            f"{indent}  type: user\n"
-            f"{indent}  id: {quoted_id}\n"
-        )
-        if targets.flow_style:
-            updated = (
-                text[:targets.start_mark.index] + "\n" + entry
-                + text[targets.end_mark.index:]
-            )
-        else:
-            insertion = text.rfind("\n", 0, targets.end_mark.index) + 1
-            updated = text[:insertion] + entry + text[insertion:]
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=source.parent,
-            prefix=".config-", suffix=".yml", delete=False,
-        ) as output:
-            output.write(updated)
-            temporary = Path(output.name)
-        os.chmod(temporary, source.stat().st_mode & 0o777)
-        load_monitor(temporary)
-        os.replace(temporary, source)
-        temporary = None
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def _parse_manager(root: dict[str, Any]) -> ManagerConfig:
     manager_raw = _mapping(root.get("manager"), "manager")
     manager_endpoint = _endpoint(manager_raw, "manager")
+    timezone = _timezone(manager_raw.get("timezone"), "manager.timezone")
     manager_auto_stop = _boolean(manager_raw.get("auto-stop"), "manager.auto-stop", default=False)
     manager_stop_at = _optional_clock(manager_raw, manager_auto_stop, "stop-at", "manager.stop-at")
     manager_power = _power_api(
         manager_raw.get("power-api"), "manager.power-api", required=manager_auto_stop,
     )
+    api = _mapping(
+        manager_raw.get("api"), "manager.api", optional=True,
+    )
+    api_host = manager_endpoint.host
+    listen = api.get("listen", "0.0.0.0")
+    if not isinstance(listen, str) or not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", listen):
+        raise ConfigError("manager.api.listen 必须是 IPv4 地址")
+    api_port = api.get("port", 27016)
+    if type(api_port) is not int or not 1 <= api_port <= 65535:
+        raise ConfigError("manager.api.port 必须是 1 到 65535 的整数")
 
     modpack_raw = _mapping(manager_raw.get("modpack"), "manager.modpack")
     pack_auto_stop = _boolean(modpack_raw.get("auto-stop"), "manager.modpack.auto-stop", default=False)
@@ -387,7 +325,8 @@ def _parse_manager(root: dict[str, Any]) -> ManagerConfig:
     _positive_int(modpack_raw.get("stop-timeout", 180), "manager.modpack.stop-timeout")
 
     return ManagerConfig(
-        manager_endpoint, manager_auto_stop, manager_stop_at, manager_power, modpack,
+        manager_endpoint, timezone, manager_auto_stop, manager_stop_at, manager_power,
+        modpack, api_host, api_port,
     )
 
 
@@ -400,6 +339,7 @@ def _parse_monitor(root: dict[str, Any]) -> MonitorConfig:
         )
     monitor_enabled = _boolean(monitor_raw.get("enabled"), "monitor.enabled", default=False)
     monitor_endpoint = _endpoint(monitor_raw, "monitor") if monitor_enabled else None
+    timezone = _timezone(monitor_raw.get("timezone"), "monitor.timezone")
     monitor_manager_raw = _mapping(monitor_raw.get("manager"), "monitor.manager", optional=True)
     auto_start = _boolean(monitor_manager_raw.get("auto-start"), "monitor.manager.auto-start", default=False)
     auto_stop = _boolean(monitor_manager_raw.get("auto-stop"), "monitor.manager.auto-stop", default=False)
@@ -407,85 +347,22 @@ def _parse_monitor(root: dict[str, Any]) -> MonitorConfig:
         monitor_manager_raw.get("power-api"), "monitor.manager.power-api",
         required=monitor_enabled,
     )
+    if monitor_enabled:
+        monitor_api = _mapping(
+            monitor_manager_raw.get("api"), "monitor.manager.api",
+        )
+        _host(monitor_api.get("host"), "monitor.manager.api.host")
+        monitor_port = monitor_api.get("port", 27016)
+        if type(monitor_port) is not int or not 1 <= monitor_port <= 65535:
+            raise ConfigError("monitor.manager.api.port 必须是 1 到 65535 的整数")
     monitor_schedule = MonitorSchedule(
         auto_start,
         _optional_clock(monitor_manager_raw, auto_start, "start-at", "monitor.manager.start-at"),
         auto_stop,
         _optional_clock(monitor_manager_raw, auto_stop, "stop-at", "monitor.manager.stop-at"),
     )
-    qqbot = _mapping(monitor_raw.get("qqbot"), "monitor.qqbot", optional=True)
-    targets_raw = qqbot.get("targets", [])
-    admins_raw = qqbot.get("admins", [])
-    alerts_raw = qqbot.get("alerts", {})
-    if (
-        not isinstance(targets_raw, list)
-        or not isinstance(admins_raw, list)
-        or not isinstance(alerts_raw, dict)
-    ):
-        raise ConfigError(
-            "monitor.qqbot.targets/admins 必须是数组，alerts 必须是对象"
-        )
-    targets: list[QQTarget] = []
-    for index, item in enumerate(targets_raw):
-        target = _mapping(item, f"monitor.qqbot.targets[{index}]")
-        name = _text(target.get("name"), f"monitor.qqbot.targets[{index}].name")
-        if not TARGET_NAME_RE.fullmatch(name):
-            raise ConfigError(
-                f"monitor.qqbot.targets[{index}].name 仅允许大小写字母、数字和减号"
-            )
-        kind = target.get("type")
-        if kind not in ("user", "group"):
-            raise ConfigError(f"monitor.qqbot.targets[{index}].type 只能是 user 或 group")
-        targets.append(QQTarget(
-            name, kind,
-            _text(target.get("id"), f"monitor.qqbot.targets[{index}].id"),
-        ))
-    names = {target.name for target in targets}
-    if len(names) != len(targets):
-        raise ConfigError("monitor.qqbot.targets.name 不能重复")
-    identities = {(target.kind, target.identifier) for target in targets}
-    if len(identities) != len(targets):
-        raise ConfigError("monitor.qqbot.targets 的 type/id 不能重复")
-    admins = tuple(_text(value, f"monitor.qqbot.admins[{index}]") for index, value in enumerate(admins_raw))
-    if len(set(admins)) != len(admins):
-        raise ConfigError("monitor.qqbot.admins 不能重复")
-    unknown_admins = set(admins) - names
-    if unknown_admins:
-        raise ConfigError(
-            f"monitor.qqbot.admins 引用了未知目标：{sorted(unknown_admins)[0]}"
-        )
-    target_by_name = {target.name: target for target in targets}
-    non_user_admins = [name for name in admins if target_by_name[name].kind != "user"]
-    if non_user_admins:
-        raise ConfigError(
-            f"monitor.qqbot.admins 只能引用 user 目标：{non_user_admins[0]}"
-        )
-    unknown_kinds = set(alerts_raw) - set(ALERT_KINDS)
-    if unknown_kinds:
-        raise ConfigError(
-            f"monitor.qqbot.alerts 包含未知告警类型：{sorted(unknown_kinds)[0]}"
-        )
-    alerts: list[QQAlertRoute] = []
-    for kind in ALERT_KINDS:
-        route = alerts_raw.get(kind, [])
-        if not isinstance(route, list):
-            raise ConfigError(f"monitor.qqbot.alerts.{kind} 必须是目标名称数组")
-        route_names = tuple(
-            _text(value, f"monitor.qqbot.alerts.{kind}[{index}]")
-            for index, value in enumerate(route)
-        )
-        if len(set(route_names)) != len(route_names):
-            raise ConfigError(f"monitor.qqbot.alerts.{kind} 不能包含重复目标")
-        unknown_targets = set(route_names) - names
-        if unknown_targets:
-            raise ConfigError(
-                f"monitor.qqbot.alerts.{kind} 引用了未知目标："
-                f"{sorted(unknown_targets)[0]}"
-            )
-        alerts.append(QQAlertRoute(kind, route_names))
     return MonitorConfig(
-        monitor_enabled, monitor_endpoint, monitor_schedule, monitor_power,
-        tuple(targets), admins, tuple(alerts),
+        monitor_enabled, monitor_endpoint, timezone, monitor_schedule, monitor_power,
     )
 
 

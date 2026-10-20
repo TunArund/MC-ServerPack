@@ -10,7 +10,7 @@ from typing import Optional
 from . import remote
 from .config import (
     CONFIG_FILE, ROOT, MonitorConfig, load_env, load_monitor,
-    render_runtime_section, upsert_monitor_user_target,
+    render_runtime_section,
 )
 from .deploy import DeployError, RuntimeDeployment
 
@@ -30,7 +30,8 @@ class Monitor:
         self.endpoint = self.config.endpoint
         self.deployment = RuntimeDeployment(
             ROOT / "monitor", self.endpoint, "monitor.sh",
-            preserve=("data", "monitor.log"), transport=self.transport,
+            preserve=("data", "monitor.log"),
+            transport=self.transport,
         )
 
     @property
@@ -40,25 +41,42 @@ class Monitor:
     def check(self) -> None:
         self.deployment.check()
 
+    def _prepare(self) -> tuple[tuple[Path, str, int], ...]:
+        values = load_env(self.config_path.parent / ".env")
+        if len(values.get("MANAGER_API_KEY", "").strip()) < 32:
+            raise DeployError(
+                "Monitor 需要与 Manager 相同的 MANAGER_API_KEY；"
+                "请先部署 Manager，或在 .env 中填入该密钥"
+            )
+        ca = ROOT / "manager/data/tls/ca.crt"
+        return (
+            ((ca, "data/tls/ca.crt", 0o644),) if ca.is_file() else ()
+        )
+
     def install(self) -> None:
+        files = self._prepare()
         self.deployment.install(
             render_runtime_section(self.config_path, "monitor"), self._environment(),
+            recreate_on_config=True, files=files,
         )
 
     def publish(self) -> None:
         self.deployment.publish()
 
     def configure(self) -> None:
+        files = self._prepare()
         self.deployment.configure(
             render_runtime_section(self.config_path, "monitor"),
-            self._environment(),
+            self._environment(), files=files,
         )
 
     def _environment(self) -> str:
         values = load_env(self.config_path.parent / ".env")
         environment = "".join(
             f"{key}={values.get(key, '')}\n"
-            for key in ("POWER_SECRET_ID", "POWER_SECRET_KEY")
+            for key in (
+                "POWER_SECRET_ID", "POWER_SECRET_KEY", "MANAGER_API_KEY",
+            )
             if key in values
         )
         qq_id = values.get("QQBOT_APP_ID")
@@ -87,18 +105,22 @@ class Monitor:
     def run(self, action: str) -> None:
         self.command([action])
 
-    def add_target(self, name: str) -> str:
+    def reset(self) -> None:
+        self.command(["reset-targets", "--force"])
+
+    def reset_messages(self) -> None:
+        self.command(["reset-messages", "--force"])
+
+    def add_admin(self) -> str:
         code = secrets.token_hex(2)
-        print(f"请向机器人发送：{code}", flush=True)
-        result = self.command(["add-target", code], capture=True)
+        print(f"请私聊机器人发送：{code}", flush=True)
+        result = self.command(["add-admin", code], capture=True)
         output = (
             result.stdout.decode("utf-8", "replace")
             if isinstance(result.stdout, bytes) else (result.stdout or "")
         )
-        matches = re.findall(r"^user_openid:\s*(\S+)\s*$", output, re.MULTILINE)
+        matches = re.findall(r"^admin_openid:\s*(\S+)\s*$", output, re.MULTILINE)
         if len(matches) != 1:
-            raise DeployError("远端 Monitor 未返回唯一 user_openid")
+            raise DeployError("远端 Monitor 未返回唯一 admin_openid")
         identifier = matches[0]
-        upsert_monitor_user_target(self.config_path, name, identifier)
-        self.configure()
         return identifier

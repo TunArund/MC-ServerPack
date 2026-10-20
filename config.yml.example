@@ -3,6 +3,10 @@ manager:
   host: manageraddr
   user: manageruser
   dir: /home/manageruser/MC-ServerPack-manager
+  timezone: Asia/Shanghai
+  api:
+    listen: 0.0.0.0
+    port: 27016
   # 定时关机
   auto-stop: false
   stop-at: '23:05'
@@ -29,34 +33,24 @@ monitor:
   host: monitoraddr
   user: monitoruser
   dir: /home/monitoruser/MC-ServerPack-monitor
+  timezone: Asia/Shanghai
   manager:
     power-api:
       provider: tencent
       instance-id: ins-xxxxyyyy
       instance-region: ap-nanjing
+    # monitor 段保持完整，可整段复制到独立 Monitor 的 config.yml。
+    # 这里的 host 故意与 manager.host 重复，端口与 manager.api.port 重复。
+    api:
+      host: manageraddr
+      port: 27016
     # 定时开机
     auto-start: true
     start-at: '19:55'  # 开机时间
     # 定时关机（可同时开启，作为二次检查）
     auto-stop: true    # 自动关机
     stop-at: '23:05'   # 关机时间
-  qqbot:
-    targets:
-    - name: owner
-      type: user
-      id: aaa
-    # 只有群主才能邀请机器人进群
-    - name: players
-      type: group
-      id: bbb
-    admins:
-    - owner
-    # API/调度执行失败、状态与日程不符、故障恢复
-    alerts:
-      check-failed: [owner]
-      state-mismatch: [owner]
-      recovered: [owner]
-
+    # 通知目标的添加参考readme.md
 # 可选的对象存储，开启后可配置云端备份（当网盘用）
 cos:
   enabled: false

@@ -41,8 +41,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertIn('resource("docker-install.sh")', docker)
         self.assertNotIn("apt-get", docker)
         self.assertIn("apt-get", docker_script)
-        self.assertIn("class PythonProvisioner", shared)
-        self.assertIn("python3-venv", shared)
+        self.assertNotIn("class PythonProvisioner", shared)
+        self.assertNotIn("python3-venv", shared)
         self.assertNotIn("docker", imports)
         self.assertTrue((ROOT / "lib/manager.py").is_file())
         self.assertTrue((ROOT / "lib/monitor.py").is_file())
@@ -52,7 +52,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_only_terminal_installs_docker(self) -> None:
         terminal = (ROOT / "lib/docker.py").read_text(encoding="utf-8")
         installer = (ROOT / "lib/docker-install.sh").read_text(encoding="utf-8")
-        manager = (ROOT / "manager/lib/docker.py").read_text(encoding="utf-8")
+        manager = (ROOT / "manager/src/docker.py").read_text(encoding="utf-8")
         manager_entry = (ROOT / "manager/manager.sh").read_text(encoding="utf-8")
         monitor_entry = (ROOT / "monitor/monitor.sh").read_text(encoding="utf-8")
         self.assertIn("DockerProvisioner", terminal)
@@ -65,16 +65,23 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_power_core_is_identical_in_all_runtimes(self) -> None:
         expected = (ROOT / "lib/power.py").read_bytes()
-        self.assertEqual(expected, (ROOT / "manager/lib/power.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "manager/src/power.py").read_bytes())
         self.assertEqual(expected, (ROOT / "monitor/src/power.py").read_bytes())
 
         self.assertNotIn(b"load_adapter", expected)
+
+    def test_manager_sdk_is_identical_in_all_runtimes(self) -> None:
+        expected = (ROOT / "manager/src/manager_sdk.py").read_bytes()
+        self.assertEqual(expected, (ROOT / "lib/manager_sdk.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "monitor/src/manager_sdk.py").read_bytes())
+        self.assertNotIn(b"import manager", expected)
+        self.assertNotIn(b"from manager", expected)
 
     def test_shared_provider_implementations_are_identical(self) -> None:
         for name in ("tencent.py", "example.py"):
             expected = (ROOT / "lib/providers" / name).read_bytes()
             with self.subTest(name=name, runtime="manager"):
-                self.assertEqual(expected, (ROOT / "manager/lib/providers" / name).read_bytes())
+                self.assertEqual(expected, (ROOT / "manager/src/providers" / name).read_bytes())
             with self.subTest(name=name, runtime="monitor"):
                 self.assertEqual(expected, (ROOT / "monitor/src/providers" / name).read_bytes())
 
@@ -92,16 +99,16 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertTrue((ROOT / "monitor/.mcspignore").is_file())
 
     def test_manager_module_names_describe_both_directions(self) -> None:
-        self.assertTrue((ROOT / "manager/lib/backup.py").is_file())
-        self.assertFalse((ROOT / "manager/lib/archive.py").exists())
-        transfer = (ROOT / "manager/lib/transfer.py").read_text(encoding="utf-8")
+        self.assertTrue((ROOT / "manager/src/backup.py").is_file())
+        self.assertFalse((ROOT / "manager/src/archive.py").exists())
+        transfer = (ROOT / "manager/src/transfer.py").read_text(encoding="utf-8")
         self.assertIn("def export_pack", transfer)
         self.assertIn("def import_pack", transfer)
 
     def test_no_cross_runtime_imports(self) -> None:
         forbidden = {
             "lib": ("manager", "monitor"),
-            "manager/lib": ("monitor",),
+            "manager/src": ("monitor",),
             "monitor/src": ("manager",),
         }
         for directory, prefixes in forbidden.items():
@@ -122,13 +129,42 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(
             modules,
             [
-                "app.py", "config.py", "network.py", "power.py", "qqbot.py",
-                "schedule.py",
+                "app.py", "config.py", "manager_sdk.py", "message.py", "network.py",
+                "power.py", "qqbot.py", "schedule.py", "targets.py",
             ],
         )
         self.assertFalse((ROOT / "monitor/src/monitor").exists())
         self.assertFalse((ROOT / "monitor/src/qqbot").exists())
         self.assertFalse((ROOT / "monitor/lib").exists())
+
+    def test_runtime_containers_use_invoking_user(self) -> None:
+        compose = (ROOT / "monitor/compose.yml").read_text(encoding="utf-8")
+        self.assertIn("${MC_CONTAINER_UID:-1000}:${MC_CONTAINER_GID:-1000}", compose)
+        script = (ROOT / "monitor/monitor.sh").read_text(encoding="utf-8")
+        self.assertIn('export MC_CONTAINER_UID="$(id -u)"', script)
+        self.assertIn('export MC_CONTAINER_GID="$(id -g)"', script)
+        manager = (ROOT / "manager/src/docker.py").read_text(encoding="utf-8")
+        manager_config = (ROOT / "manager/src/config.py").read_text(encoding="utf-8")
+        self.assertIn("MC_CONTAINER_UID", manager)
+        self.assertIn("拒绝以 root 运行", manager)
+        self.assertIn(
+            "${MC_CONTAINER_UID:-1000}:${MC_CONTAINER_GID:-1000}",
+            manager_config,
+        )
+
+    def test_monitor_targets_are_dynamic_not_config_backed(self) -> None:
+        forbidden = {
+            "monitor/src/qqbot.py": "TargetPolicy",
+            "monitor/src/config.py": "qqbot",
+            "lib/config.py": "upsert_monitor",
+            "lib/cli.py": "add-target",
+        }
+        for name, token in forbidden.items():
+            with self.subTest(name=name):
+                self.assertNotIn(token, (ROOT / name).read_text(encoding="utf-8"))
+        self.assertNotIn(
+            '"version"', (ROOT / "monitor/src/targets.py").read_text(encoding="utf-8"),
+        )
 
     def test_monitor_domain_does_not_import_global_config(self) -> None:
         for path in (ROOT / "monitor/src").glob("*.py"):
@@ -139,7 +175,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_provider_implementations_do_not_import_power_state_machine(self) -> None:
         for directory in (
-            ROOT / "lib/providers", ROOT / "manager/lib/providers",
+            ROOT / "lib/providers", ROOT / "manager/src/providers",
             ROOT / "monitor/src/providers",
         ):
             for path in directory.glob("*.py"):

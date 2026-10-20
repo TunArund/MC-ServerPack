@@ -149,91 +149,13 @@ class DeployError(RuntimeError):
     pass
 
 
-class PythonProvisioner:
-    """为源码版 Manager 准备 Python、venv 与项目依赖。"""
-
-    SYSTEM_SCRIPT = r"""set -Eeuo pipefail
-if [ "$(id -u)" -eq 0 ]; then
-  SUDO=
-elif command -v sudo >/dev/null 2>&1 && sudo --non-interactive true; then
-  SUDO='sudo --non-interactive'
-else
-  echo '安装 Python 需要 root 或免密 sudo' >&2
-  exit 1
-fi
-as_root() {
-  if [ -n "$SUDO" ]; then $SUDO "$@"; else "$@"; fi
-}
-echo '[Python 1/3] 安装 Python、pip 与 venv'
-as_root env DEBIAN_FRONTEND=noninteractive \
-  apt-get -o Dpkg::Use-Pty=0 update
-as_root env DEBIAN_FRONTEND=noninteractive \
-  apt-get -o Dpkg::Use-Pty=0 install -y python3 python3-pip python3-venv
-echo 'Python、pip 与 venv 已就绪'
-"""
-
-    VENV_SCRIPT = r"""set -Eeuo pipefail
-root=$1
-requirements=$2
-echo '[Python 2/3] 创建 Manager 虚拟环境'
-mkdir -p -- "$root"
-python3 -m venv "$root/.venv"
-echo '[Python 3/3] 安装 Manager Python 依赖'
-"$root/.venv/bin/python" -m pip install --requirement "$requirements"
-"$root/.venv/bin/python" -c 'import yaml'
-echo 'Manager Python 环境已就绪'
-"""
-
-    def __init__(
-        self, endpoint: Endpoint, requirements: Path, *,
-        transport: remote.Transport | None = None,
-    ) -> None:
-        self.endpoint = endpoint
-        self.requirements = requirements
-        self.transport = transport or remote.Transport()
-
-    @property
-    def destination(self) -> str:
-        return remote.target(self.endpoint.user, self.endpoint.host)
-
-    def install(self) -> None:
-        if not self.requirements.is_file():
-            raise DeployError(f"缺少 Python 依赖清单：{self.requirements}")
-        remote_requirements = self.endpoint.directory + "/.mcsp-requirements.txt"
-        self.transport.ssh_logged(
-            self.destination, ["bash", "-s", "--"],
-            input_text=self.SYSTEM_SCRIPT,
-            label=f"准备 Python：{self.destination}",
-        )
-        self.transport.ssh(
-            self.destination, ["mkdir", "-p", self.endpoint.directory],
-        )
-        try:
-            self.transport.scp(
-                self.requirements, f"{self.destination}:{remote_requirements}",
-            )
-            self.transport.ssh_logged(
-                self.destination,
-                [
-                    "bash", "-s", "--", self.endpoint.directory,
-                    remote_requirements,
-                ],
-                input_text=self.VENV_SCRIPT,
-                label=f"安装 Manager Python 依赖：{self.destination}",
-            )
-        finally:
-            self.transport.ssh(
-                self.destination, ["rm", "-f", remote_requirements],
-                check=False,
-            )
-
-
 class RuntimeDeployment:
     """传输运行时，并且只调用运行时公开的管理命令。"""
 
     def __init__(
         self, source: Path, endpoint: Endpoint, entrypoint: str, *,
         preserve: tuple[str, ...] = (),
+        config_name: str = "config.yml", environment_name: str = ".env",
         transport: remote.Transport | None = None,
     ) -> None:
         if any(
@@ -244,7 +166,9 @@ class RuntimeDeployment:
         self.source = source
         self.endpoint = endpoint
         self.entrypoint = entrypoint
-        self.preserve = ("config.yml", ".env", *preserve)
+        self.config_name = config_name
+        self.environment_name = environment_name
+        self.preserve = tuple(dict.fromkeys((config_name.split("/", 1)[0], environment_name.split("/", 1)[0], *preserve)))
         self.transport = transport or remote.Transport()
 
     @property
@@ -286,17 +210,28 @@ class RuntimeDeployment:
         )
         print(f"[源码 3/3] 增量同步完成：上传 {uploaded}，删除 {deleted}")
 
-    def install(self, config: str, environment: str) -> None:
+    def install(
+        self, config: str, environment: str, *,
+        recreate_on_config: bool = False,
+        files: tuple[tuple[Path, str, int], ...] = (),
+    ) -> None:
         """同步运行时及配置，然后调用运行时自己的安装逻辑。"""
         self.check()
         self.publish()
         print(f"[部署] 同步 {self.runtime_name} 配置与密钥", flush=True)
-        self.upload_config(config)
-        self.upload_environment(environment)
+        config_changed = self.upload_config(config)
+        environment_changed = self.upload_environment(environment)
+        self._upload_files(files)
+        arguments: tuple[str, ...] = ()
+        if recreate_on_config and (config_changed or environment_changed):
+            arguments = ("--recreate",)
         print(f"[部署] 调用 {self.runtime_name} install", flush=True)
-        self._invoke("install")
+        self._invoke("install", arguments)
 
-    def configure(self, config: str, environment: str | None = None) -> None:
+    def configure(
+        self, config: str, environment: str | None = None, *,
+        files: tuple[tuple[Path, str, int], ...] = (),
+    ) -> None:
         """只更新运行时配置；校验及重载行为由运行时自己负责。"""
         print(f"[配置 1/3] 同步 {self.runtime_name} config.yml", flush=True)
         config_changed = self.upload_config(config)
@@ -309,15 +244,46 @@ class RuntimeDeployment:
             print(f"[配置 2/3] .env {environment_state}", flush=True)
         else:
             print("[配置 2/3] 无 .env 更新，跳过", flush=True)
+        self._upload_files(files)
         print(f"[配置 3/3] 调用 {self.runtime_name} apply-config", flush=True)
         self._invoke("apply-config")
 
-    def _invoke(self, action: str) -> None:
+    def _upload_files(self, files: tuple[tuple[Path, str, int], ...]) -> None:
+        for source, name, mode in files:
+            print(f"[部署] 上传 {name}", flush=True)
+            self.upload_path(source, name, mode)
+
+    def upload_path(self, source: Path, name: str, mode: int = 0o600) -> bool:
+        source = Path(source)
+        if not source.is_file():
+            raise DeployError(f"缺少待上传文件：{source}")
+        return self.transport.upload_file(
+            source, self.destination,
+            self.endpoint.directory + "/" + name, mode=mode,
+        )
+
+    def download_path(
+        self, name: str, local_path: Path, *, mode: int = 0o600,
+        optional: bool = False,
+    ) -> bool:
+        remote_path = self.endpoint.directory + "/" + name
+        if optional and not self.transport.remote_file_exists(
+            self.destination, remote_path,
+        ):
+            return False
+        self.transport.download_file(
+            self.destination, remote_path, local_path, mode=mode,
+        )
+        return True
+
+    def _invoke(self, action: str, arguments: tuple[str, ...] = ()) -> None:
+        tail = remote.shell_join([action])
+        if arguments:
+            tail += " " + " ".join(remote.shell_join([arg]) for arg in arguments)
         command = (
             f"cd {remote.shell_join([self.endpoint.directory])} && "
             f"chmod 700 {remote.shell_join([self.entrypoint])} && "
-            f"exec ./{remote.shell_join([self.entrypoint])} "
-            f"{remote.shell_join([action])}"
+            f"exec ./{remote.shell_join([self.entrypoint])} {tail}"
         )
         if action == "install":
             runtime = self.entrypoint.removesuffix(".sh")
@@ -332,14 +298,14 @@ class RuntimeDeployment:
             )
 
     def upload_config(self, content: str) -> bool:
-        return self._upload(content, "config.yml")
+        return self._upload(content, self.config_name)
 
     def upload_environment(self, content: str) -> bool:
-        return self._upload(content, ".env", mode=0o600)
+        return self._upload(content, self.environment_name, mode=0o600)
 
     def _upload(self, content: str, name: str, *, mode: int = 0o644) -> bool:
         with tempfile.TemporaryDirectory(prefix="mcsp-runtime-") as directory:
-            output = Path(directory) / name
+            output = Path(directory) / Path(name).name
             output.write_text(content, encoding="utf-8")
             output.chmod(mode)
             return self.transport.upload_file(

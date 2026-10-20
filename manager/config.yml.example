@@ -1,6 +1,10 @@
 host: manageraddr
 user: manageruser
 dir: /home/manageruser/MC-ServerPack-manager
+timezone: Asia/Shanghai
+api:
+  listen: 0.0.0.0
+  port: 27016
 auto-stop: false
 stop-at: '23:05'
 power-api:

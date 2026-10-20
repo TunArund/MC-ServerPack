@@ -7,8 +7,8 @@ from pathlib import Path
 
 import yaml
 
-from manager.lib.config import ManagerLimits
-from manager.lib.modpacks import ModpackError, ModpackManager
+from manager.src.config import ManagerLimits
+from manager.src.modpacks import ModpackError, ModpackManager
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

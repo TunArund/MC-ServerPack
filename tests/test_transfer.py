@@ -5,11 +5,12 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 import yaml
 
-from manager.lib.modpacks import ModpackError, ModpackManager
-from manager.lib.transfer import export_pack, import_directory, import_pack
+from manager.src.modpacks import ModpackError, ModpackManager
+from manager.src.transfer import export_pack, import_pack
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,14 +34,17 @@ class ManagerTransferTests(unittest.TestCase):
         shutil.copytree(ROOT / "manager/runtime", self.root / "runtime")
 
     def test_export_import_preserves_existing_data_and_backups(self) -> None:
-        archive = export_pack("source", self.packs)
-        manager = ModpackManager(self.root)
-        imported = import_pack(manager, "target", archive, force=False)
+        archive = export_pack("source", self.packs, mode="source-only")
+        destination = self.root / "destination"
+        shutil.copytree(ROOT / "manager/runtime", destination / "runtime")
+        manager = ModpackManager(destination)
+        manager.docker.running = Mock(return_value=False)
+        imported = import_pack(manager, "source", archive, force=False)
         (imported / "data/world.dat").write_text("keep", encoding="utf-8")
         (imported / "backups/old.tar.gz").write_text("keep", encoding="utf-8")
         (self.packs / "source/src/new.txt").write_text("new", encoding="utf-8")
 
-        import_pack(manager, "target", export_pack("source", self.packs), force=True)
+        import_pack(manager, "source", export_pack("source", self.packs, mode="source-only"), force=True)
 
         self.assertEqual((imported / "data/world.dat").read_text(), "keep")
         self.assertEqual((imported / "backups/old.tar.gz").read_text(), "keep")
@@ -64,40 +68,6 @@ class ManagerTransferTests(unittest.TestCase):
                 ModpackManager(self.root), "target",
                 export_pack("source", self.packs), force=True,
             )
-
-    def test_directory_import_is_limited_to_managed_staging_and_preserves_data(self) -> None:
-        manager = ModpackManager(self.root)
-        staging = self.root / "tmp/transfers/target"
-        shutil.copytree(self.packs / "source", staging)
-        imported = import_directory(manager, "target", staging)
-        (imported / "data/world.dat").write_text("keep", encoding="utf-8")
-        (staging / "src/new.txt").write_text("new", encoding="utf-8")
-
-        import_directory(manager, "target", staging)
-
-        self.assertEqual((imported / "data/world.dat").read_text(), "keep")
-        self.assertEqual((imported / "src/new.txt").read_text(), "new")
-        with self.assertRaisesRegex(ModpackError, "受管范围"):
-            import_directory(manager, "other", self.packs / "source")
-
-    def test_directory_update_rolls_back_when_new_config_cannot_render(self) -> None:
-        manager = ModpackManager(self.root)
-        staging = self.root / "tmp/transfers/target"
-        shutil.copytree(self.packs / "source", staging)
-        imported = import_directory(manager, "target", staging)
-        old_config = (imported / "config.yml").read_text(encoding="utf-8")
-        (staging / "src/server.jar").write_bytes(b"new jar")
-        document = yaml.safe_load((staging / "config.yml").read_text(encoding="utf-8"))
-        document["read-only"] = {"enabled": True, "persistent": ["missing.txt"]}
-        (staging / "config.yml").write_text(
-            yaml.safe_dump(document, sort_keys=False), encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(Exception, "持久化文件不存在"):
-            import_directory(manager, "target", staging)
-
-        self.assertEqual((imported / "src/server.jar").read_bytes(), b"jar")
-        self.assertEqual((imported / "config.yml").read_text(encoding="utf-8"), old_config)
 
 
 if __name__ == "__main__":

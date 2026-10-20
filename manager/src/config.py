@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     import yaml
 except ModuleNotFoundError:
     yaml = None
 
-MANAGER_ROOT = Path(__file__).resolve().parents[1]
+MANAGER_ROOT = Path(
+    os.environ.get("MCSP_MANAGER_ROOT", Path(__file__).resolve().parents[1])
+).resolve()
 PACKS_DIR = MANAGER_ROOT / "modpacks"
-MANAGER_CONFIG = MANAGER_ROOT / "config.yml"
+MANAGER_CONFIG = MANAGER_ROOT / "data/config.yml"
 PACK_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
@@ -34,6 +39,50 @@ EMPTY_JSON_DEFAULTS = {
 
 class ConfigError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ApiSettings:
+    listen: str
+    port: int
+    certificate: Path
+    private_key: Path
+
+
+def load_api_settings(path: Path = MANAGER_CONFIG) -> ApiSettings:
+    if yaml is None:
+        raise ConfigError("缺少 PyYAML")
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"缺少 {path}；请从 config.yml.example 复制") from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"Manager 配置读取失败：{exc}") from exc
+    if not isinstance(document, dict):
+        raise ConfigError("Manager config.yml 必须是对象")
+    api = document.get("api", {})
+    if not isinstance(api, dict):
+        raise ConfigError("api 必须是对象")
+    listen = api.get("listen", "0.0.0.0")
+    if not isinstance(listen, str):
+        raise ConfigError("api.listen 必须是 IPv4 地址")
+    try:
+        if ipaddress.ip_address(listen).version != 4:
+            raise ValueError
+    except ValueError as exc:
+        raise ConfigError("api.listen 必须是 IPv4 地址") from exc
+    port = api.get("port", 27016)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ConfigError("api.port 必须是 1 到 65535 的整数")
+    root = path.parent.parent
+    certificate = root / "data/tls/server.crt"
+    private_key = root / "data/tls/server.key"
+    if not certificate.is_file() or not private_key.is_file():
+        raise ConfigError(
+            "缺少 Manager TLS 证书；请运行 ./manager.sh install，"
+            "或通过 Terminal 执行 ./mcsp.sh deploy manager"
+        )
+    return ApiSettings(listen, port, certificate, private_key)
 
 
 @dataclass(frozen=True)
@@ -81,6 +130,7 @@ class ManagerLimits:
     power_instance_id: str | None = None
     poweroff_at: str = "23:05"
     power_provider: str = "tencent"
+    timezone: str = "Asia/Shanghai"
 
 
 def validate_pack_id(pack_id: str) -> str:
@@ -146,6 +196,17 @@ def _clock(value: object, field: str) -> str:
     return value
 
 
+def _timezone(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{field} 必须是非空字符串")
+    name = value.strip()
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(f"{field} 必须是有效的 IANA 时区，例如 Asia/Shanghai") from exc
+    return name
+
+
 def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
     if yaml is None:
         raise ConfigError("缺少 PyYAML")
@@ -157,6 +218,7 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
         raise ConfigError(f"Manager 配置读取失败：{exc}") from exc
     if not isinstance(document, dict):
         raise ConfigError("manager/config.yml 必须是对象")
+    timezone = _timezone(document.get("timezone"), "timezone")
     modpack = document.get("modpack")
     if not isinstance(modpack, dict):
         legacy = any(
@@ -209,6 +271,7 @@ def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:
         instance_id.strip() if isinstance(instance_id, str) else None,
         _clock(document.get("stop-at", "23:05"), "stop-at"),
         provider,
+        timezone,
     )
 
 
@@ -364,12 +427,14 @@ def render_compose(spec: PackSpec) -> Path:
     if command[0] == "java":
         command[1:1] = spec.jvm_args
     service = {
-        "image": runtime_image(spec.java, manager_root), "init": True, "restart": "unless-stopped",
+        # data/state.json 是自启真源；Docker daemon 不得自行复活 disabled 整合包。
+        "image": runtime_image(spec.java, manager_root), "init": True, "restart": "no",
         "working_dir": "/server", "stop_grace_period": "${MC_DOCKER_GRACE:-190}s",
-        "command": command, "user": "${MC_CONTAINER_UID:?}:${MC_CONTAINER_GID:?}",
+        "command": command,
+        "user": "${MC_CONTAINER_UID:-1000}:${MC_CONTAINER_GID:-1000}",
         "mem_limit": spec.memory, "ports": [f"{spec.port}:{spec.port}"],
         "environment": {"HOME": "/tmp", "MC_STOP_TIMEOUT": "${MC_STOP_TIMEOUT:-180}",
-                        "MC_SERVER_PORT": str(spec.port)},
+                        "MC_SERVER_PORT": str(spec.port), "TZ": "${TZ:-UTC}"},
         "healthcheck": {
             "test": ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/$${MC_SERVER_PORT:-25565}"],
             "interval": "10s", "timeout": "3s",

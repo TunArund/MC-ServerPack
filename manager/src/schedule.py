@@ -5,8 +5,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import shlex
-import subprocess
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -22,8 +20,7 @@ from .power import PowerError, PowerTarget, create_power as build_power
 
 
 ZONE = ZoneInfo("Asia/Shanghai")
-CRON_MARKER = "# mc-serverpack-manager-schedule"
-STATE_FILE = ".schedule-state.json"
+STATE_FILE = "data/schedule-state.json"
 
 
 class ScheduleError(RuntimeError):
@@ -39,11 +36,11 @@ def create_power(settings: ManagerLimits, manager_root: Path = MANAGER_ROOT):
         raise PowerError("云关机未启用或配置不完整")
     secrets: dict[str, str] = {}
     try:
-        lines = (manager_root / ".env").read_text(encoding="utf-8").splitlines()
+        lines = (manager_root / "data/.env").read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         lines = []
     except OSError as exc:
-        raise PowerError(f"无法读取 {manager_root / '.env'}：{exc}") from exc
+        raise PowerError(f"无法读取 {manager_root / 'data/.env'}：{exc}") from exc
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -92,6 +89,7 @@ def backup_due(spec: PackSpec, now: float | None = None) -> bool:
 @contextmanager
 def schedule_lock(manager_root: Path = MANAGER_ROOT) -> Iterator[IO[str] | None]:
     path = manager_root / STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -135,7 +133,7 @@ def _save_state(handle: IO[str], state: set[str]) -> None:
 
 def _stop_time(now: datetime, text: str) -> datetime:
     hour, minute = (int(part) for part in text.split(":"))
-    return now.astimezone(ZONE).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
 def _power_time(stop_at: datetime, settings: ManagerLimits) -> datetime:
@@ -152,7 +150,7 @@ def _event_end(stop_at: datetime, settings: ManagerLimits) -> datetime:
 
 
 def _scheduled_stop(now: datetime, settings: ManagerLimits) -> datetime:
-    local = now.astimezone(ZONE)
+    local = now.astimezone(ZoneInfo(settings.timezone))
     today = _stop_time(local, settings.stop_at)
     previous = today - timedelta(days=1)
     if local < today and local <= _event_end(previous, settings):
@@ -167,7 +165,7 @@ def _run_shutdown(
     settings: ManagerLimits = manager.limits
     if not settings.schedule_enabled:
         return
-    local = now.astimezone(ZONE).replace(second=0, microsecond=0)
+    local = now.astimezone(ZoneInfo(settings.timezone)).replace(second=0, microsecond=0)
     stop_at = _scheduled_stop(local, settings)
     date = stop_at.date().isoformat()
     remaining = int((stop_at - local).total_seconds() // 60)
@@ -214,6 +212,8 @@ def _run_shutdown(
 
 def _run_backups(manager, now_timestamp: float, report: ScheduleReport) -> None:
     for spec in manager.specs():
+        if getattr(manager, "maintenance", lambda _pack_id: False)(spec.pack_id):
+            continue
         if not backup_due(spec, now_timestamp):
             continue
         try:
@@ -226,7 +226,8 @@ def run_all(
     manager, now: datetime | None = None,
     power_factory: Callable[..., object] = create_power,
 ) -> ScheduleReport:
-    current = datetime.now(ZONE) if now is None else now.astimezone(ZONE)
+    zone = ZoneInfo(manager.limits.timezone)
+    current = datetime.now(zone) if now is None else now.astimezone(zone)
     report = ScheduleReport()
     with schedule_lock(manager.manager_root) as state_handle:
         report.acquired = state_handle is not None
@@ -251,43 +252,3 @@ def run_due(manager, now: float | None = None) -> tuple[list[Path], list[tuple[s
             _run_backups(manager, time.time() if now is None else now, report)
     failures = [(name.removeprefix("backup:"), reason) for name, reason in report.failures]
     return report.backups, failures, report.acquired
-
-
-Runner = Callable[..., subprocess.CompletedProcess[str]]
-
-
-def _read_crontab(runner: Runner) -> list[str]:
-    try:
-        result = runner(["crontab", "-l"], text=True, capture_output=True, check=False)
-    except OSError as exc:
-        raise ScheduleError(f"无法执行 crontab：{exc}") from exc
-    if result.returncode == 0:
-        return result.stdout.splitlines()
-    if result.returncode == 1:
-        return []
-    raise ScheduleError(f"读取 crontab 失败：{result.stderr.strip()}")
-
-
-def _write_crontab(lines: list[str], runner: Runner) -> None:
-    content = "\n".join(lines)
-    if content:
-        content += "\n"
-    try:
-        result = runner(["crontab", "-"], text=True, input=content, capture_output=True, check=False)
-    except OSError as exc:
-        raise ScheduleError(f"无法执行 crontab：{exc}") from exc
-    if result.returncode:
-        raise ScheduleError(f"写入 crontab 失败：{result.stderr.strip()}")
-
-
-def install(manager_root: Path = MANAGER_ROOT, runner: Runner = subprocess.run) -> None:
-    lines = [line for line in _read_crontab(runner) if CRON_MARKER not in line]
-    root = shlex.quote(str(manager_root))
-    log = shlex.quote(str(manager_root / "schedule.log"))
-    lines.append(f"* * * * * cd {root} && ./manager.sh schedule run >> {log} 2>&1 {CRON_MARKER}")
-    _write_crontab(lines, runner)
-
-
-def remove(runner: Runner = subprocess.run) -> None:
-    lines = [line for line in _read_crontab(runner) if CRON_MARKER not in line]
-    _write_crontab(lines, runner)

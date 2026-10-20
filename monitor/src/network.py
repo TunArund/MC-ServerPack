@@ -27,12 +27,20 @@ class Target:
     identifier: str
 
 
+def target_label(target: Target) -> str:
+    """只输出场景和脱敏短 ID，避免日志保存完整 QQ 身份标识。"""
+    return f"{target.kind}:…{target.identifier[-6:]}"
+
+
 @dataclass(frozen=True)
 class Incoming:
     message_id: str
     target: Target
     sender_id: str
     content: str
+    sender_role: str | None = None
+    sender_name: str | None = None
+    union_openid: str | None = None
 
 
 def _command_text(content: str) -> str:
@@ -42,26 +50,34 @@ def _command_text(content: str) -> str:
 def incoming(event_name: str, event: dict) -> Incoming | None:
     """Normalize supported QQ gateway events into one transport object."""
     author = event.get("author") or {}
+    union_openid = (
+        str(author.get("union_openid") or event.get("union_openid") or "") or None
+    )
     if event_name == "GROUP_AT_MESSAGE_CREATE":
         kind = "group"
         target_id = str(event.get("group_openid") or "")
         sender_id = str(
             author.get("member_openid") or event.get("group_member_openid") or ""
         )
+        sender_role = str(author.get("member_role") or "") or None
     elif event_name == "C2C_MESSAGE_CREATE":
         kind = "user"
         sender_id = str(author.get("user_openid") or "")
         target_id = sender_id
+        sender_role = None
     else:
         return None
     message_id = str(event.get("id") or "")
     if not message_id or not target_id or not sender_id:
         return None
     return Incoming(
-        message_id,
-        Target(kind, target_id),
-        sender_id,
-        _command_text(str(event.get("content") or "")),
+        message_id=message_id,
+        target=Target(kind, target_id),
+        sender_id=sender_id,
+        content=_command_text(str(event.get("content") or "")),
+        sender_role=sender_role,
+        sender_name=str(author.get("username") or "") or None,
+        union_openid=union_openid,
     )
 
 
@@ -148,7 +164,9 @@ class Network:
         if message_id:
             body.update(msg_id=message_id, msg_seq=sequence)
         if message.markdown:
-            body.update(content=" ", markdown={"content": message.content})
+            # 现行 API 要求 msg_type=2 时 content 为空。直接省略可选字段；
+            # 发送 content="" 会被 QQ 客户端渲染成 Markdown 正文前的空行。
+            body["markdown"] = {"content": message.content}
         else:
             body["content"] = message.content
         if message.keyboard:
@@ -160,12 +178,22 @@ class Network:
         message_id: str | None = None, sequence: int = 1,
     ) -> None:
         token = await self.token()
-        await asyncio.to_thread(
-            self._request,
-            "POST",
-            self._endpoint(target),
-            self._body(message, message_id=message_id, sequence=sequence),
-            {"Authorization": f"QQBot {token}"},
+        started = time.monotonic()
+        try:
+            await asyncio.to_thread(
+                self._request,
+                "POST",
+                self._endpoint(target),
+                self._body(message, message_id=message_id, sequence=sequence),
+                {"Authorization": f"QQBot {token}"},
+            )
+        except Exception:
+            LOGGER.exception("QQ 消息发送失败：target=%s", target_label(target))
+            raise
+        LOGGER.info(
+            "QQ 消息发送成功：target=%s mode=%s elapsed_ms=%d",
+            target_label(target), "reply" if message_id else "active",
+            int((time.monotonic() - started) * 1000),
         )
 
     @staticmethod
@@ -174,17 +202,28 @@ class Network:
         return f"{API_URL}/v2/{path}/{target.identifier}/messages"
 
     async def reply(self, incoming: Incoming, message: Outgoing, *, sequence: int = 1) -> None:
-        await self._send(
-            incoming.target, message,
-            message_id=incoming.message_id, sequence=sequence,
+        await self.reply_to(
+            incoming.target, incoming.message_id, message, sequence=sequence,
         )
+
+    async def reply_to(
+        self, target: Target, message_id: str, message: Outgoing, *,
+        sequence: int = 1,
+    ) -> None:
+        await self._send(
+            target, message, message_id=message_id, sequence=sequence,
+        )
+
+    async def send(self, target: Target, message: Outgoing) -> None:
+        """主动发送消息；调用方负责确认目标和频控。"""
+        await self._send(target, message)
 
     async def push(self, target: Target, message: Outgoing) -> None:
         try:
             await asyncio.wait_for(self.ready.wait(), timeout=30)
         except asyncio.TimeoutError as exc:
             raise NetworkError("QQ WebSocket 尚未就绪，不能主动告警") from exc
-        await self._send(target, message)
+        await self.send(target, message)
 
     async def gateway(self) -> str:
         token = await self.token()
@@ -240,6 +279,7 @@ class Network:
                             operation = event.get("op")
                             if operation == 0 and event.get("t") in ("READY", "RESUMED"):
                                 self.ready.set()
+                                LOGGER.info("QQ Gateway 已就绪：%s", event.get("t"))
                             if operation == 10:
                                 if heartbeat:
                                     heartbeat.cancel()
@@ -258,6 +298,7 @@ class Network:
                                 except Exception:
                                     LOGGER.exception("QQ 消息处理失败")
                             elif operation in (7, 9):
+                                LOGGER.warning("QQ Gateway 要求重连：op=%s", operation)
                                 break
                     finally:
                         self.ready.clear()

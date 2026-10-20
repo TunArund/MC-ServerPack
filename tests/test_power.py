@@ -8,11 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from manager.lib.config import ManagerLimits
-from manager.lib.power import Power, PowerError, PowerTarget
-from manager.lib.power import ProviderError, list_providers, load_provider
-from manager.lib.providers import tencent
-from manager.lib.schedule import create_power
+from manager.src.config import ManagerLimits
+from manager.src.power import Power, PowerError, PowerTarget
+from manager.src.power import ProviderError, list_providers, load_provider
+from manager.src.providers import tencent
+from manager.src.schedule import create_power
 
 
 class FakeRunner:
@@ -103,7 +103,7 @@ class PowerTests(unittest.TestCase):
         )
         with (
             patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}),
-            patch("manager.lib.power.load_provider", return_value=SimpleNamespace()),
+            patch("manager.src.power.load_provider", return_value=SimpleNamespace()),
         ):
             self.assertIsInstance(create_power(settings, self.root), Power)
 

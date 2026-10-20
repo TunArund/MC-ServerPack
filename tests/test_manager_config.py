@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from manager.lib.config import ConfigError, load_limits
+from manager.src.config import ConfigError, load_limits
 
 
 class ManagerConfigTests(unittest.TestCase):
@@ -19,6 +19,7 @@ class ManagerConfigTests(unittest.TestCase):
 
     def minimum(self) -> dict:
         return {
+            "timezone": "Asia/Shanghai",
             "auto-stop": False,
             "stop-at": "23:05",
             "modpack": {
@@ -36,16 +37,13 @@ class ManagerConfigTests(unittest.TestCase):
         self.assertFalse(settings.schedule_enabled)
         self.assertFalse(settings.poweroff_enabled)
         self.assertEqual(settings.stop_at, "23:00")
+        self.assertEqual(settings.timezone, "Asia/Shanghai")
 
-    def test_legacy_flat_limits_report_migration_instructions(self) -> None:
-        path = self.write({
-            "max-running": 1,
-            "mem-limit": "4g",
-            "start-timeout": 300,
-            "stop-timeout": 180,
-        })
-        with self.assertRaisesRegex(ConfigError, "旧版平铺配置.*移入 modpack"):
-            load_limits(path)
+    def test_rejects_invalid_timezone(self) -> None:
+        document = self.minimum()
+        document["timezone"] = "Mars/Olympus"
+        with self.assertRaisesRegex(ConfigError, "IANA 时区"):
+            load_limits(self.write(document))
 
     def test_schedule_and_poweroff_are_parsed(self) -> None:
         document = self.minimum()
@@ -112,7 +110,6 @@ class ManagerConfigTests(unittest.TestCase):
         document["modpack"]["stop-at"] = "24:00"
         with self.assertRaisesRegex(ConfigError, "HH:MM"):
             load_limits(self.write(document))
-
 
 if __name__ == "__main__":
     unittest.main()

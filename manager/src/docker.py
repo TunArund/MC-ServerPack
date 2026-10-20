@@ -16,12 +16,24 @@ class DockerError(RuntimeError):
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+EventSink = Callable[[str, int, int, str, dict[str, object] | None], None]
+
+
+def _discard_event(
+    stage: str, current: int, total: int, message: str,
+    detail: dict[str, object] | None = None,
+) -> None:
+    del stage, current, total, message, detail
 
 
 class DockerClient:
-    def __init__(self, manager_root: Path = MANAGER_ROOT, runner: Runner = subprocess.run) -> None:
+    def __init__(
+        self, manager_root: Path = MANAGER_ROOT, runner: Runner = subprocess.run,
+        events: EventSink = _discard_event,
+    ) -> None:
         self.manager_root = manager_root
         self.runner = runner
+        self.events = events
 
     def _run(
         self, arguments: Sequence[str], *, capture: bool = False, input_text: str | None = None,
@@ -55,12 +67,12 @@ class DockerClient:
         except OSError as exc:
             raise DockerError(f"无法执行 docker：{exc}") from exc
         if inspected.returncode == 0:
-            print(f"[镜像] 复用已有 Runtime：{image}", flush=True)
+            self.events("image", 1, 1, f"复用已有 Runtime：{image}", {"image": image})
             return
         dockerfile = self.manager_root / "runtime" / f"java{java}.dockerfile"
         if not dockerfile.is_file():
             raise DockerError(f"缺少 Java {java} 镜像定义")
-        print(f"[镜像] 未找到 {image}，开始构建", flush=True)
+        self.events("image", 1, 1, f"构建 Runtime：{image}", {"image": image})
         self._run(["docker", "build", "-f", str(dockerfile), "-t", image, str(self.manager_root)])
 
     def _environment(
@@ -68,10 +80,17 @@ class DockerClient:
     ) -> dict[str, str]:
         uid = os.environ.get("MC_CONTAINER_UID", str(os.getuid()))
         gid = os.environ.get("MC_CONTAINER_GID", str(os.getgid()))
-        if not uid.isdigit() or not gid.isdigit():
-            raise DockerError("MC_CONTAINER_UID/GID 必须是整数")
-        if uid == "0":
+        try:
+            uid_number = int(uid)
+            gid_number = int(gid)
+        except ValueError as exc:
+            raise DockerError("MC_CONTAINER_UID/GID 必须是整数") from exc
+        if uid_number == 0:
             raise DockerError("拒绝以 root 运行 Minecraft 容器")
+        if uid_number < 0 or gid_number < 0:
+            raise DockerError("MC_CONTAINER_UID/GID 不能为负数")
+        uid = str(uid_number)
+        gid = str(gid_number)
         values = os.environ.copy()
         timeout = str(stop_timeout if stop_timeout is not None else os.environ.get("MC_STOP_TIMEOUT", "180"))
         startup = str(
@@ -145,7 +164,7 @@ class DockerClient:
             restarts = state[2] if len(state) > 2 else "?"
             if health == "healthy":
                 elapsed = int(time.monotonic() - started)
-                print(f"[启动 4/4] 容器健康，耗时 {elapsed}s", flush=True)
+                self.events("start", 4, 4, "容器健康", {"elapsed": elapsed})
                 return
             if status in ("dead", "exited"):
                 raise DockerError(
@@ -165,45 +184,54 @@ class DockerClient:
                 detail = latest[-1].strip() if latest else "尚无容器日志"
             except DockerError:
                 detail = "暂时无法读取容器日志"
-            print(
-                f"[启动 4/4] 已等待 {elapsed}/{timeout}s；{status}/{health}；{detail[-300:]}",
-                flush=True,
-            )
+            self.events("start", 4, 4, "等待 Minecraft 服务端健康", {
+                "elapsed": elapsed, "timeout": timeout, "container_state": status,
+                "health": health, "tail": detail[-300:],
+            })
             time.sleep(min(2, max(0, deadline - time.monotonic())))
 
     def stop(self, spec: PackSpec, *, timeout: int = 180) -> None:
         self.check()
         if not self.running(spec):
-            print(f"[停止 3/3] {spec.pack_id} 已处于停止状态", flush=True)
+            self.events("stop", 3, 3, f"{spec.pack_id} 已处于停止状态", None)
             return
         started = time.monotonic()
-        print(
-            f"[停止 1/3] 向 {spec.pack_id} 发送停止信号并等待 Java 退出"
-            f"（最长 {timeout}s）",
-            flush=True,
-        )
+        self.events("stop", 1, 3, f"向 {spec.pack_id} 发送停止信号", {"timeout": timeout})
         self.compose(spec, "stop", "minecraft", stop_timeout=timeout)
         elapsed = int(time.monotonic() - started)
-        print(f"[停止 2/3] 容器已停止，耗时 {elapsed}s；校验退出码", flush=True)
+        self.events("stop", 2, 3, "容器已停止，校验退出码", {"elapsed": elapsed})
         container = self.compose(spec, "ps", "-a", "-q", "minecraft", capture=True).stdout.strip()
         if not container:
             raise DockerError(f"停止 {spec.pack_id} 后找不到容器")
         result = self._run(["docker", "inspect", "-f", "{{.State.ExitCode}}", container], capture=True)
         if result.stdout.strip() != "0":
             raise DockerError(f"{spec.pack_id} 退出码为 {result.stdout.strip()}，可能未完成存档")
-        print(f"[停止 3/3] 已确认 {spec.pack_id} 退出码为 0", flush=True)
+        self.events("stop", 3, 3, f"已确认 {spec.pack_id} 安全退出", {"exit_code": 0})
 
     def status(self, spec: PackSpec) -> str:
         self.check()
         return self.compose(spec, "ps", capture=True).stdout
 
-    def logs(self, spec: PackSpec, *, lines: int = 100, follow: bool = False) -> None:
-        self.check()
-        arguments = ["logs", "--tail", str(lines)]
-        if follow:
-            arguments.append("--follow")
-        arguments.append("minecraft")
-        self.compose(spec, *arguments)
+    def state(self, spec: PackSpec) -> str:
+        container = self.compose(spec, "ps", "-a", "-q", "minecraft", capture=True).stdout.strip()
+        if not container:
+            return "stopped"
+        raw = self._run([
+            "docker", "inspect", "-f",
+            "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+            container,
+        ], capture=True).stdout.strip()
+        status, _, health = raw.partition("|")
+        if status == "running" and health in ("healthy", "starting", "unhealthy"):
+            return {"healthy": "healthy", "starting": "starting", "unhealthy": "unhealthy"}[health]
+        return status if status in ("created", "restarting", "running", "removing", "paused", "exited", "dead") else "unknown"
+
+    def log_text(self, spec: PackSpec, *, lines: int = 100) -> str:
+        if lines < 0:
+            raise DockerError("日志行数不能为负数")
+        return self.compose(
+            spec, "logs", "--no-color", "--tail", str(lines), "minecraft", capture=True,
+        ).stdout
 
     def console(self, spec: PackSpec, command: str) -> None:
         self.check()

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PythonCompatibilityTests(unittest.TestCase):
     def test_runtime_sources_parse_with_python_39_grammar(self) -> None:
-        for directory in (ROOT / "lib", ROOT / "manager/lib", ROOT / "monitor/src"):
+        for directory in (ROOT / "lib", ROOT / "manager/src", ROOT / "monitor/src"):
             for source in directory.rglob("*.py"):
                 with self.subTest(source=source):
                     ast.parse(
@@ -19,7 +19,7 @@ class PythonCompatibilityTests(unittest.TestCase):
                     )
 
     def test_annotated_modules_postpone_annotation_evaluation(self) -> None:
-        for directory in (ROOT / "lib", ROOT / "manager/lib", ROOT / "monitor/src"):
+        for directory in (ROOT / "lib", ROOT / "manager/src", ROOT / "monitor/src"):
             for source in directory.rglob("*.py"):
                 text = source.read_text(encoding="utf-8")
                 if any(token in text for token in (" | ", "list[", "dict[", "tuple[")):

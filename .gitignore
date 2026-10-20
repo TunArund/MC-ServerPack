@@ -9,6 +9,7 @@ __pycache__/
 /manager/schedule.log
 /manager/manager.log
 /manager/.env
+/manager/data/
 /manager/tmp/
 /monitor/config.yml
 manager/modpacks/*/

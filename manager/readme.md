@@ -1,192 +1,197 @@
-# 整合包标准目录结构
-参考./modpacks/template
-```
-template/
-├── backups/
-├── compose.yml  # 执行 config/start 后生成
-├── config.yml
-├── data/
-└── src/
-    └── .gitkeep
-```
-|目录|作用|
-----|----
-src/        | 存放整合包实际包含的文件
-config.yml  | 配置文件
-data/       | 存放运行时动态修改的文件和目录，由persistent指定
-backups/    | 存放备份文件，一般是persistent指定路径的压缩包
-compose.yml | 由config.yml自动生成，指导docker容器创建
+# Manager 手册
 
-# Manager 命令
+Manager 是运行在 Minecraft 主机上的常驻容器服务，负责整合包生命周期、
+备份恢复、迁移和内部定时任务。宿主机只需 Docker Engine、Compose 插件和
+`curl`，不需要项目 Python 环境。
 
-`compose.yml` 是生成物，不要手工修改。将服务端文件放入 `src/`；默认无需填写
-启动命令或 JVM 参数。
-
-Manager 独立读取并持有自己的 `config.yml`，不依赖 Terminal 或 Monitor 的运行时文件。
-通过 Terminal 部署时，只提取 Terminal 配置中的 `manager` 段初始化该文件；手工独立部署时执行：
+## 独立部署
 
 ```bash
-cp config.yml.example config.yml
+mkdir -p data
+cp config.yml.example data/config.yml
+cp .env.example data/.env
+# 编辑 data/config.yml 和 data/.env
 ./manager.sh check
 ./manager.sh install
-./manager.sh create example
-./manager.sh list
-./manager.sh config example
-./manager.sh start example
-./manager.sh status example
-./manager.sh logs example --lines 100
-./manager.sh logs example --follow
-./manager.sh console example say hello
-./manager.sh property example online-mode
-./manager.sh property example online-mode false
-./manager.sh backup example
-./manager.sh backup list example
-./manager.sh stop example
-./manager.sh restore example
-./manager.sh restore example <备份ID或文件名> --auto-restart
-./manager.sh remove example --force
-./manager.sh stop-all
-./manager.sh export example
-./manager.sh import example /path/to/example.tar.gz
-./manager.sh schedule install
-./manager.sh schedule run
-./manager.sh schedule remove
+./manager.sh service status
 ```
 
-`check` 只验证 Python 3.9+、venv、Docker Engine、Compose 插件和 crontab，不会安装或修改系统软件。
-Manager 不负责准备 Docker 系统环境；Terminal 部署时使用
-`./mcsp.sh deploy manager --install-docker`，手工独立部署则需先自行安装并授权 Docker。
-`install` 在环境检查通过后安装 Manager 自身 Python 依赖并安装聚合调度任务。
-`create` 只创建标准目录骨架，不下载服务端。用户将整合包或原版服务端
-覆盖到 `src/` 后，调整 `config.yml` 中的版本、Java、端口和 EULA。
-原版服务端可从 [Minecraft 官方下载页](https://www.minecraft.net/download/server)
-或对应历史版本的官方发布页下载。将 `eula: true` 视为接受
-[Minecraft EULA](https://www.minecraft.net/eula)；`start` 会将最终生效的
-`eula.txt` 写为 `eula=true`。未明确接受时拒绝启动。
-默认自动启动规则如下：若存在唯一的 `unix_args.txt`，直接按它启动；否则要求
-`src/` 顶层恰有一个 JAR。普通 JAR 以 `java -jar <文件> nogui` 启动；包含
-`install_profile.json` 的 Forge 安装器会先自动执行一次 `--installServer`，再按生成的
-`unix_args.txt` 启动。多个 JAR 或多个参数文件会报错，不会猜测。
-`command` 与 `jvm-args` 仍可作为特殊整合包的高级覆盖项，但模板不再要求用户维护。
-Runtime 不读取 `run.sh`、`run.bat` 或 `user_jvm_args.txt`。`mem-limit` 限制容器总内存，
-自动启动会按容器额度设置初始堆 25%、最大堆 75%，为非堆内存和其他进程开销留出空间。
-`port` 是唯一的服务端口配置；Manager 在启动前会同步更新实际生效的
-`server.properties` 中的 `server-port`，无需用户维护两处数值。
-`property <整合包> <属性> [值]` 会根据 `persistent` 自动定位 `src/` 或 `data/`
-中真正生效的 `server.properties`。省略值时读取，提供值时修改；运行中
-修改会提示重启整合包，不会自动中断服务。
+`install` 会构建 Manager 镜像，在临时容器中生成 `MANAGER_API_KEY` 和
+`data/tls/` 下的私有 CA/服务器证书，然后启动常驻服务。Manager
+容器使用调用 `manager.sh` 的普通用户 UID/GID。
 
-模板的 `src/` 和 `read-only.persistent` 默认均为空。普通可写模式不需要配置
-`persistent`；开启 `read-only.enabled` 或需要把运行数据与整合包源码分离时，按实际
-服务端选择常见路径，例如：
-
-```yaml
-read-only:
-  enabled: true
-  persistent:
-    - world/
-    - config/
-    - logs/
-    - crash-reports/
-    - server.properties
-    - ops.json
-    - whitelist.json
-    - banned-ips.json
-    - banned-players.json
-    - usercache.json
-```
-
-`world/` 是最重要的存档目录；模组整合包还可能需要 `mods/`、`defaultconfigs/`、
-`kubejs/` 等路径，应以该整合包实际会修改的内容为准。`eula.txt` 由 Manager 根据
-`eula` 配置维护，无需放进模板。
-同名整合包默认拒绝创建；`--force` 会在新整合包创建与校验成功后，
-通过 Manager 目录内的 `./tmp` 完整替换旧目录，包括 `src`、`data`、
-`backups` 和配置。
- `export/import` 导入导出整合包完整结构，含src,data,config
-
-
-`start` 会按 Java 版本与运行时文件内容哈希构建镜像，并在容器健康检查通过后返回。
-修改 Dockerfile 或 `entrypoint.sh` 会自动得到新镜像标签，不会静默复用旧运行时。
-启动前会检查自动入口是否唯一，或检查显式 `java -jar` 指向的文件是否确实位于
-`src/`，因此缺失和歧义会在构建镜像前直接报错。Manager 操作的完整输出记录在
-部署目录的 `manager.log`。
-
-# 定时任务cronjob
-
-只会生成一个 Manager 用户级 cron，不要为每个整合包分别创建 cronjob：
+修改 Manager 配置后应用：
 
 ```bash
-./manager.sh schedule install
+./manager.sh apply-config
 ```
 
-每分钟运行一次聚合检查，并在 `.schedule-state.json` 上加锁阻止任务重叠；该文件也保存
-当天已完成的调度动作。`schedule install` 是幂等的，重复执行无影响。
-有 `# mc-serverpack-manager-schedule` 标记，不会误改其他 cronjob。
-## 定时备份
-每个整合包在自己的 `modpacks/<id>/config.yml` 中独立决定是否备份、备份周期和保留数量：
+更换 `host` 后应删除 `data/tls/`，再执行 `install`，使证书 SAN 与新域名
+或 IP 一致。如使用公开 CA 签发的证书，将 `server.crt` 和 `server.key`
+放入 `data/tls/`；未提供 `ca.crt` 时客户端使用系统信任链。
 
-整合包 `config.yml` 的 `backup.enabled` 为 `true` 时，`interval` 决定备份间隔，
-支持分钟、小时和天，例如 `30m`、`6h`、`1d`。`retain` 控制最大保留份数。
+## Manager 配置
 
-```yaml
-backup:
-  enabled: true
-  interval: 6h
-  retain: 7
-  quiesce-seconds: 5
-```
-
-`interval` 是相对周期，不是每天的固定时刻。开启自动备份但尚无任何备份的整合包，
-会在下一次聚合检查时立即建立首份备份；某个整合包失败不会阻止其他包继续备份。
-
-`backup list <id>` 按时间倒序列出备份的 12 位 ID、创建时间、大小和完整文件名。
-短 ID 由文件名生成，用于便捷选择，不是内容校验值。`restore` 同时接受完整文件名或
-不少于 4 位的唯一 ID 前缀；前缀匹配多个备份时会拒绝执行。
-运行中的整合包默认拒绝恢复；添加 `--auto-restart` 后，Manager 会依次执行优雅停服、
-保存恢复前状态、恢复指定备份和重新启动并等待健康。恢复过程失败时不会启动半恢复状态。
-
-## 定时关服与关机
-
-Manager 本机 `config.yml` 的 `modpack` 配置整合包停服，顶层 `auto-stop` 配置云主机关机。
-以下配置会按 60、30、15、7、3、1
-分钟逐步广播，在 23:00 优雅停止所有整合包，并在 23:05 请求云主机关机：
+`data/config.yml` 示例：
 
 ```yaml
-auto-stop: true
+host: mc.example.com
+user: minecraft
+dir: /home/minecraft/MC-ServerPack-manager
+timezone: Asia/Shanghai
+api:
+  listen: 0.0.0.0
+  port: 27016
+auto-stop: false
 stop-at: '23:05'
 power-api:
   provider: tencent
   instance-id: ins-xxxxyyyy
   instance-region: ap-nanjing
 modpack:
-  auto-stop: true
+  auto-stop: false
   stop-at: '23:00'
   stop-notify-elast: 60
   stop-notify-step: 2
+  java: [8, 17, 21]
+  max-running: 1
+  mem-limit: 16g
+  start-timeout: 300
+  stop-timeout: 180
 ```
 
-`stop-notify-elast` 是第一次提前通知的分钟数，后续通知按 `stop-notify-step` 做整数除法，直到
-1 分钟。停服失败时会在云主机关机时间前每分钟重试；云 API 调用失败后会在 5 分钟内重试。
-成功动作写入 `.schedule-state.json`，同一天不会重复执行。进入停服窗口后不会再开始
-新的备份。
+- `host`：Terminal/Monitor 访问 Manager API 使用的域名或 IP，也用于 TLS SAN。
+- `timezone`：日志、调度和备份时间的 IANA 时区。
+- `api.listen`/`api.port`：HTTPS API 监听地址和端口。
+- `modpack.java`：允许的 Java 主版本。
+- `max-running`/`mem-limit`：同时运行数和全局内存上限。
+- `start-timeout`/`stop-timeout`：启停超时，单位秒。
 
-`power-api.provider: tencent` 使用内置的腾讯云 SDK 适配；例如
-`provider: xxx_aaa` 会自动寻找 `lib/providers/xxx_aaa.py`。Provider ID 仅允许
-大小写字母、数字和下划线。该文件必须实现
-`status`、`start`、`stop`，URL 和厂商细节写在文件内。先安装依赖并填写密钥文件：
+`data/.env` 保存 `MANAGER_API_KEY` 以及可选的
+`POWER_SECRET_ID`/`POWER_SECRET_KEY`。
+
+## 整合包配置
+
+```text
+modpacks/<id>/
+├── config.yml
+├── compose.yml     # Manager 自动生成
+├── src/            # 服务端程序、模组和初始配置
+├── data/           # 分离持久化的可写路径
+└── backups/        # 数据备份
+```
+
+整合包 ID 只允许大小写英文字母、数字和减号；`template` 是保留名称。
+
+```yaml
+name: 原版服务器
+version: 1.20.1
+java: 17
+mem-limit: 8g
+port: 25565
+eula: true
+backup:
+  enabled: true
+  interval: 6h
+  retain: 7
+  quiesce-seconds: 5
+read-only:
+  enabled: false
+  persistent: []
+```
+
+默认入口规则：存在唯一 `unix_args.txt` 时使用它；否则要求 `src/` 顶层
+恰有一个 JAR，并以 `java -jar <file> nogui` 启动。Forge 安装器会先执行
+`--installServer`。Manager 不读取 `run.sh`/`run.bat`/`user_jvm_args.txt`。
+
+`read-only.enabled: false` 时 `src/` 可写；`persistent` 仍决定哪些路径分离到
+`data/` 并进入备份。开启只读后，只有 `persistent` 列出的路径可写。
+
+## 宿主命令
 
 ```bash
-python3 -m venv .venv
-./.venv/bin/pip install -r lib/requirements.txt
-cp .env.example .env
+./manager.sh check
+./manager.sh install
+./manager.sh apply-config
+./manager.sh service start
+./manager.sh service stop
+./manager.sh service status
+./manager.sh service logs
 ```
 
-腾讯云从 `.env` 读取 `POWER_SECRET_ID` 与 `POWER_SECRET_KEY`；示例 HTTP provider 将
-`POWER_SECRET_KEY` 作为 Bearer Token，只有一个 Token 时 `POWER_SECRET_ID` 留空。
-该文件不会进入 Git。自定义转接口的请求与状态响应契约见项目
-`readme.md` 的“电源 API”。
-调用前会先查询实例状态；已停止或正在停止时视为成功，运行中实例使用软关机并选择
-关机不收费模式（腾讯云）。建议云子账号只授予目标实例查询和关机所需的最小权限。
+`manager.sh` 通过 `data/run/manager.sock` 调用 Manager API，不在 Shell 中重复业务逻辑。
 
-修改配置后可先手工执行 `./manager.sh schedule run` 验证。它不会提前触发尚未到期的
-停服动作；确认无误后再运行 `schedule install`。`schedule remove` 只移除这一条聚合任务。
+## 整合包命令
+
+```bash
+# 发现、创建、校验
+./manager.sh list
+./manager.sh create <id> [--force]
+./manager.sh config <id>
+
+# 运行与自启
+./manager.sh status <id>
+./manager.sh start <id>
+./manager.sh stop <id>
+./manager.sh stop-all
+./manager.sh enable <id> [--now]
+./manager.sh disable <id> [--now]
+
+# 日志、控制台和 server.properties
+./manager.sh logs <id> --lines 100
+./manager.sh console <id> say hello
+./manager.sh property <id> online-mode
+./manager.sh property <id> online-mode false
+
+# 备份与恢复
+./manager.sh backup <id>
+./manager.sh backup list <id>
+./manager.sh restore <id> [<备份 ID 或文件名>] [--auto-restart]
+
+# 资源清理
+./manager.sh remove-container <id>
+./manager.sh remove <id> [--force]
+```
+
+`start`/`stop` 只改变当前状态。`enable`/`disable` 只改变 Manager 下次启动时
+是否自动运行；`--now` 同时执行当前启停。
+
+`remove-container` 只删除容器、网络和自动生成的 Compose，不删除
+`config.yml`/`src`/`data`/`backups`。`remove --force` 才允许删除持久数据。
+
+## 备份、恢复与迁移
+
+备份只归档整合包 `data/`。在线备份会执行 `save-off`、`save-all flush`，
+并在所有结果中恢复 `save-on`。备份列表显示时间、大小和内容哈希 ID，
+恢复时可使用无歧义的 ID 前缀。`--auto-restart` 会自动停服、建立回滚点、
+恢复并仅在原先运行时重新启动。
+
+跨主机归档由 Terminal 下载或上传：
+
+```bash
+./mcsp.sh manager export <id> ./<id>.tgz
+./mcsp.sh manager export <id> ./<id>.tgz --source-only
+./mcsp.sh manager export <id> ./<id>.tgz --include-backups
+./mcsp.sh manager import ./<id>.tgz [--force]
+```
+
+默认归档包含 `manifest.json` 、`config.yml` 、`src/` 和 `data/`。归档不包含
+Compose、容器 ID、日志和自启状态。
+
+## 调度与日志
+
+Manager 内部聚合检查备份和定时停服，不依赖 cron。调度状态保存在
+`data/schedule-state.json`。
+
+```text
+data/logs/service.log     Manager 生命周期与未捕获错误
+data/logs/api.log         API 请求和耗时
+data/logs/manager.log     整合包业务操作
+data/logs/schedule.log    自动备份与定时任务
+data/jobs/<job-id>.jsonl  可恢复的任务事件
+```
+
+Minecraft 日志用 `logs <id> --lines N` 查看。当前不提供持续 follow。
+
+Manager 的内部架构、API 协议、权限和安全边界见
+[Manager 架构](../dev/manager.md)。

@@ -2,29 +2,16 @@ enabled: false
 host: monitoraddr
 user: monitoruser
 dir: /home/monitoruser/MC-ServerPack-monitor
+timezone: Asia/Shanghai
 manager:
   power-api:
     provider: tencent
     instance-id: ins-xxxxyyyy
     instance-region: ap-nanjing
+  api:
+    host: manageraddr
+    port: 27016
   auto-start: true
   start-at: '19:55'
   auto-stop: true
   stop-at: '23:05'
-qqbot:
-  targets:
-  - name: owner
-    type: user
-    id: aaa
-  - name: players
-    type: group
-    id: bbb
-  admins:
-  - owner
-  alerts:
-    check-failed:
-    - owner
-    state-mismatch:
-    - owner
-    recovered:
-    - owner

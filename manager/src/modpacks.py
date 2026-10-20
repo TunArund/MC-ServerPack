@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+import json
 import shutil
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path, PurePosixPath
+from zoneinfo import ZoneInfo
 
-from .backup import create_backup, list_backups, resolve_backup, restore_backup
+from .backup import (
+    create_backup, finish_restore, list_backups, resolve_backup,
+    restore_backup, rollback_restore,
+)
 from .config import (
     MANAGER_ROOT,
     PACKS_DIR,
@@ -19,7 +25,7 @@ from .config import (
     render_compose,
     validate_pack_id,
 )
-from .docker import DockerClient, DockerError
+from .docker import DockerClient, DockerError, EventSink, _discard_event
 
 
 class ModpackError(RuntimeError):
@@ -29,17 +35,18 @@ class ModpackError(RuntimeError):
 class ModpackManager:
     def __init__(
         self, manager_root: Path = MANAGER_ROOT, docker: DockerClient | None = None,
-        limits: ManagerLimits | None = None,
+        limits: ManagerLimits | None = None, events: EventSink = _discard_event,
     ) -> None:
         self.manager_root = manager_root
         self.packs_dir = manager_root / "modpacks" if manager_root != MANAGER_ROOT else PACKS_DIR
-        self.docker = docker or DockerClient(manager_root)
+        self.events = events
+        self.docker = docker or DockerClient(manager_root, events=events)
         self._limits = limits
 
     @property
     def limits(self) -> ManagerLimits:
         if self._limits is None:
-            self._limits = load_limits(self.manager_root / "config.yml")
+            self._limits = load_limits(self.manager_root / "data/config.yml")
         return self._limits
 
     def spec(self, pack_id: str) -> PackSpec:
@@ -62,6 +69,67 @@ class ModpackManager:
             result.append((spec, running))
         return result
 
+    @property
+    def state_path(self) -> Path:
+        return self.manager_root / "data/state.json"
+
+    def _state(self) -> dict:
+        try:
+            value = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            value = {"format": 1, "modpacks": {}}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ModpackError(f"Manager 状态读取失败：{exc}") from exc
+        if not isinstance(value, dict) or not isinstance(value.get("modpacks"), dict):
+            raise ModpackError("Manager 状态格式无效")
+        return value
+
+    def _write_state(self, value: dict) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.state_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(self.state_path)
+
+    def enabled(self, pack_id: str) -> bool:
+        validate_pack_id(pack_id)
+        item = self._state()["modpacks"].get(pack_id, {})
+        return isinstance(item, dict) and item.get("enabled") is True
+
+    def maintenance(self, pack_id: str) -> bool:
+        validate_pack_id(pack_id)
+        item = self._state()["modpacks"].get(pack_id, {})
+        return isinstance(item, dict) and item.get("maintenance") is True
+
+    def set_maintenance(self, pack_id: str, enabled: bool) -> None:
+        state = self._state(); item = state["modpacks"].setdefault(pack_id, {})
+        if enabled: item["maintenance"] = True
+        else: item.pop("maintenance", None)
+        self._write_state(state)
+
+    def forget(self, pack_id: str) -> None:
+        validate_pack_id(pack_id)
+        state = self._state(); state["modpacks"].pop(pack_id, None); self._write_state(state)
+
+    def set_enabled(self, pack_id: str, enabled: bool, *, now: bool = False) -> None:
+        self.spec(pack_id)
+        state = self._state()
+        state["modpacks"].setdefault(pack_id, {})["enabled"] = enabled
+        self._write_state(state)
+        if now:
+            (self.start if enabled else self.stop)(pack_id)
+
+    def details(self, pack_id: str) -> dict[str, object]:
+        spec = self.spec(pack_id)
+        return {
+            "id": spec.pack_id, "name": spec.name, "version": spec.version,
+            "java": spec.java, "memory": spec.memory, "port": spec.port,
+            "state": "maintenance" if self.maintenance(pack_id) else self.docker.state(spec),
+            "enabled": self.enabled(pack_id),
+        }
+
+    def summaries(self) -> list[dict[str, object]]:
+        return [self.details(spec.pack_id) for spec in self.specs()]
+
     def create(
         self, pack_id: str, *, force: bool = False,
     ) -> Path:
@@ -70,12 +138,21 @@ class ModpackManager:
         exists = target.exists() or target.is_symlink()
         if exists and not force:
             raise ModpackError(f"整合包已存在：{pack_id}")
+        if exists:
+            try:
+                running = self.docker.running(self.spec(pack_id))
+            except Exception:
+                running = False
+            if running:
+                raise ModpackError("整合包正在运行，不能强制替换；请先停止")
         template = self.packs_dir / "template"
         if not template.is_dir():
             raise ModpackError("缺少 modpacks/template")
-        temporary_root = self.manager_root / "tmp"
-        temporary_root.mkdir(parents=True, exist_ok=True)
-        staging = temporary_root / f"{pack_id}.create-{uuid.uuid4().hex}"
+        # staging 必须与 modpacks 同文件系统，否则容器里跨 bind mount 的
+        # os.replace 会报 EXDEV。
+        staging_root = self.packs_dir / ".staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging = staging_root / f"{pack_id}.create-{uuid.uuid4().hex}"
         backup: Path | None = None
         try:
             shutil.copytree(
@@ -89,7 +166,7 @@ class ModpackManager:
             for name in ("src", "data", "backups"):
                 (staging / name).mkdir(exist_ok=True)
             if exists:
-                backup = temporary_root / f"{pack_id}.replace-{uuid.uuid4().hex}"
+                backup = staging_root / f"{pack_id}.replace-{uuid.uuid4().hex}"
                 target.replace(backup)
             try:
                 staging.replace(target)
@@ -105,6 +182,7 @@ class ModpackManager:
                 shutil.rmtree(backup, ignore_errors=True)
             else:
                 backup.unlink(missing_ok=True)
+        self.forget(pack_id)
         return target
 
     def configure(self, pack_id: str) -> Path:
@@ -253,19 +331,19 @@ class ModpackManager:
         return target, self.docker.running(spec)
 
     def start(self, pack_id: str) -> None:
-        print(f"[启动 1/4] 读取并验证整合包配置：{pack_id}", flush=True)
+        self.events("start", 1, 4, f"读取并验证整合包配置：{pack_id}", None)
         wanted = self.spec(pack_id)
         self._validate_launch(wanted)
         self._set_server_port(wanted)
-        print("[启动 2/4] 检查运行状态、端口与内存限额", flush=True)
+        self.events("start", 2, 4, "检查运行状态、端口与内存限额", None)
         if self.docker.running(wanted):
-            print("[启动 4/4] 容器进程已运行，等待健康检查", flush=True)
+            self.events("start", 4, 4, "容器进程已运行，等待健康检查", None)
             self.docker.start(wanted, timeout=self.limits.start_timeout)
             return
-        print("[启动 3/4] 准备 EULA 与运行目录", flush=True)
+        self.events("start", 3, 4, "准备 EULA 与运行目录", None)
         self._accept_eula(wanted)
         self._check_capacity(wanted, self._running())
-        print("[启动 4/4] 准备 Java 镜像并启动容器", flush=True)
+        self.events("start", 4, 4, "准备 Java 镜像并启动容器", None)
         self.docker.start(wanted, timeout=self.limits.start_timeout)
 
     def stop(self, pack_id: str) -> None:
@@ -274,8 +352,15 @@ class ModpackManager:
     def status(self, pack_id: str) -> str:
         return self.docker.status(self.spec(pack_id))
 
-    def logs(self, pack_id: str, *, lines: int = 100, follow: bool = False) -> None:
-        self.docker.logs(self.spec(pack_id), lines=lines, follow=follow)
+    def log_text(self, pack_id: str, *, lines: int = 100) -> str:
+        return self.docker.log_text(self.spec(pack_id), lines=lines)
+
+    def remove_container(self, pack_id: str) -> None:
+        spec = self.spec(pack_id)
+        if self.docker.running(spec):
+            raise ModpackError("删除容器前必须先停止整合包")
+        self.docker.remove_project(spec)
+        (spec.directory / "compose.yml").unlink(missing_ok=True)
 
     def console(self, pack_id: str, command: str) -> None:
         if not command.strip():
@@ -289,7 +374,7 @@ class ModpackManager:
             self.docker.console(spec, "save-off\nsave-all flush")
             time.sleep(spec.backup_quiesce_seconds)
         try:
-            return create_backup(spec)
+            return create_backup(spec, datetime.now(ZoneInfo(self.limits.timezone)))
         finally:
             if running:
                 self.docker.console(spec, "save-on")
@@ -310,10 +395,20 @@ class ModpackManager:
         if was_running:
             self.docker.stop(spec, timeout=self.limits.stop_timeout)
         if (spec.directory / "data").exists():
-            create_backup(spec, prune=False)
-        restored = restore_backup(spec, source.name)
-        if was_running:
-            self.start(pack_id)
+            create_backup(
+                spec, datetime.now(ZoneInfo(self.limits.timezone)), prune=False,
+            )
+        restored = restore_backup(spec, source.name, keep_previous=True)
+        try:
+            if was_running:
+                self.start(pack_id)
+        except Exception:
+            rollback_restore(spec)
+            if was_running:
+                try: self.start(pack_id)
+                except Exception: pass
+            raise
+        finish_restore(spec)
         return restored
 
     def remove(self, pack_id: str, *, force: bool = False) -> None:
@@ -329,6 +424,7 @@ class ModpackManager:
             raise ModpackError(f"整合包含有 {'/'.join(protected)} 数据；确认后使用 --force")
         self.docker.remove_project(spec)
         shutil.rmtree(spec.directory)
+        self.forget(pack_id)
 
     def stop_all(self) -> tuple[list[str], list[tuple[str, str]]]:
         stopped: list[str] = []

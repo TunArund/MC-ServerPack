@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import secrets
+import shutil
+import sys
+import tarfile
+import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
+
+import yaml
 
 from . import remote
 from .config import (
@@ -12,11 +22,44 @@ from .config import (
     render_runtime_section,
 )
 from .deploy import RuntimeDeployment
+from .manager_sdk import ManagerSdk, ManagerSdkError
 from .power import Power, PowerError, PowerTarget, create_power
 
 
-class ManagerError(remote.CommandError):
+class ManagerError(ManagerSdkError, remote.CommandError):
     """Manager 未遵循约定的公共命令协议。"""
+
+
+class _JobProgress:
+    def __init__(self) -> None:
+        self.last_stage = None
+        self.rendered = False
+
+    def __call__(self, event: dict) -> None:
+        message = event.get("message")
+        stage = (
+            event.get("stage", "任务"), event.get("current", 0),
+            event.get("total", 0), message,
+        )
+        if not message or stage == self.last_stage:
+            return
+        self.last_stage = stage
+        line = f"[{stage[0]} {stage[1]}/{stage[2]}] {message}"
+        tail = event.get("detail", {}).get("tail")
+        if tail:
+            line += f"；{tail}"
+        if sys.stdout.isatty():
+            print(
+                "\r\033[2K" + line[:max(20, shutil.get_terminal_size().columns - 1)],
+                end="", flush=True,
+            )
+            self.rendered = True
+        else:
+            print(line, flush=True)
+
+    def finish(self) -> None:
+        if self.rendered:
+            print()
 
 
 class Manager:
@@ -29,15 +72,77 @@ class Manager:
         self.config_path = config_path
         self.config = config or load_manager(config_path)
         self.transport = transport or remote.Transport()
+        self.tls_directory = ROOT / "manager/data/tls"
         self.endpoint = self.config.endpoint
         self.deployment = RuntimeDeployment(
             ROOT / "manager", self.endpoint, "manager.sh",
             preserve=(
-                "modpacks", ".venv", "tmp", "manager.log", "schedule.log",
-                ".schedule-state.json",
+                "modpacks", "data",
             ),
+            config_name="data/config.yml", environment_name="data/.env",
             transport=self.transport,
         )
+
+    def _sdk(self) -> ManagerSdk:
+        values = load_env(self.config_path.parent / ".env")
+        secret = values.get("MANAGER_API_KEY", "")
+        if not secret:
+            raise ManagerError(
+                ".env 缺少 MANAGER_API_KEY；请先执行 ./mcsp.sh deploy manager"
+            )
+        ca = self.tls_directory / "ca.crt"
+        return ManagerSdk(
+            self.config.api_host, self.config.api_port, secret,
+            identity="admin", ca=ca if ca.is_file() else None,
+        )
+
+    def _api_request(
+        self, method: str, path: str, body: dict | bytes | None = None,
+    ) -> dict:
+        return self._sdk().request(method, path, body)
+
+    def _fetch_bootstrap(self) -> None:
+        """部署完成后取回 Manager 生成的 API 密钥和 CA，供本机及 Monitor 复用。"""
+        with tempfile.TemporaryDirectory(prefix="mcsp-manager-") as directory:
+            env_path = Path(directory) / "env"
+            self.deployment.download_path("data/.env", env_path)
+            values = load_env(env_path)
+        key = values.get("MANAGER_API_KEY", "").strip()
+        if len(key) < 32:
+            raise ManagerError("Manager 未生成有效的 MANAGER_API_KEY")
+        self._store_api_key(key)
+        ca = self.tls_directory / "ca.crt"
+        if not self.deployment.download_path(
+            "data/tls/ca.crt", ca, mode=0o644, optional=True,
+        ):
+            ca.unlink(missing_ok=True)
+
+    def _store_api_key(self, key: str) -> None:
+        env_path = self.config_path.parent / ".env"
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            lines = []
+        except OSError as exc:
+            raise ManagerError(f"无法读取 {env_path}：{exc}") from exc
+        output: list[str] = []
+        replaced = False
+        for line in lines:
+            if line.startswith("MANAGER_API_KEY="):
+                output.append(f"MANAGER_API_KEY={key}")
+                replaced = True
+            else:
+                output.append(line)
+        if not replaced:
+            output.append(f"MANAGER_API_KEY={key}")
+        temporary = env_path.with_name(env_path.name + ".tmp")
+        try:
+            temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
+            temporary.chmod(0o600)
+            os.replace(temporary, env_path)
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            raise ManagerError(f"无法写入 {env_path}：{exc}") from exc
 
     @property
     def destination(self) -> str:
@@ -48,8 +153,10 @@ class Manager:
 
     def install(self) -> None:
         self.deployment.install(
-            render_runtime_section(self.config_path, "manager"), self._environment(),
+            render_runtime_section(self.config_path, "manager"),
+            self._environment(),
         )
+        self._fetch_bootstrap()
 
     def publish(self) -> None:
         self.deployment.publish()
@@ -59,12 +166,15 @@ class Manager:
             render_runtime_section(self.config_path, "manager"),
             self._environment(),
         )
+        self._fetch_bootstrap()
 
     def _environment(self) -> str:
         values = load_env(self.config_path.parent / ".env")
         return "".join(
             f"{key}={values.get(key, '')}\n"
-            for key in ("POWER_SECRET_ID", "POWER_SECRET_KEY")
+            for key in (
+                "POWER_SECRET_ID", "POWER_SECRET_KEY", "MANAGER_API_KEY",
+            )
             if key in values
         )
 
@@ -81,19 +191,44 @@ class Manager:
     def command(
         self, arguments: list[str], *, tty: bool = False, capture: bool = False,
     ):
-        command = (
-            f"cd {remote.shell_join([self.endpoint.directory])} && "
-            f"exec ./manager.sh {remote.shell_join(arguments)}"
-        )
-        remote_command = ["bash", "-lc", command]
+        del tty
+        method, path, body, job = self._translate(arguments)
+        data = self._api_request(method, path, body)
+        if job:
+            progress = _JobProgress()
+            data = self._sdk().wait_job(data["job_id"], on_event=progress)
+            progress.finish()
+        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
         if capture:
-            return self.transport.ssh(
-                self.destination, remote_command, tty=tty, capture=True,
-            )
-        return self.transport.ssh_tail(
-            self.destination, remote_command,
-            label=f"[Manager] {' '.join(arguments[:2])}", tty=tty,
-        )
+            import subprocess
+            return subprocess.CompletedProcess(arguments, 0, stdout=text.encode(), stderr=b"")
+        print(text, end="")
+        return None
+
+    @staticmethod
+    def _translate(arguments: list[str]) -> tuple[str, str, dict | None, bool]:
+        action = arguments[0]; pack = arguments[1] if len(arguments) > 1 else ""
+        if action == "list": return "GET", "/v1/modpacks", None, False
+        if action == "status": return "GET", f"/v1/modpacks/{pack}", None, False
+        if action == "config": return "POST", f"/v1/modpacks/{pack}/validate", {}, False
+        if action in ("start", "stop"): return "POST", f"/v1/modpacks/{pack}/{action}", {}, True
+        if action in ("enable", "disable"):
+            return "POST", f"/v1/modpacks/{pack}/{action}", {"now": "--now" in arguments}, True
+        if action == "stop-all": return "POST", "/v1/modpacks/stop-all", {}, True
+        if action == "create": return "POST", "/v1/modpacks", {"id": pack, "force": "--force" in arguments}, True
+        if action == "remove": return "DELETE", f"/v1/modpacks/{pack}", {"force": "--force" in arguments}, True
+        if action == "remove-container": return "DELETE", f"/v1/modpacks/{pack}/container", {}, True
+        if action == "logs": return "GET", f"/v1/modpacks/{pack}/logs?lines={arguments[3] if '--lines' in arguments else 100}", None, False
+        if action == "console": return "POST", f"/v1/modpacks/{pack}/console", {"command": " ".join(arguments[2:])}, False
+        if action == "property":
+            path = f"/v1/modpacks/{pack}/properties/{arguments[2]}"
+            return ("GET", path, None, False) if len(arguments) == 3 else ("PATCH", path, {"value": arguments[3]}, False)
+        if action == "backup" and pack == "list": return "GET", f"/v1/modpacks/{arguments[2]}/backups", None, False
+        if action == "backup": return "POST", f"/v1/modpacks/{pack}/backups", {}, True
+        if action == "restore":
+            backup = next((v for v in arguments[2:] if not v.startswith("--")), None)
+            return "POST", f"/v1/modpacks/{pack}/restore", {"backup": backup, "auto_restart": "--auto-restart" in arguments}, True
+        raise ManagerError(f"不支持的 Manager 命令：{action}")
 
     def local(self, arguments: list[str], *, capture: bool = False):
         return remote.run(
@@ -107,23 +242,63 @@ class Manager:
         local = ROOT / "manager/modpacks" / pack_id
         if not (local / "src").is_dir() or not (local / "config.yml").is_file():
             raise ManagerError(f"本地整合包不存在或不完整：{pack_id}")
-        self.local(["config", pack_id], capture=True)
-        staging = self.endpoint.directory + f"/tmp/transfers/{pack_id}"
-        print(
-            f"[整合包 2/3] 增量同步到 {self.destination}:{staging}",
-            flush=True,
+        archive = self._source_archive(pack_id, local)
+        try:
+            size = archive.stat().st_size
+            print(f"[整合包 2/3] 分块上传 {size} 字节并校验 SHA-256", flush=True)
+            print("[整合包 3/3] 由远端 Manager 校验并原子导入", flush=True)
+            progress = _JobProgress()
+            self._sdk().import_archive(
+                archive, force=True, on_event=progress,
+            )
+            progress.finish()
+        finally:
+            shutil.rmtree(archive.parent, ignore_errors=True)
+
+    def import_archive(self, archive: Path, *, force: bool = False) -> None:
+        progress = _JobProgress()
+        self._sdk().import_archive(archive, force=force, on_event=progress)
+        progress.finish()
+
+    def export_archive(
+        self, pack_id: str, destination: Path, *, source_only: bool = False,
+        include_backups: bool = False, auto_stop: bool = False,
+    ) -> None:
+        sdk = self._sdk()
+        metadata = sdk.create_export(
+            pack_id, source_only=source_only,
+            include_backups=include_backups, auto_stop=auto_stop,
         )
-        uploaded, deleted = self.transport.sync_tree(
-            local, self.destination, staging,
-            exclude=("data", "data/*", "backups", "backups/*"),
-        )
-        print(
-            f"[整合包 2/3] 增量同步完成：上传 {uploaded}，删除 {deleted}",
-            flush=True,
-        )
-        arguments = ["import-dir", pack_id, staging]
-        print("[整合包 3/3] 由远端 Manager 验证并导入", flush=True)
-        self.command(arguments)
+        sdk.download_export(metadata, destination)
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        return ManagerSdk.file_sha256(path)
+
+    def _source_archive(self, pack_id: str, source: Path) -> Path:
+        temporary_root = ROOT / "tmp/transfers" / secrets.token_hex(8)
+        temporary_root.mkdir(parents=True)
+        output = temporary_root / f"{pack_id}.tgz"
+        roots = ("config.yml", "src")
+        files: dict[str, str] = {}
+        for name in roots:
+            root = source / name
+            paths = [root] if root.is_file() else sorted(root.rglob("*"))
+            for path in paths:
+                if path.is_symlink(): raise ManagerError(f"整合包不能包含符号链接：{path.relative_to(source)}")
+                if path.is_file(): files[path.relative_to(source).as_posix()] = f"sha256:{self._file_hash(path)}"
+        try: name = yaml.safe_load((source / "config.yml").read_text(encoding="utf-8")).get("name", pack_id)
+        except Exception as exc: raise ManagerError(f"整合包 config.yml 无效：{exc}") from exc
+        manifest = {"format": 1, "pack_id": pack_id, "name": name,
+                    "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "mode": "source-only", "include_backups": False, "files": files}
+        manifest_path = temporary_root / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        with tarfile.open(output, "w:gz") as archive:
+            archive.add(manifest_path, arcname="manifest.json")
+            for name in roots: archive.add(source / name, arcname=name)
+        manifest_path.unlink()
+        return output
 
     def run(
         self, action: str, pack_id: Optional[str] = None, *,

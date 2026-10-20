@@ -9,7 +9,7 @@ import yaml
 from lib.config import (
     ConfigError, deployment_connection, deployment_endpoint, deployment_host,
     initialize, load, load_manager, load_monitor, render_runtime_section,
-    runtime_section, upsert_monitor_user_target,
+    runtime_section,
 )
 
 
@@ -30,10 +30,11 @@ class ConfigTests(unittest.TestCase):
                 "host": "manager.example",
                 "user": "minecraft",
                 "dir": "/srv/minecraft",
+                "timezone": "Asia/Shanghai",
                 "auto-stop": False,
                 "modpack": {"java": [17, 21], "mem-limit": "16g"},
             },
-            "monitor": {"enabled": False},
+            "monitor": {"enabled": False, "timezone": "Asia/Shanghai"},
             "cos": {"enabled": False},
         }
 
@@ -73,9 +74,16 @@ class ConfigTests(unittest.TestCase):
     def test_minimum_disabled_optional_services(self) -> None:
         config = load(self.write(self.minimum()))
         self.assertEqual(config.manager.endpoint.host, "manager.example")
+        self.assertEqual(config.manager.timezone, "Asia/Shanghai")
         self.assertEqual(config.manager.modpack.java, (17, 21))
         self.assertFalse(config.monitor.enabled)
         self.assertIsNone(config.monitor.endpoint)
+
+    def test_rejects_invalid_runtime_timezone(self) -> None:
+        document = self.minimum()
+        document["manager"]["timezone"] = "Mars/Olympus"
+        with self.assertRaisesRegex(ConfigError, "IANA 时区"):
+            load_manager(self.write(document))
 
     def test_monitor_loading_does_not_validate_manager(self) -> None:
         document = self.minimum()
@@ -85,12 +93,14 @@ class ConfigTests(unittest.TestCase):
             "host": "monitor.example",
             "user": "monitor",
             "dir": "/srv/monitor",
+            "timezone": "Asia/Shanghai",
             "manager": {
                 "power-api": {
                     "provider": "tencent",
                     "instance-id": "manager",
                     "instance-region": "ap-test",
                 },
+                "api": {"host": "manager.example", "port": 27016},
             },
         }
         config = load_monitor(self.write(document))
@@ -134,6 +144,7 @@ class ConfigTests(unittest.TestCase):
             "host": "monitor.example",
             "user": "root",
             "dir": "/srv/monitor",
+            "timezone": "Asia/Shanghai",
             "manager": {
                 "power-api": {
                     "provider": "tencent",
@@ -156,6 +167,7 @@ class ConfigTests(unittest.TestCase):
             "host": "monitor.example",
             "user": "monitor",
             "dir": "/srv/monitor",
+            "timezone": "Asia/Shanghai",
             "manager": {},
         }
         with self.assertRaisesRegex(ConfigError, "monitor.manager.power-api"):
@@ -216,24 +228,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(monitor, runtime_section(source, "monitor"))
         self.assertEqual(manager_text, render_runtime_section(source, "manager"))
         self.assertEqual(monitor_text, render_runtime_section(source, "monitor"))
-
-    def test_user_target_is_updated_without_reformatting_config(self) -> None:
-        source = ROOT / "config.yml.example"
-        path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
-        original = path.read_text(encoding="utf-8")
-        upsert_monitor_user_target(path, "owner", "new-openid")
-        updated = path.read_text(encoding="utf-8")
-        self.assertEqual(updated, original.replace("id: aaa", "id: 'new-openid'", 1))
-        self.assertEqual(load(path).monitor.targets[0].identifier, "new-openid")
-
-    def test_user_target_is_added_when_name_does_not_exist(self) -> None:
-        source = ROOT / "config.yml.example"
-        path = self.write(yaml.safe_load(source.read_text(encoding="utf-8")))
-        upsert_monitor_user_target(path, "backup-owner", "second-openid")
-        config = load(path)
-        added = next(item for item in config.monitor.targets if item.name == "backup-owner")
-        self.assertEqual(added.identifier, "second-openid")
-
 
 if __name__ == "__main__":
     unittest.main()

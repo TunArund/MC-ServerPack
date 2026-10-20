@@ -4,11 +4,13 @@ services:
       context: .
     image: mc-serverpack-monitor:local
     restart: unless-stopped
+    user: "${MC_CONTAINER_UID:-1000}:${MC_CONTAINER_GID:-1000}"
     env_file:
       - .env
     environment:
       MCSP_CONFIG: /app/config.yml
       MCSP_DATA: /app/data
+      HOME: /tmp
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./data:/app/data

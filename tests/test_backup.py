@@ -10,10 +10,10 @@ from pathlib import Path
 
 import yaml
 
-from manager.lib.backup import (
+from manager.src.backup import (
     BackupError, backup_id, create_backup, resolve_backup, restore_backup,
 )
-from manager.lib.config import load_pack, render_compose
+from manager.src.config import load_pack, render_compose
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

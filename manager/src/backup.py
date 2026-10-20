@@ -17,9 +17,17 @@ class BackupError(RuntimeError):
     pass
 
 
+def backup_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def backup_id(path: Path) -> str:
-    """返回稳定的短 ID；它用于选择备份，不作为归档内容校验值。"""
-    return hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:12]
+    """以归档内容生成稳定短 ID，重命名不会改变备份身份。"""
+    return backup_sha256(path)[:12]
 
 
 def _reject_links(root: Path) -> None:
@@ -101,7 +109,7 @@ def _validate_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     return members
 
 
-def restore_backup(spec: PackSpec, name: str | None = None) -> Path:
+def restore_backup(spec: PackSpec, name: str | None = None, *, keep_previous: bool = False) -> Path:
     source = resolve_backup(spec, name)
     parent = spec.directory
     with tempfile.TemporaryDirectory(prefix=".restore-", dir=parent) as raw:
@@ -127,5 +135,22 @@ def restore_backup(spec: PackSpec, name: str | None = None) -> Path:
             if not current.exists() and previous.exists():
                 previous.rename(current)
             raise BackupError(f"替换数据失败：{exc}") from exc
-        shutil.rmtree(previous, ignore_errors=True)
+        if not keep_previous:
+            shutil.rmtree(previous, ignore_errors=True)
     return source
+
+
+def finish_restore(spec: PackSpec) -> None:
+    shutil.rmtree(spec.directory / ".data-before-restore", ignore_errors=True)
+
+
+def rollback_restore(spec: PackSpec) -> None:
+    current = spec.directory / "data"
+    previous = spec.directory / ".data-before-restore"
+    if not previous.is_dir():
+        raise BackupError("恢复回滚点不存在")
+    failed = spec.directory / ".data-failed-restore"
+    shutil.rmtree(failed, ignore_errors=True)
+    if current.exists(): current.rename(failed)
+    previous.rename(current)
+    shutil.rmtree(failed, ignore_errors=True)

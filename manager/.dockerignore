@@ -1,0 +1,10 @@
+.env
+config.yml
+.venv
+data
+modpacks
+tmp
+__pycache__
+*.pyc
+manager.log
+schedule.log

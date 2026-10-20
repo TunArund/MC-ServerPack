@@ -11,9 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lib.config import Endpoint
-from lib.deploy import (
-    PythonProvisioner, RuntimeDeployment,
-)
+from lib.deploy import RuntimeDeployment
 from lib.docker import DockerProvisioner, _resource
 from lib.remote import CommandError, _REMOTE_MANIFEST, _ignored, run_logged
 
@@ -106,26 +104,6 @@ class RuntimeDeploymentTests(unittest.TestCase):
         with patch.object(sys, "_MEIPASS", str(bundle), create=True):
             self.assertEqual(_resource("docker-install.sh"), resource)
 
-    def test_python_provisioner_installs_system_and_venv_dependencies(self) -> None:
-        requirements = self.root / "requirements.txt"
-        requirements.write_text("PyYAML==6.0.2\n", encoding="utf-8")
-        PythonProvisioner(
-            Endpoint("runtime.example", "mcsp", "/srv/manager"),
-            requirements, transport=self.transport,
-        ).install()
-        self.assertEqual(len(self.transport.uploads), 1)
-        destination, content = self.transport.uploads[0]
-        self.assertEqual(
-            destination,
-            "mcsp@runtime.example:/srv/manager/.mcsp-requirements.txt",
-        )
-        self.assertEqual(content, b"PyYAML==6.0.2\n")
-        scripts = self.scripts()
-        self.assertIn("python3-pip python3-venv", scripts)
-        self.assertIn('python3 -m venv "$root/.venv"', scripts)
-        self.assertIn("pip install --requirement", scripts)
-        self.assertNotIn("manager.sh", scripts)
-
     def test_logged_command_collapses_success_and_keeps_full_log(self) -> None:
         log = self.root / "terminal.log"
         output = io.StringIO()
@@ -172,7 +150,14 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertTrue(any(item.endswith("/config.yml") for item in destinations))
         self.assertTrue(any(item.endswith("/.env") for item in destinations))
         self.assertIn("./runtime.sh install", self.scripts())
+        self.assertNotIn("--recreate", self.scripts())
         self.assertNotIn("apt-get", self.scripts())
+
+    def test_install_recreates_container_when_config_changes(self) -> None:
+        self.deployment.install(
+            "value: 1\n", "TOKEN=secret\n", recreate_on_config=True,
+        )
+        self.assertIn("./runtime.sh install --recreate", self.scripts())
 
     def test_publish_bootstraps_code_without_remote_requirement_check(self) -> None:
         self.deployment.publish()
@@ -191,6 +176,8 @@ class RuntimeDeploymentTests(unittest.TestCase):
         patterns = ("modpacks/*", "!modpacks/template", "!modpacks/template/*")
         self.assertTrue(_ignored("modpacks/demo/server.jar", patterns))
         self.assertFalse(_ignored("modpacks/template/config.yml", patterns))
+        self.assertTrue(_ignored("data/tls/server.key", ("data", "data/*")))
+        self.assertTrue(_ignored("data/tls/ca.crt", ("data", "data/*")))
 
     def test_remote_manifest_only_enters_explicit_preserved_subtrees(self) -> None:
         remote_root = self.root / "remote-manifest"

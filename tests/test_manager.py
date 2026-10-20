@@ -9,17 +9,17 @@ import unittest
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
-from manager.lib.config import (
+from manager.src.config import (
     ConfigError, load_pack, normalize_persistent, parse_interval, render_compose,
     validate_pack_id,
 )
-from manager.lib.docker import DockerClient
-from manager.lib.modpacks import ModpackError, ModpackManager
-from manager.lib.transfer import export_pack, import_pack
+from manager.src.docker import DockerClient, DockerError
+from manager.src.modpacks import ModpackError, ModpackManager
+from manager.src.transfer import export_pack, import_pack
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +84,11 @@ class PackConfigTests(ManagerFixture):
         service = compose["services"]["minecraft"]
         self.assertRegex(service["image"], r"^mc-java:17-[0-9a-f]{12}$")
         self.assertEqual(service["mem_limit"], "4g")
+        self.assertEqual(service["restart"], "no")
+        self.assertEqual(
+            service["user"],
+            "${MC_CONTAINER_UID:-1000}:${MC_CONTAINER_GID:-1000}",
+        )
         self.assertTrue(service["volumes"][0]["read_only"])
         self.assertEqual(
             service["command"],
@@ -241,7 +246,18 @@ class PackConfigTests(ManagerFixture):
         self.assertEqual(replaced, target)
         self.assertFalse((target / "src/old.txt").exists())
         self.assertTrue((target / "config.yml").is_file())
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+        self.assertEqual(list((self.packs / ".staging").iterdir()), [])
+
+    def test_force_create_refuses_running_pack(self) -> None:
+        shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
+        manager = ModpackManager(self.root)
+        target = manager.create("running-pack")
+        manager.docker.running = Mock(return_value=True)
+
+        with self.assertRaisesRegex(ModpackError, "正在运行"):
+            manager.create("running-pack", force=True)
+
+        self.assertTrue((target / "config.yml").is_file())
 
     def test_failed_force_create_keeps_existing_pack(self) -> None:
         shutil.copytree(PROJECT_ROOT / "manager/modpacks/template", self.packs / "template")
@@ -251,28 +267,29 @@ class PackConfigTests(ManagerFixture):
         marker.write_text("keep", encoding="utf-8")
 
         with patch(
-            "manager.lib.modpacks.shutil.copytree",
+            "manager.src.modpacks.shutil.copytree",
             side_effect=OSError("copy failed"),
         ), self.assertRaisesRegex(OSError, "copy failed"):
             manager.create("keep-me", force=True)
 
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+        self.assertEqual(list((self.packs / ".staging").iterdir()), [])
 
     def test_export_import_contract_preserves_runtime_data(self) -> None:
         source = self.make_pack("source")
-        archive = export_pack("source", self.packs)
+        archive = export_pack("source", self.packs, mode="source-only")
         destination_root = self.root / "destination"
         destination_root.mkdir()
         shutil.copytree(PROJECT_ROOT / "manager/runtime", destination_root / "runtime")
         destination = ModpackManager(destination_root)
+        destination.docker.running = Mock(return_value=False)
 
-        deployed = import_pack(destination, "target", archive, force=False)
+        deployed = import_pack(destination, "source", archive, force=False)
         (deployed / "data/world.dat").parent.mkdir(exist_ok=True)
         (deployed / "data/world.dat").write_text("keep", encoding="utf-8")
         (source / "src/new.txt").write_text("updated", encoding="utf-8")
-        replacement = export_pack("source", self.packs)
-        import_pack(destination, "target", replacement, force=True)
+        replacement = export_pack("source", self.packs, mode="source-only")
+        import_pack(destination, "source", replacement, force=True)
 
         self.assertEqual((deployed / "src/new.txt").read_text(), "updated")
         self.assertEqual((deployed / "data/world.dat").read_text(), "keep")
@@ -323,6 +340,14 @@ class DockerClientTests(ManagerFixture):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
+    def test_refuses_root_or_invalid_container_user(self) -> None:
+        for uid, message in (("0", "root"), ("00", "root"), ("abc", "整数")):
+            with self.subTest(uid=uid), patch.dict(
+                os.environ,
+                {"MC_CONTAINER_UID": uid, "MC_CONTAINER_GID": "1000"},
+            ), self.assertRaisesRegex(DockerError, message):
+                self.client._environment()
+
     def test_start_builds_missing_image_then_waits_for_health(self) -> None:
         self.client.start(self.spec)
         commands = [call[0] for call in self.runner.calls]
@@ -359,14 +384,14 @@ class DockerClientTests(ManagerFixture):
 
     def test_stop_checks_for_clean_container_exit(self) -> None:
         self.runner.running = True
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.client.stop(self.spec)
+        events = []
+        self.client.events = lambda stage, current, total, message, detail: events.append(message)
+        self.client.stop(self.spec)
         commands = [call[0] for call in self.runner.calls]
         self.assertTrue(any("stop" in command for command in commands))
         self.assertTrue(any(command[:2] == ["docker", "inspect"] for command in commands))
-        self.assertIn("等待 Java 退出", output.getvalue())
-        self.assertIn("退出码为 0", output.getvalue())
+        self.assertTrue(any("发送停止信号" in message for message in events))
+        self.assertTrue(any("安全退出" in message for message in events))
 
 
 if __name__ == "__main__":

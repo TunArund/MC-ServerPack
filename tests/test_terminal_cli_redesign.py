@@ -8,7 +8,7 @@ from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from lib.cli import CliServices, dispatch, main, make_parser
+from lib.cli import CliServices, dispatch, main
 from lib.power import InstanceStatus
 
 
@@ -34,9 +34,6 @@ class FakeServices:
     def install_docker(self, target: str) -> None:
         self.calls.append(("install-docker", target))
 
-    def install_python(self) -> None:
-        self.calls.append(("install-python", "manager"))
-
     def control(self, target: str, action: str, *, force: bool = False):
         self.calls.append(("control", target, action, force))
         if target == "manager":
@@ -54,9 +51,15 @@ class FakeServices:
     def monitor_command(self, action: str) -> None:
         self.calls.append(("monitor", action))
 
-    def add_monitor_target(self, name: str) -> str:
-        self.calls.append(("add-target", name))
+    def add_monitor_admin(self) -> str:
+        self.calls.append(("add-admin",))
         return "openid"
+
+    def reset_monitor(self) -> None:
+        self.calls.append(("reset",))
+
+    def reset_monitor_messages(self) -> None:
+        self.calls.append(("reset-messages",))
 
     def account_context(self, target: str, key_path=None):
         host = f"{target}.example"
@@ -167,44 +170,18 @@ class TerminalCliRedesignTests(unittest.TestCase):
         )
         self.assertEqual(services.calls, [("install-docker", "manager")])
 
-    def test_python_install_is_independent_from_source_upload(self) -> None:
-        services = FakeServices()
-        self.assertEqual(
-            dispatch(["deploy", "manager", "--install-python"], services), 0,
-        )
-        self.assertEqual(services.calls, [("install-python", "manager")])
-
-    def test_source_full_deploy_prepares_docker_and_python_before_runtime(self) -> None:
+    def test_full_deploy_prepares_docker_before_runtime(self) -> None:
         services = CliServices.__new__(CliServices)
-        services.source_mode = True
         operations = Mock()
         services.install_docker = operations.install_docker
-        services.install_python = operations.install_python
         runtime = Mock()
         runtime.install.side_effect = operations.runtime_install
         services.manager_runtime = Mock(return_value=runtime)
         services.install("manager")
         self.assertEqual(operations.mock_calls, [
             call.install_docker("manager"),
-            call.install_python(),
             call.runtime_install(),
         ])
-
-    def test_packaged_full_deploy_does_not_prepare_python(self) -> None:
-        services = CliServices.__new__(CliServices)
-        services.source_mode = False
-        services.install_docker = Mock()
-        services.install_python = Mock()
-        runtime = Mock()
-        services.manager_runtime = Mock(return_value=runtime)
-        services.install("manager")
-        services.install_docker.assert_called_once_with("manager")
-        services.install_python.assert_not_called()
-        runtime.install.assert_called_once_with()
-        with self.assertRaises(SystemExit):
-            make_parser(source_mode=False).parse_args([
-                "deploy", "manager", "--install-python",
-            ])
 
     def test_bare_deploy_installs_all_enabled_runtimes(self) -> None:
         services = FakeServices()
@@ -280,26 +257,10 @@ class TerminalCliRedesignTests(unittest.TestCase):
         dispatch(["deploy", "monitor"], services)
         self.assertEqual(services.calls, [("install", "monitor")])
 
-    def test_old_cross_runtime_config_command_is_removed(self) -> None:
-        services = FakeServices()
-        with self.assertRaises(SystemExit):
-            dispatch(["deploy", "config", "manager"], services)
-        self.assertEqual(services.calls, [])
-
-    def test_old_upload_flag_is_removed(self) -> None:
-        services = FakeServices()
-        with self.assertRaises(SystemExit):
-            dispatch(["deploy", "manager", "--upload"], services)
-        self.assertEqual(services.calls, [])
-
     def test_modpack_deploy_is_a_single_adapter_call(self) -> None:
         services = FakeServices()
         dispatch(["deploy", "modpack", "Pack-01"], services)
         self.assertEqual(services.calls, [("deploy-modpack", "Pack-01")])
-
-    def test_modpack_deploy_no_longer_has_force_flag(self) -> None:
-        with self.assertRaises(SystemExit):
-            dispatch(["deploy", "modpack", "Pack-01", "--force"], FakeServices())
 
     def test_top_level_manager_target_controls_cloud_power(self) -> None:
         services = FakeServices()
@@ -319,9 +280,9 @@ class TerminalCliRedesignTests(unittest.TestCase):
 
     def test_manager_namespace_calls_remote_manager(self) -> None:
         services = FakeServices()
-        dispatch(["manager", "logs", "Pack-01", "--follow"], services)
+        dispatch(["manager", "logs", "Pack-01", "--lines", "20"], services)
         self.assertEqual(services.calls, [
-            ("manager", "logs", "Pack-01", ("--lines", "100", "--follow"), True),
+            ("manager", "logs", "Pack-01", ("--lines", "20"), False),
         ])
 
     def test_manager_create_force_is_forwarded_to_remote_manager(self) -> None:
@@ -373,6 +334,17 @@ class TerminalCliRedesignTests(unittest.TestCase):
         services = FakeServices()
         dispatch(["monitor", "status"], services)
         self.assertEqual(services.calls, [("monitor", "status")])
+
+    def test_monitor_reset_calls_runtime_reset(self) -> None:
+        services = FakeServices()
+        dispatch(["monitor", "reset-targets"], services)
+        self.assertEqual(services.calls, [("reset",)])
+
+    def test_monitor_message_reset_calls_runtime_reset(self) -> None:
+        services = FakeServices()
+        dispatch(["monitor", "reset-messages"], services)
+        self.assertEqual(services.calls, [("reset-messages",)])
+
 
     def test_cli_does_not_import_runtime_implementation_modules(self) -> None:
         source = Path("lib/cli.py").read_text(encoding="utf-8")

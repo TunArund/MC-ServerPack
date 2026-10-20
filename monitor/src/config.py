@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -13,8 +14,6 @@ import yaml
 CONFIG_FILE = Path(os.environ.get("MCSP_CONFIG", "/app/config.yml"))
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
-TARGET_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
-ALERT_KINDS = ("check-failed", "state-mismatch", "recovered")
 
 
 class ConfigError(RuntimeError):
@@ -37,30 +36,17 @@ class ScheduleConfig:
 
 
 @dataclass(frozen=True)
-class QQTargetConfig:
-    name: str
-    kind: str
-    identifier: str
-
-
-@dataclass(frozen=True)
-class QQAlertConfig:
-    kind: str
-    targets: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class QQBotConfig:
-    targets: tuple[QQTargetConfig, ...]
-    admins: tuple[str, ...]
-    alerts: tuple[QQAlertConfig, ...]
+class ManagerApiConfig:
+    host: str
+    port: int
 
 
 @dataclass(frozen=True)
 class MonitorConfig:
+    timezone: str
     power_api: PowerApiConfig
     schedule: ScheduleConfig
-    qqbot: QQBotConfig = QQBotConfig((), (), ())
+    manager_api: ManagerApiConfig
 
 
 def _mapping(value: object, field: str) -> dict:
@@ -106,6 +92,11 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     except (OSError, yaml.YAMLError) as exc:
         raise ConfigError(f"Monitor 配置读取失败：{exc}") from exc
     root = _mapping(document, "config.yml")
+    timezone = _text(root.get("timezone"), "timezone")
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError("timezone 必须是有效的 IANA 时区，例如 Asia/Shanghai") from exc
     manager = _mapping(root.get("manager"), "manager")
     power = _mapping(manager.get("power-api"), "manager.power-api")
     provider = _text(power.get("provider"), "manager.power-api.provider")
@@ -117,78 +108,22 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     stop_at = _optional_clock(manager, auto_stop, "stop-at", "manager.stop-at")
     if auto_start and auto_stop and start_at == stop_at:
         raise ConfigError("manager.start-at 与 manager.stop-at 不能相同")
-    qqbot_raw = root.get("qqbot")
-    qqbot = {} if qqbot_raw is None else _mapping(qqbot_raw, "qqbot")
-    targets_raw = qqbot.get("targets", [])
-    admins_raw = qqbot.get("admins", [])
-    alerts_raw = qqbot.get("alerts", {})
-    if (
-        not isinstance(targets_raw, list)
-        or not isinstance(admins_raw, list)
-        or not isinstance(alerts_raw, dict)
-    ):
-        raise ConfigError("qqbot.targets/admins 必须是数组，alerts 必须是对象")
-    targets: list[QQTargetConfig] = []
-    for index, raw in enumerate(targets_raw):
-        target = _mapping(raw, f"qqbot.targets[{index}]")
-        name = _text(target.get("name"), f"qqbot.targets[{index}].name")
-        if not TARGET_NAME_RE.fullmatch(name):
-            raise ConfigError(
-                f"qqbot.targets[{index}].name 仅允许大小写字母、数字和减号"
-            )
-        kind = target.get("type")
-        if kind not in ("user", "group"):
-            raise ConfigError(f"qqbot.targets[{index}].type 只能是 user 或 group")
-        targets.append(QQTargetConfig(
-            name, kind, _text(target.get("id"), f"qqbot.targets[{index}].id"),
-        ))
-    names = {target.name for target in targets}
-    if len(names) != len(targets):
-        raise ConfigError("qqbot.targets.name 不能重复")
-    identities = {(target.kind, target.identifier) for target in targets}
-    if len(identities) != len(targets):
-        raise ConfigError("qqbot.targets 的 type/id 不能重复")
-    admins = tuple(
-        _text(value, f"qqbot.admins[{index}]")
-        for index, value in enumerate(admins_raw)
-    )
-    if len(set(admins)) != len(admins):
-        raise ConfigError("qqbot.admins 不能重复")
-    unknown_admins = set(admins) - names
-    if unknown_admins:
-        raise ConfigError(f"qqbot.admins 引用了未知目标：{sorted(unknown_admins)[0]}")
-    target_by_name = {target.name: target for target in targets}
-    non_user_admins = [name for name in admins if target_by_name[name].kind != "user"]
-    if non_user_admins:
-        raise ConfigError(f"qqbot.admins 只能引用 user 目标：{non_user_admins[0]}")
-    unknown_kinds = set(alerts_raw) - set(ALERT_KINDS)
-    if unknown_kinds:
-        raise ConfigError(f"qqbot.alerts 包含未知告警类型：{sorted(unknown_kinds)[0]}")
-    alerts: list[QQAlertConfig] = []
-    for kind in ALERT_KINDS:
-        route = alerts_raw.get(kind, [])
-        if not isinstance(route, list):
-            raise ConfigError(f"qqbot.alerts.{kind} 必须是目标名称数组")
-        route_names = tuple(
-            _text(value, f"qqbot.alerts.{kind}[{index}]")
-            for index, value in enumerate(route)
-        )
-        if len(set(route_names)) != len(route_names):
-            raise ConfigError(f"qqbot.alerts.{kind} 不能包含重复目标")
-        unknown_targets = set(route_names) - names
-        if unknown_targets:
-            raise ConfigError(
-                f"qqbot.alerts.{kind} 引用了未知目标：{sorted(unknown_targets)[0]}"
-            )
-        alerts.append(QQAlertConfig(kind, route_names))
+    manager_api = manager.get("api", {})
+    if not isinstance(manager_api, dict):
+        raise ConfigError("manager.api 必须是对象")
+    status_port = manager_api.get("port", 27016)
+    if type(status_port) is not int or not 1 <= status_port <= 65535:
+        raise ConfigError("manager.api.port 必须是 1 到 65535 的整数")
+    status_host = _text(manager_api.get("host"), "manager.api.host")
     return MonitorConfig(
+        timezone,
         PowerApiConfig(
             provider,
             _text(power.get("instance-id"), "manager.power-api.instance-id"),
             _text(power.get("instance-region"), "manager.power-api.instance-region"),
         ),
         ScheduleConfig(auto_start, start_at, auto_stop, stop_at),
-        QQBotConfig(tuple(targets), admins, tuple(alerts)),
+        ManagerApiConfig(status_host, status_port),
     )
 
 
@@ -207,3 +142,10 @@ def qq_credentials() -> tuple[str, str] | None:
     if not app_id or not app_key:
         raise ConfigError("QQBOT_APP_ID 与 QQBOT_APP_KEY 必须同时配置")
     return app_id, app_key
+
+
+def manager_api_secret() -> str:
+    value = os.environ.get("MANAGER_API_KEY", "").strip()
+    if len(value) < 32:
+        raise ConfigError("启用 manager.api 时 MANAGER_API_KEY 至少需要 32 个字符")
+    return value

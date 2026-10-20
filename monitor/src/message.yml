@@ -1,16 +1,165 @@
-menu: |-
-  # Monitor
-  Manager状态：**{state}**
-  请选择操作：
-permission: 只有配置中的管理员可以执行电源操作。
-confirm: 确认关机？60s后取消
-confirm-expired: 关机确认超时
-working: 正在{action}，请稍候。
-done: '{action}请求已提交，当前状态：{state}'
-error: '{action}失败：{reason}'
-alert: |-
-  # Monitor
-  警告
-  {alerts}
-recovered: 电源检查已恢复正常。
-verified: 验证成功，您已订阅Monitor通知
+keyboard:
+  menu: 菜单
+  power-start: 开机
+  power-stop: 关机
+  power-stop-confirm: 确认关机
+  schedule-cancel: 取消预订
+  schedule-restore: 恢复预订
+  alerts-snooze-1h: 1h
+  alerts-snooze-2h: 2h
+  alerts-snooze-5h: 5h
+  request-approve: 批准
+  request-reject: 拒绝
+
+menu:
+  markdown: |-
+    ## 服务器小管家
+    🎮 游戏服务器当前状态：{state}
+    请选择要执行的操作。
+  keyboard:
+    - [power-start, power-stop]
+    - [schedule-cancel, schedule-restore]
+
+menu-readonly:
+  text: |-
+    🎮 游戏服务器当前状态：{state}
+    您可以查看状态；电源与定时操作仅限管理员执行。
+
+permission:
+  text: 此操作仅限管理员执行。
+
+confirm-stop:
+  markdown: |-
+    ## 确认关机
+    确定要关闭游戏服务器吗？请在 60 秒内点击“确认关机”。
+  keyboard:
+    - [power-stop-confirm]
+
+confirm-pending:
+  markdown: |-
+    ## 等待确认
+    关机请求正在等待确认。请点击“确认关机”；重复发送“关机”不会执行操作。
+  keyboard:
+    - [power-stop-confirm]
+
+confirm-expired:
+  text: 关机确认已超过 60 秒，请重新发送“关机”。
+
+working:
+  text: 正在提交{action}请求，请稍候。
+
+done:
+  text: |-
+    {action}请求已提交。云主机当前状态：{state}；Monitor 将继续检查最终状态。
+
+error:
+  text: |-
+    {action}失败：{reason}
+
+cancelled:
+  text: 已取消 {due} 的自动开机任务。
+
+restored:
+  text: 已恢复 {due} 的自动开机任务。
+
+snoozed:
+  text: 🔕 告警通知已暂停至 {until}；状态检查和定时任务仍会继续运行。
+
+alert-check-failed:
+  markdown: |-
+    ## 服务器小管家告警
+    ⚠️ Monitor 检查失败：
+
+    {alerts}
+
+    您可以暂时停止接收告警；状态检查和定时任务不会停止。
+  keyboard:
+    - [alerts-snooze-1h, alerts-snooze-2h, alerts-snooze-5h]
+
+alert-state-mismatch-start:
+  markdown: |-
+    ## 服务器小管家告警
+    ⚠️ 自动开机没有按计划完成：
+
+    {alerts}
+
+    可能是云 API 请求失败、实例仍在切换状态，或您刚刚手动关闭了云主机。请确认后处理。
+  keyboard:
+    - [power-start, alerts-snooze-1h, alerts-snooze-2h, alerts-snooze-5h]
+
+alert-state-mismatch-stop:
+  markdown: |-
+    ## 服务器小管家告警
+    ⚠️ 自动关机没有按计划完成：
+
+    {alerts}
+
+    可能是云 API 请求失败，或实例仍在切换状态。请确认后处理。
+  keyboard:
+    - [power-stop, alerts-snooze-1h, alerts-snooze-2h, alerts-snooze-5h]
+
+alert-recovered:
+  text: |-
+    ✅ 刚才报告的状态异常已经解除。服务器当前状态符合定时计划。
+
+alert-test:
+  markdown: |-
+    ## 服务器小管家告警
+    🧪 这是一条测试告警，不会操作游戏服务器。点击按钮忽略告警1/2/5h。
+  keyboard:
+    - [alerts-snooze-1h, alerts-snooze-2h, alerts-snooze-5h]
+
+public-started:
+  text: |-
+    🎮 服务器已开机
+
+    {servers}
+
+public-stopped:
+  text: |-
+    💤 服务器已关机
+
+verified:
+  text: 管理员验证成功。后续服务器通知将发送到此会话。
+
+subscription-request:
+  markdown: |-
+    ## 新的通知订阅申请
+    类型：{kind_label}
+    {name_label}：{name}
+    申请人：{requester}
+    申请编号：{request_id}
+
+    是否批准此订阅？
+  keyboard:
+    - [request-approve, request-reject]
+
+request-submitted:
+  text: 订阅申请已提交，正在等待管理员审批。
+
+request-pending:
+  text: 您的订阅申请仍在等待管理员审批，请勿重复提交。
+
+request-exists:
+  text: 当前会话已经订阅服务器通知，无需重复申请。
+
+request-no-admin:
+  text: 尚未设置管理员。请先让部署者运行 ./mcsp.sh monitor add-admin。
+
+decision-usage:
+  text: 您点通知里的按钮就行；也可以直接对我说「批准 编号」或「拒绝 编号」。
+
+request-approved-admin:
+  text: 已批准“{name}”接收服务器通知。
+
+request-rejected-admin:
+  text: 已拒绝“{name}”的通知申请。
+
+request-approved:
+  text: 管理员已批准订阅。单聊接收异常告警，群聊接收公开的开关机通知。
+
+request-rejected:
+  text: 管理员未批准本次订阅申请；如有疑问，请联系管理员。
+
+request-error:
+  text: 抱歉，这个申请我没法处理：{reason}

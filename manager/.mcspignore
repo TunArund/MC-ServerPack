@@ -1,12 +1,13 @@
 config.yml
 .env
-.venv
+data
+data/*
 modpacks/*
 !modpacks/template
 !modpacks/template/*
 modpacks/template/data
 modpacks/template/backups
-.schedule-state.json
+data/schedule-state.json
 schedule.log
 manager.log
 tmp

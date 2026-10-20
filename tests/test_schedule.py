@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 from datetime import datetime
@@ -10,25 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from manager.lib.config import ManagerLimits
-from manager.lib.schedule import CRON_MARKER, backup_due, install, reminders, remove, run_all, run_due, schedule_lock
-
-
-class FakeCrontab:
-    def __init__(self, content: str = "") -> None:
-        self.content = content
-        self.writes = 0
-
-    def __call__(self, arguments: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        if arguments == ["crontab", "-l"]:
-            if not self.content:
-                return subprocess.CompletedProcess(arguments, 1, "", "no crontab")
-            return subprocess.CompletedProcess(arguments, 0, self.content, "")
-        if arguments == ["crontab", "-"]:
-            self.content = kwargs["input"]
-            self.writes += 1
-            return subprocess.CompletedProcess(arguments, 0, "", "")
-        raise AssertionError(arguments)
+from manager.src.config import ManagerLimits
+from manager.src.schedule import backup_due, reminders, run_all, run_due, schedule_lock
 
 
 class FakeManager:
@@ -100,7 +82,7 @@ class ScheduleTests(unittest.TestCase):
         self.assertFalse(failed)
         self.assertEqual(manager.backed_up, ["due"])
         self.assertEqual(completed, [self.root / "due.tar.gz"])
-        self.assertEqual(json.loads((self.root / ".schedule-state.json").read_text()), [])
+        self.assertEqual(json.loads((self.root / "data/schedule-state.json").read_text()), [])
 
     def test_failure_does_not_block_other_packs(self) -> None:
         manager = PartlyFailingManager(self.root, [self.spec("broken"), self.spec("healthy")])
@@ -171,18 +153,6 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(first.poweroff)
         self.assertFalse(second.poweroff)
         self.assertEqual(calls, ["stop"])
-
-    def test_cron_install_is_idempotent_and_preserves_other_entries(self) -> None:
-        runner = FakeCrontab("0 1 * * * other-job\n")
-        install(self.root, runner)
-        install(self.root, runner)
-        self.assertIn("other-job", runner.content)
-        self.assertEqual(runner.content.count(CRON_MARKER), 1)
-        self.assertIn("./manager.sh schedule run", runner.content)
-        remove(runner)
-        self.assertIn("other-job", runner.content)
-        self.assertNotIn(CRON_MARKER, runner.content)
-
 
 if __name__ == "__main__":
     unittest.main()

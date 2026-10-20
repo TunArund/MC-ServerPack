@@ -9,6 +9,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -484,6 +485,44 @@ def _atomic_replace(client, sftp, temporary: str, final: str) -> None:
         raise CommandError(f"远端原子替换失败：{detail or final}")
 
 
+def remote_file_exists(destination: str, remote_path: str) -> bool:
+    remote_path = _remote_path(remote_path)
+    client = _connect(destination)
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.stat(remote_path)
+        except IOError:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def download_file(
+    destination: str, remote_path: str, local_path: Path, *,
+    mode: int | None = None,
+) -> None:
+    """通过 SFTP 下载单个文件，并原子替换本地目标。"""
+    remote_path = _remote_path(remote_path)
+    local_path = Path(local_path).resolve()
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    client = _connect(destination)
+    temporary = local_path.with_name(local_path.name + ".tmp")
+    try:
+        sftp = client.open_sftp()
+        with sftp.open(remote_path, "rb") as source, temporary.open("wb") as output:
+            shutil.copyfileobj(source, output, 1024 * 1024)
+        if mode is not None:
+            temporary.chmod(mode)
+        os.replace(temporary, local_path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise CommandError(f"下载远端文件失败：{remote_path}：{exc}") from exc
+    finally:
+        client.close()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -735,6 +774,15 @@ class Transport:
 
     def upload_file(self, source: Path, destination: str, remote_path: str, *, mode: int | None = None) -> bool:
         return upload_file(source, destination, remote_path, mode=mode)
+
+    def download_file(
+        self, destination: str, remote_path: str, local_path: Path, *,
+        mode: int | None = None,
+    ) -> None:
+        download_file(destination, remote_path, local_path, mode=mode)
+
+    def remote_file_exists(self, destination: str, remote_path: str) -> bool:
+        return remote_file_exists(destination, remote_path)
 
     def sync_tree(
         self, source: Path, destination: str, remote_root: str, *,
