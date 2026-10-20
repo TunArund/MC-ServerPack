@@ -19,7 +19,9 @@ SNOOZE_SERVICES = {
 }
 SERVICES = frozenset((
     "menu", "power-start", "power-stop", "power-stop-confirm",
-    "schedule-cancel", "schedule-restore", "request-approve", "request-reject",
+    "schedule-cancel", "schedule-restore", "request-management",
+    "modpacks-status", "modpacks-logs", "modpacks-enable", "modpacks-disable",
+    "request-approve", "request-reject",
     *SNOOZE_SERVICES,
 ))
 DECISION_SERVICES = frozenset(("request-approve", "request-reject"))
@@ -27,6 +29,8 @@ REQUEST_RE = re.compile(r"订阅(?:\s+(.{1,32}))?$")
 DECISION_RE = re.compile(r"(批准|拒绝)\s+([0-9a-f]{6})$")
 CONFIRM_SECONDS = 60
 ALERT_WINDOW_SECONDS = 60
+MANAGEMENT_RE = re.compile(r"申请管理$")
+PACK_COMMAND_RE = re.compile(r"(日志|开机自启|取消自启)(?:\s+(.+))?$")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -101,6 +105,20 @@ class QQBot:
         self.seen: OrderedDict[str, None] = OrderedDict()
         self.pending_stop: dict[tuple[str, str, str], float] = {}
         self.alerts: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=1000)
+        self.service_handlers: dict[
+            str, Callable[[Incoming, str | None], Awaitable[None]]
+        ] = {
+            "modpacks-status": self._route_modpacks_status,
+            "modpacks-logs": self._route_modpack_action,
+            "modpacks-enable": self._route_modpack_action,
+            "modpacks-disable": self._route_modpack_action,
+            "power-start": self._route_power_start,
+            "power-stop": self._route_power_stop,
+            "power-stop-confirm": self._route_power_stop_confirm,
+            "schedule-cancel": self._route_schedule_cancel,
+            "schedule-restore": self._route_schedule_restore,
+            **{service: self._route_snooze for service in SNOOZE_SERVICES},
+        }
 
     async def run(self, stopped: asyncio.Event) -> None:
         network = asyncio.create_task(self.network.serve(self.handle, stopped))
@@ -200,6 +218,10 @@ class QQBot:
 
         LOGGER.info("收到 QQ 消息：target=%s", target_label(received.target))
 
+        if MANAGEMENT_RE.fullmatch(received.content):
+            await self._request_management(received)
+            return
+
         decision = DECISION_RE.fullmatch(received.content)
         if decision and received.target.kind == "user":
             LOGGER.info("识别 QQ 服务：request-decision")
@@ -215,6 +237,10 @@ class QQBot:
         is_admin = self.targets.is_admin(
             received.sender_id, received.union_openid,
             scene=received.target.kind,
+            group_openid=(
+                received.target.identifier
+                if received.target.kind == "group" else None
+            ),
         )
         if not (
             is_admin
@@ -226,12 +252,21 @@ class QQBot:
             return
 
         service = messages.action(received.content)
+        pack_command = PACK_COMMAND_RE.fullmatch(received.content)
+        if pack_command:
+            service = {
+                "日志": "modpacks-logs", "开机自启": "modpacks-enable",
+                "取消自启": "modpacks-disable",
+            }[pack_command.group(1)]
         if service is None:
             LOGGER.info("忽略未识别 QQ 命令：target=%s", target_label(received.target))
             return
         LOGGER.info("识别 QQ 服务：%s target=%s", service, target_label(received.target))
         if service == "menu":
             await self._menu(received, read_only=not is_admin)
+            return
+        if service == "request-management":
+            await self._request_management(received)
             return
         if service in DECISION_SERVICES:
             if not is_admin:
@@ -242,25 +277,76 @@ class QQBot:
         if not is_admin:
             await self.network.reply(received, messages.render("permission"))
             return
-        if service == "power-start":
-            await self._operate(received, "开机", self.power.start)
-        elif service == "power-stop":
-            key = self._confirmation_key(received)
-            if self.pending_stop.get(key, 0) >= self.clock():
-                await self.network.reply(received, messages.render("confirm-pending"))
-            else:
-                self.pending_stop[key] = self.clock() + CONFIRM_SECONDS
-                await self.network.reply(received, messages.render("confirm-stop"))
-        elif service == "power-stop-confirm":
-            await self._confirm_stop(received)
-        elif service == "schedule-cancel":
-            await self._cancel_reservation(received)
-        elif service == "schedule-restore":
-            await self._restore_reservation(received)
-        elif service in SNOOZE_SERVICES:
-            await self._snooze(received, SNOOZE_SERVICES[service])
-        else:
+        handler = self.service_handlers.get(service)
+        if handler is None:
             LOGGER.warning("QQ 消息配置引用了未注册服务：%s", service)
+            return
+        argument = pack_command.group(2) if pack_command else service
+        await handler(received, argument)
+
+    async def _route_modpacks_status(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        del argument
+        await self._modpacks_status(received)
+
+    async def _route_modpack_action(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        pack_command = PACK_COMMAND_RE.fullmatch(received.content)
+        service = messages.action(received.content)
+        if pack_command:
+            service = {
+                "日志": "modpacks-logs", "开机自启": "modpacks-enable",
+                "取消自启": "modpacks-disable",
+            }[pack_command.group(1)]
+        if service is None:
+            raise RuntimeError("整合包服务没有注册")
+        await self._modpack_action(
+            received, service, argument if pack_command else None,
+        )
+
+    async def _route_power_start(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        del argument
+        await self._operate(received, "开机", self.power.start)
+
+    async def _route_power_stop(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        del argument
+        key = self._confirmation_key(received)
+        if self.pending_stop.get(key, 0) >= self.clock():
+            await self.network.reply(received, messages.render("confirm-pending"))
+        else:
+            self.pending_stop[key] = self.clock() + CONFIRM_SECONDS
+            await self.network.reply(received, messages.render("confirm-stop"))
+
+    async def _route_power_stop_confirm(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        del argument
+        await self._confirm_stop(received)
+
+    async def _route_schedule_cancel(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        del argument
+        await self._cancel_reservation(received)
+
+    async def _route_schedule_restore(
+        self, received: Incoming, argument: str | None,
+    ) -> None:
+        del argument
+        await self._restore_reservation(received)
+
+    async def _route_snooze(
+        self, received: Incoming, service: str | None,
+    ) -> None:
+        if service is None:
+            raise RuntimeError("静默服务没有注册")
+        await self._snooze(received, SNOOZE_SERVICES[service])
 
     async def _request(self, received: Incoming, nickname: str | None) -> None:
         kind = received.target.kind
@@ -334,8 +420,14 @@ class QQBot:
                 received, messages.render("request-error", reason=exc),
             )
             return
-        result = "request-approved-admin" if approved else "request-rejected-admin"
-        await self.network.reply(received, messages.render(result, name=request.name))
+        if request.purpose == "management":
+            result = "management-approved-admin" if approved else "management-rejected-admin"
+            requester_result = "management-approved" if approved else "management-rejected"
+        else:
+            result = "request-approved-admin" if approved else "request-rejected-admin"
+            requester_result = "request-approved" if approved else "request-rejected"
+        result_name = request.requester if request.purpose == "management" else request.name
+        await self.network.reply(received, messages.render(result, name=result_name))
         LOGGER.info(
             "订阅申请已处理：request=%s result=%s target=%s",
             request.request_id, "approved" if approved else "rejected",
@@ -343,7 +435,7 @@ class QQBot:
         )
         await self._notify_requester(
             request,
-            messages.render("request-approved" if approved else "request-rejected"),
+            messages.render(requester_result),
         )
 
     async def _notify_requester(
@@ -366,8 +458,117 @@ class QQBot:
             state = status.state
         except Exception as exc:
             state = f"查询失败：{exc}"
-        template = "menu-readonly" if read_only else "menu"
+        template = (
+            "menu-group-readonly"
+            if read_only and received.target.kind == "group"
+            else ("menu-readonly" if read_only else "menu")
+        )
         await self.network.reply(received, messages.render(template, state=state))
+
+    async def _request_management(self, received: Incoming) -> None:
+        if received.target.kind != "group":
+            await self.network.reply(received, messages.render("management-group-only"))
+            return
+        if not self.targets.is_group(received.target.identifier):
+            await self.network.reply(received, messages.render("management-subscribe-first"))
+            return
+        if self.targets.is_admin(
+            received.sender_id, received.union_openid, scene="group",
+            group_openid=received.target.identifier,
+        ):
+            await self.network.reply(received, messages.render("management-exists"))
+            return
+        request, notify = self.targets.request_management(
+            received.target.identifier, received.sender_id,
+            received.sender_name or received.sender_id[-6:],
+            message_id=received.message_id,
+        )
+        await self.network.reply(
+            received, messages.render(
+                "management-submitted" if notify else "request-pending",
+            ),
+        )
+        if not notify:
+            return
+        outgoing = messages.render(
+            "management-request", requester=request.requester,
+            group=request.name, request_id=request.request_id,
+            button_data={
+                "request-approve": f"批准 {request.request_id}",
+                "request-reject": f"拒绝 {request.request_id}",
+            },
+        )
+        for admin in sorted(self.targets.admins):
+            await self.network.push(Target("user", admin), outgoing)
+
+    async def _manager_packs(self) -> list[dict]:
+        if self.manager_status is None:
+            raise RuntimeError("Manager 状态接口未配置")
+        packs = await asyncio.to_thread(self.manager_status.list_modpacks)
+        return [item for item in packs if isinstance(item, dict)]
+
+    async def _modpacks_status(self, received: Incoming) -> None:
+        try:
+            packs = [item for item in await self._manager_packs() if item.get("enabled")]
+            lines = [
+                f"- {item.get('name') or item.get('id')}｜{item.get('version') or '未知版本'}｜{item.get('state') or 'unknown'}"
+                for item in packs
+            ]
+            await self.network.reply(received, messages.render(
+                "modpacks-status", packs="\n".join(lines) or "暂无已启用整合包。",
+            ))
+        except Exception as exc:
+            await self.network.reply(received, messages.render("error", action="查询状态", reason=exc))
+
+    @staticmethod
+    def _find_pack(packs: list[dict], value: str) -> dict:
+        matches = [p for p in packs if value in (p.get("id"), p.get("name"))]
+        if len(matches) != 1:
+            raise RuntimeError("找不到整合包，或名称不唯一")
+        return matches[0]
+
+    async def _modpack_action(
+        self, received: Incoming, service: str, value: str | None,
+    ) -> None:
+        try:
+            packs = await self._manager_packs()
+            if service == "modpacks-enable":
+                packs = [p for p in packs if not p.get("enabled")]
+                verb, command = "开机自启", "开机自启"
+            elif service == "modpacks-disable":
+                packs = [p for p in packs if p.get("enabled")]
+                verb, command = "取消自启", "取消自启"
+            else:
+                packs = [p for p in packs if p.get("enabled")]
+                verb, command = "查看日志", "日志"
+            if value is None:
+                choices = [
+                    (str(p.get("name") or p.get("id")), f"{command} {p['id']}")
+                    for p in packs if p.get("id")
+                ]
+                if not choices:
+                    raise RuntimeError("没有可选择的整合包")
+                await self.network.reply(received, messages.choices(
+                    "modpack-select", service, choices, action=verb,
+                ))
+                return
+            pack = self._find_pack(packs, value.strip())
+            pack_id = str(pack["id"])
+            if service == "modpacks-logs":
+                text = await asyncio.to_thread(self.manager_status.logs, pack_id, lines=10)
+                await self.network.reply(received, messages.render(
+                    "modpack-logs", name=pack.get("name") or pack_id,
+                    logs=text[-3000:] or "暂无日志。",
+                ))
+            else:
+                operation = self.manager_status.enable if service == "modpacks-enable" else self.manager_status.disable
+                await asyncio.to_thread(operation, pack_id)
+                await self.network.reply(received, messages.render(
+                    "modpack-updated", name=pack.get("name") or pack_id,
+                    action=verb,
+                ))
+        except Exception as exc:
+            await self.network.reply(received, messages.render("error", action="整合包操作", reason=exc))
 
     @staticmethod
     def _confirmation_key(received: Incoming) -> tuple[str, str, str]:

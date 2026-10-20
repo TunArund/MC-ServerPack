@@ -5,6 +5,11 @@ keyboard:
   power-stop-confirm: 确认关机
   schedule-cancel: 取消预订
   schedule-restore: 恢复预订
+  request-management: 申请管理
+  modpacks-status: 状态
+  modpacks-logs: 日志
+  modpacks-enable: 开机自启
+  modpacks-disable: 取消自启
   alerts-snooze-1h: 1h
   alerts-snooze-2h: 2h
   alerts-snooze-5h: 5h
@@ -19,11 +24,73 @@ menu:
   keyboard:
     - [power-start, power-stop]
     - [schedule-cancel, schedule-restore]
+    - [modpacks-status, modpacks-logs]
+    - [modpacks-enable, modpacks-disable]
 
 menu-readonly:
   text: |-
     🎮 游戏服务器当前状态：{state}
-    您可以查看状态；电源与定时操作仅限管理员执行。
+    你可以查看状态；管理操作仅限管理员执行。
+
+menu-group-readonly:
+  markdown: |-
+    ## 服务器小管家
+    🎮 游戏服务器当前状态：{state}
+    当前群聊身份没有管理权限；如需操作服务器，请提交管理申请。
+  keyboard:
+    - [request-management]
+
+management-group-only:
+  text: 请在已经订阅通知的群里 @我并发送“申请管理”。
+
+management-subscribe-first:
+  text: 当前群还没有订阅服务器通知，请先发送“订阅 群备注”并等待管理员批准。
+
+management-exists:
+  text: 你在当前群已经拥有管理权限。
+
+management-submitted:
+  text: 管理权限申请已提交，请等待现有管理员批准。
+
+management-request:
+  markdown: |-
+    ## 群聊管理权限申请
+    申请人：{requester}
+    群聊：{group}
+    申请编号：{request_id}
+  keyboard:
+    - [request-approve, request-reject]
+
+management-approved-admin:
+  text: 已批准“{name}”在对应群聊中使用管理功能。
+
+management-rejected-admin:
+  text: 已拒绝“{name}”的群聊管理权限申请。
+
+management-approved:
+  text: 管理员已批准你的申请。现在你可以 @我并使用完整菜单。
+
+management-rejected:
+  text: 管理员未批准本次管理权限申请。
+
+modpacks-status:
+  markdown: |-
+    ## 已启用整合包
+    名称｜版本｜状态
+    {packs}
+
+modpack-select:
+  markdown: |-
+    ## 选择整合包
+    请选择要{action}的整合包：
+
+modpack-logs:
+  text: |-
+    {name} 最近 10 行日志：
+    {logs}
+
+modpack-updated:
+  text: 已为“{name}”执行{action}。
 
 permission:
   text: 此操作仅限管理员执行。
@@ -144,7 +211,7 @@ request-exists:
   text: 当前会话已经订阅服务器通知，无需重复申请。
 
 request-no-admin:
-  text: 尚未设置管理员。请先让部署者运行 ./mcsp.sh monitor add-admin。
+  text: 尚未设置管理员。请先让部署者运行 ./terminal/mcsp.sh monitor add-admin。
 
 decision-usage:
   text: 您点通知里的按钮就行；也可以直接对我说「批准 编号」或「拒绝 编号」。

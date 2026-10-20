@@ -40,6 +40,20 @@ class ManagerSdkError(RuntimeError):
     pass
 
 
+def format_job_event(event: dict) -> str | None:
+    """三个入口共用的稳定 Job 事件文本规则。"""
+    message = event.get("message")
+    if not isinstance(message, str) or not message:
+        return None
+    stage = event.get("stage", "job")
+    current = event.get("current", 0)
+    total = event.get("total", 0)
+    line = f"[{stage} {current}/{total}] {message}"
+    detail = event.get("detail")
+    tail = detail.get("tail") if isinstance(detail, dict) else None
+    return f"{line}；{tail}" if isinstance(tail, str) and tail else line
+
+
 def signature(
     secret: str, method: str, target: str, timestamp: str, nonce: str,
     body: bytes,

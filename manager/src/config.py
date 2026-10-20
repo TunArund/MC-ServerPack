@@ -80,7 +80,7 @@ def load_api_settings(path: Path = MANAGER_CONFIG) -> ApiSettings:
     if not certificate.is_file() or not private_key.is_file():
         raise ConfigError(
             "缺少 Manager TLS 证书；请运行 ./manager.sh install，"
-            "或通过 Terminal 执行 ./mcsp.sh deploy manager"
+            "或通过 Terminal 执行 ./terminal/mcsp.sh deploy manager"
         )
     return ApiSettings(listen, port, certificate, private_key)
 

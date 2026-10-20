@@ -169,10 +169,10 @@ read-only:
 跨主机归档由 Terminal 下载或上传：
 
 ```bash
-./mcsp.sh manager export <id> ./<id>.tgz
-./mcsp.sh manager export <id> ./<id>.tgz --source-only
-./mcsp.sh manager export <id> ./<id>.tgz --include-backups
-./mcsp.sh manager import ./<id>.tgz [--force]
+./terminal/mcsp.sh manager export <id> ./<id>.tgz
+./terminal/mcsp.sh manager export <id> ./<id>.tgz --source-only
+./terminal/mcsp.sh manager export <id> ./<id>.tgz --include-backups
+./terminal/mcsp.sh manager import ./<id>.tgz [--force]
 ```
 
 默认归档包含 `manifest.json` 、`config.yml` 、`src/` 和 `data/`。归档不包含
@@ -184,10 +184,8 @@ Manager 内部聚合检查备份和定时停服，不依赖 cron。调度状态�
 `data/schedule-state.json`。
 
 ```text
-data/logs/service.log     Manager 生命周期与未捕获错误
+data/logs/service.log     生命周期、整合包业务、Job 与调度
 data/logs/api.log         API 请求和耗时
-data/logs/manager.log     整合包业务操作
-data/logs/schedule.log    自动备份与定时任务
 data/jobs/<job-id>.jsonl  可恢复的任务事件
 ```
 

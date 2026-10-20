@@ -9,8 +9,6 @@ import re
 import secrets as token_secrets
 import signal
 import sys
-from datetime import datetime
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -21,6 +19,7 @@ from .config import (
 from .manager_sdk import ManagerSdk
 from .message import messages
 from .network import Network
+from .observability import configure_logging as configure_observability
 from .power import PowerTarget, create_power
 from .qqbot import QQBot, discover_target
 from .schedule import MonitorService, PowerSchedule, StateStore
@@ -30,34 +29,9 @@ from .targets import TargetStore
 DATA_DIR = Path(os.environ.get("MCSP_DATA", "/app/data"))
 
 
-class LocalTimeFormatter(logging.Formatter):
-    """始终使用 Monitor 调度时区，避免容器的 UTC 环境污染日志。"""
-
-    def __init__(self, *args, timezone, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.timezone = timezone
-
-    def formatTime(self, record, datefmt=None):  # noqa: N802
-        current = datetime.fromtimestamp(record.created, self.timezone)
-        return current.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
-
-
 def configure_logging(timezone) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    formatter = LocalTimeFormatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s",
-        timezone=timezone,
-    )
-    stream = logging.StreamHandler()
-    stream.setFormatter(formatter)
-    service_log = RotatingFileHandler(
-        DATA_DIR / "service.log", maxBytes=2 * 1024 * 1024,
-        backupCount=3, encoding="utf-8",
-    )
-    service_log.setFormatter(formatter)
-    logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        handlers=[stream, service_log], force=True,
+    configure_observability(
+        {"": DATA_DIR / "service.log"}, stream=True, timezone=timezone,
     )
 
 
@@ -185,7 +159,7 @@ async def test_alert() -> None:
         raise ConfigError("test-alert 需要 QQBOT_APP_ID 与 QQBOT_APP_KEY")
     targets = TargetStore(DATA_DIR / "qqbot.json").private_targets()
     if not targets:
-        raise ConfigError("尚未添加管理员；请先运行 ./mcsp.sh monitor add-admin")
+        raise ConfigError("尚未添加管理员；请先运行 ./terminal/mcsp.sh monitor add-admin")
     network = Network(*credentials)
     message = messages.render("alert-test")
     for target in sorted(targets, key=lambda item: (item.kind, item.identifier)):

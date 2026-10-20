@@ -196,5 +196,24 @@ class MessageRenderer:
             },
         }
 
+    def choices(
+        self, template_name: str, service: str,
+        choices: list[tuple[str, str]], **values: object,
+    ) -> Outgoing:
+        """Render a template with runtime buttons as ``(label, command)`` pairs."""
+        message = self.render(template_name, **values)
+        buttons = []
+        for index, (label, command) in enumerate(choices[:10]):
+            button = self._button(service, command)
+            button["id"] = f"{service}-{index}"
+            button["render_data"]["label"] = label[:10]
+            button["render_data"]["visited_label"] = label[:10]
+            buttons.append(button)
+        keyboard = {"content": {"rows": [
+            {"buttons": buttons[index:index + 2]}
+            for index in range(0, len(buttons), 2)
+        ]}}
+        return Outgoing(message.content, True, keyboard)
+
 
 messages = MessageRenderer()

@@ -28,7 +28,7 @@ Terminal 自动上传。
 
 `check` 只验证 Docker Engine 与 Compose 插件是否可用，不会安装或修改系统软件。
 Monitor 不负责准备 Docker 系统环境；Terminal 部署时使用
-`./mcsp.sh deploy monitor --install-docker`，手工独立部署则需先自行安装并授权 Docker。
+`./terminal/mcsp.sh deploy monitor --install-docker`，手工独立部署则需先自行安装并授权 Docker。
 `install` 会比较 `Dockerfile`、`.dockerignore` 与 `src/` 的内容哈希和
 `data/image-source-hash`：源码未变且镜像存在时复用镜像，只执行
 `docker compose up -d --no-build`；源码变化或镜像缺失时才构建，并在启动后清理本项目
@@ -41,8 +41,8 @@ Terminal 在 config.yml 或 .env 内容变化时会自动传入该参数。`add-
 QQ 管理员与订阅目标由 Monitor 在运行时维护，不再写入 `config.yml`。管理员通过顶层终端添加：
 
 ```bash
-./mcsp.sh monitor add-admin          # 生成验证码并等待私聊验证
-./mcsp.sh monitor test-alert         # 向已登记的目标发送安全测试告警
+./terminal/mcsp.sh monitor add-admin          # 生成验证码并等待私聊验证
+./terminal/mcsp.sh monitor test-alert         # 向已登记的目标发送安全测试告警
 ```
 
 `add-admin` 会临时停掉 Monitor 容器，等待你**私聊**机器人发送四位验证码；验证通过后
@@ -54,10 +54,14 @@ QQ 昵称（取不到则生成用户 ID），群聊使用生成的群 ID。机�
 即可处理。
 
 - 已批准的单聊用户：接收异常告警，可发送“菜单”查看只读状态，不能操作电源。
-- 已批准的群：接收服务器开机、关机等公开通知，可查看只读菜单；群内 admin 可执行电源操作。
+- 已批准的群：接收服务器开机、关机等公开通知，可查看只读菜单；完成群聊身份绑定的
+  Monitor 管理员可执行电源操作。
 - 电源、定时开关机和告警静默只允许 admin。admin 在私聊和群聊中都可以操作。
-- admin 的跨场景识别依赖 QQ 的 `union_openid`；该字段为空时，群内消息无法匹配私聊
-  登记的管理员，请改用私聊操作。
+- QQ 的 `union_openid` 可能为空。群成员需要 @机器人发送 `申请管理`，由现有管理员
+  在私聊中批准后，Monitor 才会保存该群的 `group_openid + member_openid` 映射；
+  群主和订阅申请人不会自动获得管理权限。
+- 管理员可用 `状态` 查看已启用整合包的名称、版本与状态；发送 `日志`、`开机自启`
+  或 `取消自启` 后，通过动态按钮选择整合包。日志默认返回最近 10 行。
 - 异常告警和恢复通知只发送给管理员及已批准的单聊；公开开关机通知只发送到已批准群聊。
 - 群订阅申请可以自带便于管理员识别的备注：`订阅 群备注`；省略时显示脱敏群标识。
 
@@ -68,11 +72,11 @@ QQ 昵称（取不到则生成用户 ID），群聊使用生成的群 ID。机�
 格式或服务 ID 无效时保留旧文案并在日志中告警，不会让 Bot 退出。
 
 `deploy monitor` 不会覆盖 `data/message.yml`，改文案不需要重新部署或重启容器。
-需要采用新版默认模板时执行 `./mcsp.sh monitor reset-messages`；远端会先为原文件
+需要采用新版默认模板时执行 `./terminal/mcsp.sh monitor reset-messages`；远端会先为原文件
 生成带时间戳的 `.bak` 备份，再原子替换并由运行中的 Bot 热加载。
 
 `deploy monitor` 会保留 `data/`（包括 `qqbot.json`），不会自动清空管理员与订阅。
-需要重新授权或清空全部目标时执行 `./mcsp.sh monitor reset-targets`（等价于远端
+需要重新授权或清空全部目标时执行 `./terminal/mcsp.sh monitor reset-targets`（等价于远端
 `./monitor.sh reset-targets --force`）。该命令会停止 Monitor，并由应用清空 `data/qqbot.json`，
 再按原运行状态启动；之后需要重新执行 `add-admin`。
 
@@ -123,7 +127,7 @@ root 身份运行。
 涉及 QQ 凭据、网络或 `qqbot.json` 数据结构的操作统一交给 `python -m src.app`。
 `app.py` 是依赖组装与进程入口，不实现消息路由、状态机、模板或网络协议。
 QQ 日志只记录场景、脱敏短 ID、服务名、发送结果和耗时，不保存消息正文、完整 OpenID
-或验证码；`service.log` 每个文件最多 2 MiB，保留 3 个历史文件。
+或验证码；`service.log` 每个文件最多 5 MiB，保留 3 个历史文件。
 
 更完整的状态机、模块分层、QQ Bot 命令和安全设计见
 [Monitor 架构](../dev/monitor.md)。

@@ -2,9 +2,9 @@
 
 - 时间：2026-10-20 00:06–00:30（Asia/Shanghai）
 - Manager：Debian CVM，Docker 28.5.1；测试开始时云主机处于 STOPPED，使用
-  `./mcsp.sh start manager` 开机。
+  `./terminal/mcsp.sh start manager` 开机。
 - Monitor：Ubuntu Lighthouse，Docker 已安装，原 Monitor 容器处于运行状态。
-- 测试方式：优先使用 `./mcsp.sh`、远端 `./manager.sh`、远端 `./monitor.sh`；
+- 测试方式：优先使用 `./terminal/mcsp.sh`、远端 `./manager.sh`、远端 `./monitor.sh`；
   仅在被测命令无法完成诊断时使用 SSH/Docker 直接查看。
 - 结论：新 Manager/Monitor 已部署并可运行；测试中发现并修复了 3 个阻断问题，
   仍有若干体验和升级流程问题待处理。
@@ -12,32 +12,32 @@
 ## 已执行的命令
 
 ```text
-./mcsp.sh start manager
-./mcsp.sh deploy manager
-./mcsp.sh deploy manager --test
-./mcsp.sh deploy manager --config
-./mcsp.sh manager list
-./mcsp.sh manager status closing-song
-./mcsp.sh manager config closing-song
-./mcsp.sh manager start closing-song
-./mcsp.sh manager stop closing-song
-./mcsp.sh manager stop-all
-./mcsp.sh manager logs closing-song --lines 3
-./mcsp.sh manager console closing-song list
-./mcsp.sh manager property closing-song online-mode
-./mcsp.sh manager backup deploy-test
-./mcsp.sh manager backup list deploy-test
-./mcsp.sh manager restore deploy-test
-./mcsp.sh manager export deploy-test /tmp/deploy-test.tgz
-./mcsp.sh manager import /tmp/deploy-test.tgz --force
-./mcsp.sh manager create/remove/enable/disable deploy-test
-./mcsp.sh deploy monitor
-./mcsp.sh deploy monitor --test
-./mcsp.sh deploy monitor --config
-./mcsp.sh monitor status/start/stop
-./mcsp.sh monitor test-alert
-./mcsp.sh status manager
-./mcsp.sh status monitor
+./terminal/mcsp.sh start manager
+./terminal/mcsp.sh deploy manager
+./terminal/mcsp.sh deploy manager --test
+./terminal/mcsp.sh deploy manager --config
+./terminal/mcsp.sh manager list
+./terminal/mcsp.sh manager status closing-song
+./terminal/mcsp.sh manager config closing-song
+./terminal/mcsp.sh manager start closing-song
+./terminal/mcsp.sh manager stop closing-song
+./terminal/mcsp.sh manager stop-all
+./terminal/mcsp.sh manager logs closing-song --lines 3
+./terminal/mcsp.sh manager console closing-song list
+./terminal/mcsp.sh manager property closing-song online-mode
+./terminal/mcsp.sh manager backup deploy-test
+./terminal/mcsp.sh manager backup list deploy-test
+./terminal/mcsp.sh manager restore deploy-test
+./terminal/mcsp.sh manager export deploy-test /tmp/deploy-test.tgz
+./terminal/mcsp.sh manager import /tmp/deploy-test.tgz --force
+./terminal/mcsp.sh manager create/remove/enable/disable deploy-test
+./terminal/mcsp.sh deploy monitor
+./terminal/mcsp.sh deploy monitor --test
+./terminal/mcsp.sh deploy monitor --config
+./terminal/mcsp.sh monitor status/start/stop
+./terminal/mcsp.sh monitor test-alert
+./terminal/mcsp.sh status manager
+./terminal/mcsp.sh status monitor
 ./manager.sh list/status/config/start/stop/stop-all/logs/property/backup list/export/create/remove
 ./monitor.sh check/status/logs/install
 ```
@@ -129,7 +129,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
 
 ### 命令体验
 
-5. **日志输出仍是 JSON 包络**。`./mcsp.sh manager logs` 和
+5. **日志输出仍是 JSON 包络**。`./terminal/mcsp.sh manager logs` 和
    `./manager.sh logs` 输出 `{"text":"...\n..."}`，换行被转义；应直接打印文本。
 6. **Manager 端 export 不下载文件**。`./manager.sh export <id>` 只返回
    transfer 元数据，没有生成本地文件；Terminal 的 `mcsp.sh manager export` 才下载。
@@ -145,7 +145,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
     时，`QQBot.notify` 抛 `Manager 尚无运行中的整合包`，Monitor 每 30 秒记录一次
     完整 traceback（本次观察到 20 次）。此时应静默等待或只记 debug，不应作为
     失败告警。
-11. **`./mcsp.sh status monitor` 文案误导**。它实际只查询容器状态，却输出
+11. **`./terminal/mcsp.sh status monitor` 文案误导**。它实际只查询容器状态，却输出
     “Monitor 容器操作已提交：status”。
 12. **`monitor.sh` 缺少 Manager API 连通性检查**。排查 TLS/密钥问题只能进容器
     用一段 Python 调 `ManagerSdk`；建议增加 `./monitor.sh check-manager`。
@@ -155,7 +155,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
     至少应允许导入后再补 JAR，或给出明确的前置条件。
 14. **云主机 STOPPED 时 deploy 只报原始 SSH 错误**。测试开始时 Manager 是关机
     状态，`deploy manager --test`/`deploy manager` 直接连接失败。建议部署前检查
-    电源状态并提示先执行 `./mcsp.sh start manager`，或提供自动开机选项。
+    电源状态并提示先执行 `./terminal/mcsp.sh start manager`，或提供自动开机选项。
 
 ## 已验证功能
 
@@ -171,7 +171,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
   私聊验证码流程（用户实测成功）、Manager API 读取和 `stop_all`（用 Monitor 容器内
   的 SDK 直接验证，返回 `{'stopped': ['closing-song']}`）。
 - 公开开机通知：Manager 有运行中的整合包后，Monitor 成功向群发送通知。
-- `./mcsp.sh config check`、`deploy manager --test`、`deploy monitor --test`、
+- `./terminal/mcsp.sh config check`、`deploy manager --test`、`deploy monitor --test`、
   `deploy manager --config`、`deploy monitor --config`。
 
 ## 观察
@@ -240,7 +240,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
 已实现：
 
 - API：`POST /v1/modpacks/{id}/enable|disable`，请求体支持 `{"now": true}`。
-- Terminal：`./mcsp.sh manager enable|disable <id> [--now]`。
+- Terminal：`./terminal/mcsp.sh manager enable|disable <id> [--now]`。
 - 远端：`./manager.sh enable|disable <id> [--now]`。
 - 状态保存在 `data/state.json`；Manager 启动时会 reconcile 已启用整合包。
 - 本次部署测试已验证 enable/disable 不立即启停，并实测 `disable --now` 停服、

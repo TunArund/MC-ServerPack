@@ -28,16 +28,16 @@ Linux 发行版使用 `./mcsp`，Windows 在 CMD/PowerShell 中使用 `mcsp.exe`
 源码用户需要 Python 3.9+：
 
 ```bash
-python3 -m pip install -r lib/requirements.txt
-./mcsp.sh --help
+python3 -m pip install -r terminal/requirements.txt
+./terminal/mcsp.sh --help
 ```
 
 初始化配置：
 
 ```bash
-./mcsp.sh config init
-# 编辑 config.yml 和 .env
-./mcsp.sh config check
+./terminal/mcsp.sh config init
+# 编辑 terminal/config.yml 和 terminal/.env
+./terminal/mcsp.sh config check
 ```
 
 `manager.timezone` 和 `monitor.timezone` 使用 IANA 时区，例如
@@ -48,19 +48,19 @@ python3 -m pip install -r lib/requirements.txt
 如果远端只有 root，先创建普通部署用户：
 
 ```bash
-./mcsp.sh deploy manager --create-user
-./mcsp.sh deploy monitor --create-user
+./terminal/mcsp.sh deploy manager --create-user
+./terminal/mcsp.sh deploy monitor --create-user
 ```
 
 然后准备 Docker 并部署：
 
 ```bash
-./mcsp.sh deploy manager --install-docker
-./mcsp.sh deploy manager
+./terminal/mcsp.sh deploy manager --install-docker
+./terminal/mcsp.sh deploy manager
 
 # 可选
-./mcsp.sh deploy monitor --install-docker
-./mcsp.sh deploy monitor
+./terminal/mcsp.sh deploy monitor --install-docker
+./terminal/mcsp.sh deploy monitor
 ```
 
 `deploy manager` 首次运行会在 Manager 内自动生成 `MANAGER_API_KEY` 和私有
@@ -69,9 +69,9 @@ TLS CA。Terminal 会取回密钥和 CA；部署 Monitor 时会复用它们。
 检查环境：
 
 ```bash
-./mcsp.sh deploy --test-all
-./mcsp.sh deploy manager --test
-./mcsp.sh deploy monitor --test
+./terminal/mcsp.sh deploy --test-all
+./terminal/mcsp.sh deploy manager --test
+./terminal/mcsp.sh deploy monitor --test
 ```
 
 ## 创建第一个整合包
@@ -86,9 +86,9 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 原版服务端也使用这个流程。
 
 ```bash
-./mcsp.sh deploy modpack mc-vanilla
-./mcsp.sh manager start mc-vanilla
-./mcsp.sh manager enable mc-vanilla
+./terminal/mcsp.sh deploy modpack mc-vanilla
+./terminal/mcsp.sh manager start mc-vanilla
+./terminal/mcsp.sh manager enable mc-vanilla
 ```
 
 `eula: true` 表示你已接受 Minecraft EULA；未接受时 Manager 会拒绝启动。
@@ -98,19 +98,19 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 ### 部署与配置
 
 ```bash
-./mcsp.sh deploy manager --source
-./mcsp.sh deploy manager --config
-./mcsp.sh deploy monitor --source
-./mcsp.sh deploy monitor --config
-./mcsp.sh deploy modpack <id>
+./terminal/mcsp.sh deploy manager --source
+./terminal/mcsp.sh deploy manager --config
+./terminal/mcsp.sh deploy monitor --source
+./terminal/mcsp.sh deploy monitor --config
+./terminal/mcsp.sh deploy modpack <id>
 ```
 
 ### Manager 云主机电源
 
 ```bash
-./mcsp.sh status manager
-./mcsp.sh start manager
-./mcsp.sh stop manager
+./terminal/mcsp.sh status manager
+./terminal/mcsp.sh start manager
+./terminal/mcsp.sh stop manager
 ```
 
 `stop manager` 会先要求 Manager 停止所有整合包，成功后才关闭云主机。
@@ -118,20 +118,20 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 ### 整合包
 
 ```bash
-./mcsp.sh manager list
-./mcsp.sh manager status <id>
-./mcsp.sh manager start <id>
-./mcsp.sh manager stop <id>
-./mcsp.sh manager enable <id> [--now]
-./mcsp.sh manager disable <id> [--now]
-./mcsp.sh manager logs <id> --lines 100
-./mcsp.sh manager console <id> say hello
-./mcsp.sh manager property <id> online-mode false
-./mcsp.sh manager backup <id>
-./mcsp.sh manager backup list <id>
-./mcsp.sh manager restore <id> [<backup>] --auto-restart
-./mcsp.sh manager export <id> ./<id>.tgz
-./mcsp.sh manager import ./<id>.tgz
+./terminal/mcsp.sh manager list
+./terminal/mcsp.sh manager status <id>
+./terminal/mcsp.sh manager start <id>
+./terminal/mcsp.sh manager stop <id>
+./terminal/mcsp.sh manager enable <id> [--now]
+./terminal/mcsp.sh manager disable <id> [--now]
+./terminal/mcsp.sh manager logs <id> --lines 100
+./terminal/mcsp.sh manager console <id> say hello
+./terminal/mcsp.sh manager property <id> online-mode false
+./terminal/mcsp.sh manager backup <id>
+./terminal/mcsp.sh manager backup list <id>
+./terminal/mcsp.sh manager restore <id> [<backup>] --auto-restart
+./terminal/mcsp.sh manager export <id> ./<id>.tgz
+./terminal/mcsp.sh manager import ./<id>.tgz
 ```
 
 完整的 Manager 部署、配置和命令说明见
@@ -140,13 +140,13 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 ### Monitor
 
 ```bash
-./mcsp.sh status monitor
-./mcsp.sh start monitor
-./mcsp.sh stop monitor
-./mcsp.sh monitor add-admin
-./mcsp.sh monitor test-alert
-./mcsp.sh monitor reset-messages
-./mcsp.sh monitor reset-targets
+./terminal/mcsp.sh status monitor
+./terminal/mcsp.sh start monitor
+./terminal/mcsp.sh stop monitor
+./terminal/mcsp.sh monitor add-admin
+./terminal/mcsp.sh monitor test-alert
+./terminal/mcsp.sh monitor reset-messages
+./terminal/mcsp.sh monitor reset-targets
 ```
 
 QQ 管理员验证、订阅和消息模板见
@@ -161,7 +161,7 @@ QQ 管理员验证、订阅和消息模板见
 `--key` 接受用于 SSH 登录的私钥路径：
 
 ```bash
-./mcsp.sh deploy manager --create-user --key ~/.ssh/id_ed25519
+./terminal/mcsp.sh deploy manager --create-user --key ~/.ssh/id_ed25519
 ```
 
 ## 密钥

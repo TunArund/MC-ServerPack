@@ -53,18 +53,15 @@ request() {
     result="$(curl --silent --show-error --unix-socket "$SOCKET" -X "$method" \
       "http://localhost$path")" || die "Manager API 请求失败"
   fi
-  if [[ "$result" == *'"ok":false'* ]]; then echo "$result" >&2; return 2; fi
-  printf '%s\n' "$result"
+  printf '%s\n' "$result" | compose exec -T manager python -m src.job_bridge response
 }
 wait_job() {
-  local response="$1" job state seq=0 message
-  job="$(sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p' <<<"$response")"
-  [[ -n "$job" ]] || { printf '%s\n' "$response"; return; }
+  local response="$1" job state seq=0 update
+  job="$(printf '%s\n' "$response" | compose exec -T manager python -m src.job_bridge job-id)" || return
   while true; do
     response="$(request GET "/v1/jobs/$job?after=$seq&wait=20")" || return
-    while IFS= read -r message; do [[ -n "$message" ]] && printf '%s\n' "$message"; seq=$((seq + 1)); done \
-      < <(grep -o '"message":"[^"]*"' <<<"$response" | sed 's/^"message":"//;s/"$//')
-    state="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' <<<"$response")"
+    update="$(printf '%s\n' "$response" | compose exec -T manager python -m src.job_bridge job-update "$seq")" || return
+    IFS=$'\t' read -r state seq <<<"$update"
     case "$state" in succeeded) printf '%s\n' "$response"; return 0;; failed|cancelled) echo "$response" >&2; return 2;; esac
   done
 }

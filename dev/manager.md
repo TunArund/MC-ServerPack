@@ -37,6 +37,7 @@ manager/
 ├── src/
 │   ├── app.py          # 组装、TCP/Unix API、任务器、调度器和日志
 │   ├── router.py       # 路由、校验、scope、幂等和统一响应
+│   ├── jobs.py         # 后台任务、互斥、事件与持久化
 │   ├── modpacks.py     # 整合包生命周期
 │   ├── docker.py       # Docker/Compose 适配层
 │   ├── backup.py       # 备份、校验和恢复
@@ -82,7 +83,8 @@ Manager 生成，不得手工维护，也不进入导出归档。
 ## 业务分层
 
 - `app.py`：读取配置、创建依赖、启动 TCP/Unix HTTP Server、任务执行器、调度器和优雅退出。
-- `router.py`：维护路由、参数校验、权限 scope、幂等键、错误映射和响应包络。
+- `router.py`：维护 API 路径映射、参数校验、权限 scope、错误映射和响应包络。
+- `jobs.py`：维护后台任务、幂等键、资源互斥、事件流和任务持久化；不与时间调度耦合。
 - `modpacks.py`：实现 create/start/stop/enable/disable/remove/list/status/console/property。
 - `docker.py`：唯一允许调用 Docker Engine/Compose 的业务模块。
 - `backup.py` 处理同机回档；`transfer.py` 处理跨服务器迁移，二者语义分离。

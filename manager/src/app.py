@@ -5,7 +5,6 @@ from __future__ import annotations
 import hmac
 import json
 import logging
-import logging.handlers
 import os
 import socketserver
 import ssl
@@ -18,6 +17,7 @@ from . import schedule
 from .config import ConfigError, MANAGER_ROOT, load_api_settings, load_limits
 from .manager_sdk import signature
 from .modpacks import ModpackManager
+from .observability import configure_logging
 from .router import Request, Response, Router
 
 
@@ -28,7 +28,8 @@ MAX_BODY = 5 * 1024 * 1024
 MAX_CLOCK_SKEW = 60
 ADMIN_SCOPES = frozenset({"*"})
 MONITOR_SCOPES = frozenset({
-    "health", "modpacks:read", "logs:read", "jobs:read", "modpacks:stop",
+    "health", "modpacks:read", "modpacks:write", "logs:read", "jobs:read",
+    "modpacks:stop",
 })
 
 
@@ -83,10 +84,13 @@ def _handler(router: Router, keys: dict[str, tuple[str, frozenset[str]]], local:
             response = router.dispatch(request)
             self._reply(response)
             API_LOGGER.info(
-                "request_id=%s identity=%s method=%s path=%s status=%d elapsed_ms=%d",
-                response.document.get("request_id", "-"), identity,
-                self.command, self.path, response.status,
-                int((time.monotonic() - started) * 1000),
+                "API request completed", extra={
+                    "event": "api-request-completed",
+                    "request_id": response.document.get("request_id", "-"),
+                    "identity": identity, "method": self.command,
+                    "path": self.path.split("?", 1)[0], "status": response.status,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                },
             )
 
         def _authenticate(self, body: bytes) -> tuple[str, frozenset[str] | None]:
@@ -132,16 +136,11 @@ class ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamSe
 
 def _logging(root: Path) -> None:
     directory = root / "data/logs"
-    directory.mkdir(parents=True, exist_ok=True)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    for logger_name, filename in (("manager.service", "service.log"), ("manager.api", "api.log"),
-                                  ("manager.business", "manager.log"), ("manager.schedule", "schedule.log")):
-        logger = logging.getLogger(logger_name); logger.setLevel(level); logger.propagate = False
-        handler = logging.handlers.RotatingFileHandler(directory / filename, maxBytes=2 * 1024 * 1024,
-                                                       backupCount=3, encoding="utf-8")
-        handler.setFormatter(formatter); logger.addHandler(handler)
-        stream = logging.StreamHandler(); stream.setFormatter(formatter); logger.addHandler(stream)
+    # 生命周期、业务、Job 与调度统一进入 manager/service.log；访问日志单独保留。
+    configure_logging({
+        "manager": directory / "service.log",
+        "manager.api": directory / "api.log",
+    }, stream=True)
 
 
 def _keys() -> dict[str, tuple[str, frozenset[str]]]:
@@ -224,6 +223,7 @@ def serve(root: Path = MANAGER_ROOT) -> None:
     finally:
         stopped.set(); unix.shutdown(); unix.server_close(); socket_path.unlink(missing_ok=True)
         tcp.shutdown(); tcp.server_close()
+        router.jobs.close()
 
 
 def main() -> int:

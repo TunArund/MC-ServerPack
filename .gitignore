@@ -1,9 +1,10 @@
 __pycache__/
 *.py[cod]
 .venv/
-/.env
-/config.yml
-/terminal.log
+/terminal/.env
+/terminal/config.yml
+/terminal/logs/*
+!/terminal/logs/.gitkeep
 /manager/config.yml
 /manager/.schedule-state.json
 /manager/schedule.log

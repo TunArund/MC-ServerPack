@@ -8,7 +8,8 @@
 
 ## 文档边界
 
-- `/readme.md`：用户手册，只写安装、首次使用和跨组件命令。
+- `/readme.md`：项目总览与跨组件命令。
+- `/terminal/readme.md`：Terminal 安装、配置、日志和独立使用。
 - `/manager/readme.md`：Manager 独立部署、配置、整合包结构和命令。
 - `/monitor/readme.md`：Monitor 独立部署、调度、QQ Bot 和消息模板。
 - `/dev/manager.md`：Manager 内部架构、目录、API、任务、安全和持久化设计。
@@ -43,11 +44,24 @@
 
 ## 回显与日志
 
-- 默认人类可读；机器输出使用 `--json`，精简输出使用 `--quiet`。
-- 阶段格式统一为 `[阶段 m/n] 消息`；重复事件去重，成功有明确结论，错误只显示一次。
-- 交互终端顶部显示当前阶段，下方保留有限行实时尾部；非交互终端逐行输出。
-- `terminal.log` 只记录本地命令、请求目标、客户端回显和结果；远端业务日志留在
-  Manager/Monitor。
+- Terminal 的 Renderer 是人类回显唯一边界：最终数据写 stdout，进度、提示、警告和错误
+  写 stderr；TTY 可以覆盖尾窗，非 TTY 逐行输出且不使用 ANSI。
+- `--json` 使 stdout 只包含一个 `{ok,result|error}` JSON 文档；非 TTY 不显示进度。
+  `--quiet` 隐藏进度和成功提示，但保留查询数据与错误；两者互斥。
+- Terminal 退出码：`0` 成功、`2` 参数或配置错误、`3` 认证或权限错误、`4` 外部服务
+  不可用、`5` 超时、`70` 未预期内部错误、`130` 用户中断。
+- 本地命令和 SSH 命令共用一个有界尾窗实现。不得恢复 stdout/stderr Tee、操作临时日志、
+  自制锁文件或把完整命令回显当作诊断日志。
+- Job 事件是业务状态，不是日志。事件的 `type`、`code`、`stage` 使用稳定机器字段；
+  Terminal 与 `manager.sh` 通过共享 `manager_sdk.format_job_event()` 使用相同文本规则。
+- `manager.sh` 不使用 grep/sed 解析 JSON；解析交给 Manager 容器内的 `src.job_bridge`，
+  宿主机仍只依赖 Docker、Compose 和 curl。
+- 三组件只在进程入口配置一次标准库 `logging`。日志为 UTF-8 JSON Lines，默认 INFO，
+  `5 MiB × 3` 轮转；异常使用 traceback，结构化字段通过 `extra` 传递并递归脱敏。
+- 日志真源为 `terminal/logs/terminal.log`、`manager/data/logs/service.log`、
+  `manager/data/logs/api.log`、`monitor/data/service.log`。容器 stderr 使用同一 JSON 格式。
+- `lib/observability.py` 是配置、上下文、格式化和脱敏的源码真源；三个独立组件在 `src/`
+  携带字节一致副本，并由边界测试约束。
 
 ## Monitor 约束
 
@@ -64,7 +78,7 @@
 单元测试：
 
 ```bash
-python3 -m unittest discover -s tests -q
+python3 -m unittest discover -s dev/tests -q
 ```
 
 测试必须保持独立、快速且不访问真实云 API。需要环回网络的 TLS 集成测试应
@@ -74,8 +88,8 @@ python3 -m unittest discover -s tests -q
 
 ## TODO
 
-- 统一 Terminal、`manager.sh` 和部署流程的回显与日志：去重、明确结果、单次错误、
-  `--json`/`--quiet`。
+- 将 Terminal、Manager 与 Monitor 重复的 Docker 部署逻辑提炼到 `/lib`，各运行时只保留
+  参数和生命周期编排；在统一部署契约前不提前复制或增加兼容分支。
 - 完善 Manager 升级预检、旧状态迁移、旧镜像清理和证书 SAN 变更检测。
 - 完成 QQ 整合包管理：列表、状态、日志、启停和 enable/disable；所有写操作仅管理员可用。
 - 实现 `release.py`，生成不依赖本地 Python 的 Linux/Windows 发行版。

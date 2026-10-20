@@ -49,7 +49,7 @@ class DockerClient:
         if result.returncode:
             detail = (
                 ((result.stderr or result.stdout) if capture else "")
-                or "完整输出已记录到 manager.log"
+                or "完整输出已记录到 service.log"
             )
             raise DockerError(f"Docker 命令失败：{detail.strip()[-500:]}")
         return result

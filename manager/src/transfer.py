@@ -48,7 +48,7 @@ def _files(source: Path, roots: tuple[str, ...]) -> dict[str, str]:
 
 def export_pack(
     pack_id: str, packs_dir: Path = PACKS_DIR, *, mode: str = "full",
-    include_backups: bool = False, destination: Path | None = None,
+    include_backups: bool = False, destination: Path,
 ) -> Path:
     validate_pack_id(pack_id)
     if mode not in ("full", "source-only"):
@@ -64,8 +64,6 @@ def export_pack(
         "mode": mode, "include_backups": include_backups,
         "files": _files(source, tuple(roots)),
     }
-    if destination is None:
-        destination = Path(tempfile.mkdtemp(prefix="mcsp-pack-")) / f"{pack_id}.tgz"
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     try:

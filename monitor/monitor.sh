@@ -17,13 +17,6 @@ fi
 export MC_CONTAINER_UID="$(id -u)"
 export MC_CONTAINER_GID="$(id -g)"
 
-case "${1:-}" in
-  install|apply-config|start|stop|restart|add-admin|test-alert|reset-targets|reset-messages)
-    exec > >(tee -a "$ROOT_DIR/monitor.log") 2>&1
-    printf '\n[%s] monitor %s\n' "$(date --iso-8601=seconds)" "$*"
-    ;;
-esac
-
 check_requirements() {
   if ! command -v docker >/dev/null 2>&1 ||
      ! docker compose version >/dev/null 2>&1 ||
