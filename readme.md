@@ -8,7 +8,7 @@ flowchart LR
   T[Terminal] -->|SSH/SFTP 部署| M[Manager]
   T -->|HTTPS + HMAC| M
   T -->|SSH/SFTP 部署| N[Monitor]
-  N -->|电源 API| C[Manager 云主机]
+  N -->|电源 API| C[Manager 服务器]
   N -->|Manager API| M
   Q[QQ] --> N
 ```
@@ -17,7 +17,7 @@ flowchart LR
 
 - **Terminal**：保存总配置，准备远端账号和 Docker，部署组件并调用 Manager API。
 - **Manager**：必需。以常驻容器管理整合包、备份、迁移和定时任务。
-- **Monitor**：可选。7×24 小时监控 Manager 云主机，通过 QQ 发送告警和公开通知。
+- **Monitor**：可选。7×24 小时监控 Manager 服务器，通过 QQ 发送告警和公开通知。
 
 Manager 和 Monitor 均可独立部署，远端宿主机只需 Docker Engine 与 Compose
 插件，不需要项目 Python 环境。
@@ -45,7 +45,7 @@ python3 -m pip install -r terminal/requirements.txt
 
 ## 首次部署
 
-如果远端只有 root，先创建普通部署用户：
+如果服务器只有 root，先创建普通部署用户：
 
 ```bash
 ./terminal/mcsp.sh deploy manager --create-user
@@ -82,8 +82,7 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 
 将服务端 JAR 和所需文件放入
 `manager/modpacks/mc-vanilla/src/`，再编辑
-`manager/modpacks/mc-vanilla/config.yml`。默认会自动选择唯一的顶层 JAR，
-原版服务端也使用这个流程。
+`manager/modpacks/mc-vanilla/config.yml`。默认会自动选择唯一的顶层JAR启动
 
 ```bash
 ./terminal/mcsp.sh deploy modpack mc-vanilla
@@ -105,7 +104,7 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 ./terminal/mcsp.sh deploy modpack <id>
 ```
 
-### Manager 云主机电源
+### Manager 服务器电源
 
 ```bash
 ./terminal/mcsp.sh status manager
@@ -113,7 +112,7 @@ cp -a manager/modpacks/template manager/modpacks/mc-vanilla
 ./terminal/mcsp.sh stop manager
 ```
 
-`stop manager` 会先要求 Manager 停止所有整合包，成功后才关闭云主机。
+`stop manager` 会先要求 Manager 停止所有整合包，成功后才关闭服务器。
 
 ### 整合包
 
@@ -174,7 +173,7 @@ POWER_SECRET_KEY=
 ```
 
 只有 Token 时填入 `POWER_SECRET_KEY`，`POWER_SECRET_ID` 留空。Manager 和 Monitor
-控制同一台云主机时应使用同一组 AK/SK。
+控制同一台服务器时应使用同一组 AK/SK。
 
 `MANAGER_API_KEY` 是 Manager API 的 HMAC 密钥，不是云厂商凭据。它通常由
 Manager 首次安装自动生成，无需手工填写。

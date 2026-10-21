@@ -1,7 +1,7 @@
 # Monitor
 
-Monitor 是可独立运行的云主机电源控制器和 QQ Bot。它通过 `power-api` 查询、开启或关闭
-Manager 云主机，并通过受限的 Manager API 查询整合包状态；不使用 SSH、TAT，不执行
+Monitor 是可独立运行的服务器电源控制器和 QQ Bot。它通过 `power-api` 查询、开启或关闭
+Manager 服务器，并通过受限的 Manager API 查询整合包状态；不使用 SSH、TAT，不执行
 `manager.sh`，也不挂载 Manager 的 Docker Socket。
 
 ## 部署与命令
@@ -88,14 +88,14 @@ API 临时失败会自动重试。首次创建状态文件时只记录当时最�
 
 关机前 Monitor 必须通过 Manager API 调 `POST /v1/modpacks/stop-all`，等到任务成功后才
 调用云厂商关机。定时关机和 QQ 人工关机都走这条路径；Manager API 不可达、密钥错误或
-停止任务失败时，Monitor 会拒绝关机并告警，绝不直接关掉还跑着 Minecraft 的云主机。
+停止任务失败时，Monitor 会拒绝关机并告警，绝不直接关掉还跑着 Minecraft 的服务器。
 `timezone` 使用 IANA 时区名称（例如 `Asia/Shanghai`），统一决定定时任务、消息时间和
 `data/service.log` 时间；无效时区会在启动前被拒绝。
 
-公开开机通知不会从 Monitor 配置读取静态整合包列表。Monitor 在 Manager 云主机进入
+公开开机通知不会从 Monitor 配置读取静态整合包列表。Monitor 在 Manager 服务器进入
 `RUNNING` 后使用受限调用身份调用 Manager API；只有接口确认至少一个整合包处于运行状态时，才向群聊
 发送实际的整合包名称和 `host:port`。接口或游戏服尚未就绪时每 30 秒重试，不会
-把“云主机已开机”误报成“游戏服务器已可用”。关机通知在实例稳定进入 `STOPPED` 后发送。
+把“服务器已开机”误报成“游戏服务器已可用”。关机通知在实例稳定进入 `STOPPED` 后发送。
 
 ## 容器边界
 
@@ -150,7 +150,7 @@ MANAGER_API_KEY=
 ```
 
 前两项与 Manager `.env` 中的 `POWER_SECRET_ID/POWER_SECRET_KEY` 相同：两者控制的是同一
-台 Manager 云主机，不需要单独申请第二套密钥。只有一个 Token 时填入
+台 Manager 服务器，不需要单独申请第二套密钥。只有一个 Token 时填入
 `POWER_SECRET_KEY`，`POWER_SECRET_ID` 留空。`MANAGER_API_KEY` 与 Manager、Terminal
 使用同一个值；它是 Manager HTTP API 的 HMAC 密钥，不是云厂商凭据。通过 Terminal 部署
 Monitor 时会自动使用 Manager 的密钥和私有 CA；独立部署 Monitor 时，需要从 Manager 的

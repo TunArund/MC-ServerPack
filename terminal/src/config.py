@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -19,8 +20,14 @@ except ModuleNotFoundError:  # Report a project-specific error from ``load``.
     yaml = None
 
 
-ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = ROOT.parent
+if getattr(sys, "frozen", False):
+    # PyInstaller one-file extracts Python modules below sys._MEIPASS.  User
+    # configuration and bundled deployment resources live beside mcsp.exe.
+    ROOT = Path(sys.executable).resolve().parent
+    SOURCE_ROOT = ROOT / "payloads"
+else:
+    ROOT = Path(__file__).resolve().parents[1]
+    SOURCE_ROOT = ROOT.parent
 CONFIG_FILE = ROOT / "config.yml"
 ENV_FILE = ROOT / ".env"
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")

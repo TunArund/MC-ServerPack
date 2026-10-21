@@ -117,7 +117,7 @@ working:
 
 done:
   text: |-
-    {action}请求已提交。云主机当前状态：{state}；Monitor 将继续检查最终状态。
+    {action}请求已提交。服务器当前状态：{state}；Monitor 将继续检查最终状态。
 
 error:
   text: |-
@@ -150,7 +150,7 @@ alert-state-mismatch-start:
 
     {alerts}
 
-    可能是云 API 请求失败、实例仍在切换状态，或您刚刚手动关闭了云主机。请确认后处理。
+    可能是云 API 请求失败、实例仍在切换状态，或您刚刚手动关闭了服务器。请确认后处理。
   keyboard:
     - [power-start, alerts-snooze-1h, alerts-snooze-2h, alerts-snooze-5h]
 

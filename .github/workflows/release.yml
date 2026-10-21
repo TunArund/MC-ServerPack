@@ -1,0 +1,96 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without v prefix
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r terminal/requirements.txt
+      - run: python -m unittest discover -s dev/tests -q
+      - run: python dev/release/release.py check
+
+  linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r terminal/requirements.txt pyinstaller
+      - name: Build Linux artifacts
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          python dev/release/release.py --version "$VERSION" build all --platform linux
+          python dev/release/release.py --version "$VERSION" verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: dev/release/dist/
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r terminal/requirements.txt pyinstaller
+      - name: Build Windows Terminal
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version || github.ref_name }}" -replace '^v', ''
+          python dev/release/release.py --version $version build terminal --platform windows
+          python dev/release/release.py --version $version verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-terminal
+          path: dev/release/dist/
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dev/release/collected
+      - name: Assemble Windows bundle and metadata
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          mkdir -p "dev/release/dist/$VERSION"
+          find dev/release/collected -type f -path "*/$VERSION/*" -exec cp {} "dev/release/dist/$VERSION/" \;
+          python dev/release/release.py --version "$VERSION" --allow-dirty build bundle --platform windows
+          python dev/release/release.py --version "$VERSION" checksums
+          python dev/release/release.py --version "$VERSION" verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mc-serverpack-release
+          path: dev/release/dist/
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dev/release/dist/*/*

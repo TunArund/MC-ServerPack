@@ -1,7 +1,7 @@
 # Manager / Monitor 部署测试记录
 
 - 时间：2026-10-20 00:06–00:30（Asia/Shanghai）
-- Manager：Debian CVM，Docker 28.5.1；测试开始时云主机处于 STOPPED，使用
+- Manager：Debian CVM，Docker 28.5.1；测试开始时服务器处于 STOPPED，使用
   `./terminal/mcsp.sh start manager` 开机。
 - Monitor：Ubuntu Lighthouse，Docker 已安装，原 Monitor 容器处于运行状态。
 - 测试方式：优先使用 `./terminal/mcsp.sh`、远端 `./manager.sh`、远端 `./monitor.sh`；
@@ -153,7 +153,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
     把同样的整合包导出后再 import，会在 `manager.configure` 阶段报
     “自动启动要求 src/ 中恰有一个顶层 JAR”，导致导入失败。两者行为不一致，
     至少应允许导入后再补 JAR，或给出明确的前置条件。
-14. **云主机 STOPPED 时 deploy 只报原始 SSH 错误**。测试开始时 Manager 是关机
+14. **服务器 STOPPED 时 deploy 只报原始 SSH 错误**。测试开始时 Manager 是关机
     状态，`deploy manager --test`/`deploy manager` 直接连接失败。建议部署前检查
     电源状态并提示先执行 `./terminal/mcsp.sh start manager`，或提供自动开机选项。
 
@@ -227,7 +227,7 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
 - 当前 bootstrap 已支持 `DNS:` 和 `IP:` 两种 SAN；如果用户直接用公网 IP，
   默认私有 CA + Terminal/Monitor 固定信任 CA 仍然可用。
 - 需要重新考虑的点：
-  - 云主机停启后公网 IP 可能变化。当前证书已存在时不会重新生成，SAN 会过期；
+  - 服务器停启后公网 IP 可能变化。当前证书已存在时不会重新生成，SAN 会过期；
     建议 bootstrap 校验现有证书 SAN 是否包含当前 host，不匹配时提示删除/自动重建。
   - 如果 Monitor 使用另一个地址访问 Manager，该地址也必须进入 SAN；目前只保证
     `manager.host`，Monitor 的覆盖地址没有自动加入。
@@ -260,14 +260,14 @@ HTTPS opener；Manager API 按配置端点直连，仍固定验证私有 CA。
 
 ## 未测试
 
-- 定时关机 / QQ 人工关机的完整云主机关机链路（本次只验证了 stop-all 和电源查询）。
+- 定时关机 / QQ 人工关机的完整服务器关机链路（本次只验证了 stop-all 和电源查询）。
 - QQ 拒绝订阅及定时任务触发尚未线上回归；管理员验证、群聊审批、菜单、确认关机、
   告警及静默按钮已经真实 QQ 单聊/群聊验证。
 - 备份异常恢复、Docker daemon 重启、Forge 长启动超时等容器级异常场景。
 
 ## 测试后状态
 
-- `closing-song` 已迁移并设置 enable；Manager 云主机按游玩窗口启停。
+- `closing-song` 已迁移并设置 enable；Manager 服务器按游玩窗口启停。
 - Manager 数据、备份和世界数据保留；旧配置备份位于 Manager 主机的
   `/home/steam/mcsp-manager-config-*.tgz`。
 - Monitor 容器运行中；QQ 管理员与订阅数据保留。

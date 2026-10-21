@@ -206,7 +206,7 @@ class CliServices:
         manager = self.manager_runtime()
         progress(f"[电源 1/{total}] 加载 Manager 电源 Provider")
         power = manager.power()
-        progress(f"[电源 2/{total}] 查询 Manager 云主机状态")
+        progress(f"[电源 2/{total}] 查询 Manager 服务器状态")
         current = power.status()
         address = f"，公网 IP={current.public_ip}" if current.public_ip else ""
         if action == "status":
@@ -214,7 +214,7 @@ class CliServices:
         progress(f"[电源 2/{total}] 当前状态：{current.state}{address}")
         if action == "start":
             if current.state == "RUNNING":
-                progress("[电源 3/3] 云主机已运行，无需重复开机")
+                progress("[电源 3/3] 服务器已运行，无需重复开机")
             else:
                 progress("[电源 3/3] 提交开机并等待 RUNNING")
             return power.start(current)
@@ -281,7 +281,7 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     deploy_pack.add_argument("pack_id")
 
     for action in ("start", "stop", "status"):
-        control = commands.add_parser(action, help=f"{action} Manager 云主机或 Monitor 容器")
+        control = commands.add_parser(action, help=f"{action} Manager 服务器或 Monitor 容器")
         control.add_argument("target", choices=("manager", "monitor"))
         if action == "stop":
             control.add_argument("--force", action="store_true", help="停服失败时仍关闭 Manager")
@@ -494,7 +494,7 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
         force = getattr(args, "force", False)
         if args.module == "stop" and args.target == "manager" and not force:
             try:
-                answer = renderer.ask("将停止全部整合包并关闭 Manager 云主机；输入 yes 确认：")
+                answer = renderer.ask("将停止全部整合包并关闭 Manager 服务器；输入 yes 确认：")
             except EOFError:
                 answer = ""
             if answer.strip().lower() != "yes":
@@ -505,7 +505,7 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
             renderer.result(f"Monitor 容器操作已提交：{args.module}")
         else:
             suffix = f"，公网 IP={result.public_ip}" if result.public_ip else ""
-            progress(f"Manager 云主机：{result.state}{suffix}")
+            progress(f"Manager 服务器：{result.state}{suffix}")
         return 0
 
     if args.module == "manager":

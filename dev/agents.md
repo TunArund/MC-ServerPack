@@ -14,6 +14,8 @@
 - `/monitor/readme.md`：Monitor 独立部署、调度、QQ Bot 和消息模板。
 - `/dev/manager.md`：Manager 内部架构、目录、API、任务、安全和持久化设计。
 - `/dev/monitor.md`：Monitor 状态机、QQ 分层、订阅权限、命令和通知设计。
+- `/dev/release/`：发行设计、构建源码、暂存文件与发行产物的唯一目录；入口为
+  `release.py`，设计见 `readme.md`。
 - 本文：通用开发约束、测试环境和 TODO。
 - `/dev/deploy-test.md`：真实部署验收记录，不作为用户手册。
 
@@ -36,7 +38,7 @@
 ## 配置和密钥
 
 - Manager 和 Monitor 各自从顶层 `timezone` 读取 IANA 时区，用于调度、日志、备份和消息。
-- Manager 和 Monitor 控制同一云主机时，各自 `.env` 中使用同值的
+- Manager 和 Monitor 控制同一服务器时，各自 `.env` 中使用同值的
   `POWER_SECRET_ID`/`POWER_SECRET_KEY`。只有 Token 时填入 KEY。
 - `MANAGER_API_KEY` 与云 AK/SK 分离；Terminal 和 Monitor 复用同一 Manager API 密钥，
   但以不同身份获得不同 scope。
@@ -87,10 +89,10 @@ python3 -m unittest discover -s dev/tests -q
 真实环境与最近部署结果见 [deploy-test.md](./deploy-test.md)。
 
 ## TODO
-
+- MC-ServerPack/manager/runtime迁移到manager/data/{xxx.dockerfile,.dockerignore}
+减少目录，并扁平化
 - 将 Terminal、Manager 与 Monitor 重复的 Docker 部署逻辑提炼到 `/lib`，各运行时只保留
   参数和生命周期编排；在统一部署契约前不提前复制或增加兼容分支。
 - 完善 Manager 升级预检、旧状态迁移、旧镜像清理和证书 SAN 变更检测。
 - 完成 QQ 整合包管理：列表、状态、日志、启停和 enable/disable；所有写操作仅管理员可用。
-- 实现 `release.py`，生成不依赖本地 Python 的 Linux/Windows 发行版。
 - 实现 COS 备份，覆盖恶意归档、分块中断续传、配额、恢复回滚和日志脱敏。

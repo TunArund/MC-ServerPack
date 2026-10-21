@@ -17,5 +17,7 @@ manager/modpacks/*/
 !manager/modpacks/template/
 monitor/data/*
 !monitor/data/.gitkeep
-dev/dist/
-dev/build/
+/dev/release/dist/
+/dev/release/build/
+/dev/release/collected/
+/dev/.env

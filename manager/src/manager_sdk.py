@@ -234,7 +234,7 @@ class ManagerSdk:
 
     def public_modpacks(self, public_host: str) -> tuple[PublicModpack, ...]:
         if not public_host:
-            raise ManagerSdkError("Manager 云主机没有公网 IP")
+            raise ManagerSdkError("Manager 服务器没有公网 IP")
         result = []
         for index, item in enumerate(self.list_modpacks()):
             if not isinstance(item, dict):
