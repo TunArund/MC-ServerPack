@@ -530,6 +530,12 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    # Windows 在重定向输出（CI、PowerShell 管道）时可能回退到 cp1252。
+    # CLI 协议和中文帮助统一使用 UTF-8，不依赖宿主 code page。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
     arguments = list(sys.argv[1:] if argv is None else argv)
     configure_logging({"": TERMINAL_LOG})
     with operation_log(arguments):
