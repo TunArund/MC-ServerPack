@@ -52,8 +52,16 @@ def run(arguments: list[str], *, cwd: Path = ROOT, capture: bool = False) -> str
             arguments, cwd=cwd, check=True, text=True,
             capture_output=capture,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+    except FileNotFoundError as exc:
         raise ReleaseError(f"命令失败：{' '.join(arguments)}") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = "\n".join(
+            part.strip() for part in (exc.stdout or "", exc.stderr or "") if part.strip()
+        )
+        suffix = f"\n{detail}" if detail else ""
+        raise ReleaseError(
+            f"命令失败（exit={exc.returncode}）：{' '.join(arguments)}{suffix}"
+        ) from exc
     return result.stdout.strip() if capture else ""
 
 
