@@ -50,7 +50,7 @@ def run(arguments: list[str], *, cwd: Path = ROOT, capture: bool = False) -> str
     try:
         result = subprocess.run(
             arguments, cwd=cwd, check=True, text=True,
-            capture_output=capture,
+            capture_output=capture, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as exc:
         raise ReleaseError(f"命令失败：{' '.join(arguments)}") from exc
