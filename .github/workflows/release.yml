@@ -52,10 +52,14 @@ jobs:
             dev/release/dist/*/mcsp-monitor.tar.gz
 
   windows:
-    needs: test
+    needs: linux
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: dev/release/shared
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -64,6 +68,10 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ inputs.version || github.ref_name }}" -replace '^v', ''
+          New-Item -ItemType Directory -Force "dev/release/dist/$version" | Out-Null
+          $data = Get-ChildItem "dev/release/shared" -Recurse -Filter "mcsp-data.zip" | Select-Object -First 1
+          if (-not $data) { throw "linux-release does not contain mcsp-data.zip" }
+          Copy-Item $data.FullName "dev/release/dist/$version/mcsp-data.zip"
           python dev/release/release.py --version $version build platform --platform windows
           python dev/release/release.py --version $version verify
       - uses: actions/upload-artifact@v4

@@ -173,9 +173,10 @@ Windows 与 Linux Terminal 使用相同 Python 领域逻辑，不维护 Windows 
 
 ## CI 与验收
 
-Ubuntu runner 构建 Manager、Monitor、`mcsp-data.zip` 和 Linux 完整包；Windows runner
-构建 Windows 完整包。最终汇总 Job 只收集已经校验且 commit 相同的产物并生成
-`release.json`。
+Ubuntu runner 构建 Manager、Monitor、唯一一份 `mcsp-data.zip` 和 Linux 完整包；Windows
+runner 下载并原样嵌入这份 `mcsp-data.zip`，只构建 Windows 启动器与 `lib/`。这样两个
+平台的完整包与增量数据包使用完全相同的 `data/` 字节内容，不因重复打包产生差异。
+最终汇总 Job 只收集已经校验且 commit 相同的产物并生成 `release.json`。
 
 每个平台至少验证：
 
