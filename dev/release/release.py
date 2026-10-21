@@ -366,7 +366,13 @@ def verify(context: Context) -> None:
             if os.name != "nt" and extracted.get("mc-serverpack-terminal-linux-x64.tar.gz") else None
         )
         if executable:
-            run([str(executable), "--help"], cwd=executable.parent, capture=True)
+            try:
+                run([str(executable), "--help"], cwd=executable.parent, capture=True)
+            except ReleaseError as exc:
+                log = executable.parent / "logs/terminal.log"
+                detail = log.read_text(encoding="utf-8", errors="replace")[-8000:] if log.is_file() else ""
+                suffix = f"\nTerminal log:\n{detail}" if detail else ""
+                raise ReleaseError(f"{exc}{suffix}") from exc
 
 
 def _tree_hash(root: Path) -> str:
