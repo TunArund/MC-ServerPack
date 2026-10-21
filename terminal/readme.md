@@ -17,6 +17,8 @@ terminal/
 │   ├── power.py
 │   └── providers/
 ├── logs/
+├── modpacks/
+│   └── template/
 └── ...
 ```
 
@@ -44,3 +46,14 @@ python3 -m pip install -r terminal/requirements.txt
 
 Manager 和 Monitor 的部署及跨组件命令见项目根目录
 [readme.md](../readme.md)。
+
+本地整合包固定保存在 `terminal/modpacks/`：
+
+```bash
+./terminal/mcsp.sh modpack create example
+./terminal/mcsp.sh modpack check example
+./terminal/mcsp.sh modpack export example
+./terminal/mcsp.sh deploy modpack example
+```
+
+`deploy modpack` 只上传 `terminal/modpacks/<id>.tgz`，不会隐式重新打包。

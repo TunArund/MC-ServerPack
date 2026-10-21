@@ -26,10 +26,7 @@ from .config import (
     validate_pack_id,
 )
 from .docker import DockerClient, DockerError, EventSink, _discard_event
-
-
-class ModpackError(RuntimeError):
-    pass
+from .modpack_sdk import ModpackError, ModpackWorkspace
 
 
 class ModpackManager:
@@ -145,43 +142,9 @@ class ModpackManager:
                 running = False
             if running:
                 raise ModpackError("整合包正在运行，不能强制替换；请先停止")
-        template = self.packs_dir / "template"
-        if not template.is_dir():
-            raise ModpackError("缺少 modpacks/template")
-        # staging 必须与 modpacks 同文件系统，否则容器里跨 bind mount 的
-        # os.replace 会报 EXDEV。
-        staging_root = self.packs_dir / ".staging"
-        staging_root.mkdir(parents=True, exist_ok=True)
-        staging = staging_root / f"{pack_id}.create-{uuid.uuid4().hex}"
-        backup: Path | None = None
-        try:
-            shutil.copytree(
-                template, staging,
-                ignore=shutil.ignore_patterns("compose.yml", "__pycache__"),
-            )
-            config_file = staging / "config.yml"
-            content = config_file.read_text(encoding="utf-8")
-            content = re.sub(r"(?m)^name:\s*.*$", f"name: {pack_id}", content, count=1)
-            config_file.write_text(content, encoding="utf-8")
-            for name in ("src", "data", "backups"):
-                (staging / name).mkdir(exist_ok=True)
-            if exists:
-                backup = staging_root / f"{pack_id}.replace-{uuid.uuid4().hex}"
-                target.replace(backup)
-            try:
-                staging.replace(target)
-            except Exception:
-                if backup is not None:
-                    backup.replace(target)
-                raise
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        if backup is not None:
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup, ignore_errors=True)
-            else:
-                backup.unlink(missing_ok=True)
+        target = ModpackWorkspace(self.packs_dir).create(pack_id, force=force)
+        for name in ("data", "backups"):
+            (target / name).mkdir(exist_ok=True)
         self.forget(pack_id)
         return target
 

@@ -11,104 +11,17 @@ import tempfile
 import uuid
 import time
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-from .config import PACKS_DIR, load_pack, validate_pack_id
-from .modpacks import ModpackError, ModpackManager
+from .config import load_pack, validate_pack_id
+from .modpack_sdk import (
+    ModpackError, archive_members, export_pack, file_sha256, verify_extracted,
+)
+from .modpacks import ModpackManager
 
-FORMAT = 1
 CHUNK_SIZE = 4 * 1024 * 1024
 TRANSFER_QUOTA = 256 * 1024**3
 TRANSFER_TTL = 24 * 3600
-ALLOWED_ROOTS = {"config.yml", "src", "data", "backups", "manifest.json"}
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _files(source: Path, roots: tuple[str, ...]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for root_name in roots:
-        root = source / root_name
-        if root.is_symlink():
-            raise ModpackError(f"整合包不能包含符号链接：{root_name}")
-        paths = [root] if root.is_file() else sorted(root.rglob("*")) if root.is_dir() else []
-        for path in paths:
-            if path.is_symlink():
-                raise ModpackError(f"整合包不能包含符号链接：{path.relative_to(source)}")
-            if path.is_file():
-                result[path.relative_to(source).as_posix()] = f"sha256:{file_sha256(path)}"
-    return result
-
-
-def export_pack(
-    pack_id: str, packs_dir: Path = PACKS_DIR, *, mode: str = "full",
-    include_backups: bool = False, destination: Path,
-) -> Path:
-    validate_pack_id(pack_id)
-    if mode not in ("full", "source-only"):
-        raise ModpackError("导出模式只能是 full 或 source-only")
-    source = packs_dir / pack_id
-    spec = load_pack(pack_id, packs_dir)
-    roots = ["config.yml", "src"]
-    if mode == "full": roots.append("data")
-    if include_backups: roots.append("backups")
-    manifest = {
-        "format": FORMAT, "pack_id": pack_id, "name": spec.name,
-        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "mode": mode, "include_backups": include_backups,
-        "files": _files(source, tuple(roots)),
-    }
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    try:
-        with tempfile.TemporaryDirectory(prefix="mcsp-manifest-") as raw:
-            manifest_path = Path(raw) / "manifest.json"
-            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            with tarfile.open(temporary, "w:gz") as archive:
-                archive.add(manifest_path, arcname="manifest.json")
-                for name in roots:
-                    path = source / name
-                    if path.exists(): archive.add(path, arcname=name, recursive=True)
-        os.replace(temporary, destination)
-    except (OSError, tarfile.TarError) as exc:
-        temporary.unlink(missing_ok=True)
-        raise ModpackError(f"整合包导出失败：{exc}") from exc
-    return destination
-
-
-def _members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
-    members = archive.getmembers(); names: set[str] = set()
-    for member in members:
-        path = PurePosixPath(member.name); normalized = path.as_posix().rstrip("/")
-        if (path.is_absolute() or not path.parts or path.parts[0] not in ALLOWED_ROOTS
-                or ".." in path.parts or normalized in names
-                or normalized != member.name.rstrip("/") or "\\" in member.name
-                or not (member.isfile() or member.isdir())):
-            raise ModpackError(f"整合包归档包含不安全路径：{member.name}")
-        names.add(normalized)
-    return members
-
-
-def _verify(root: Path, pack_id: str) -> dict:
-    try:
-        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
-        raise ModpackError(f"整合包 manifest.json 无效：{exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
-        raise ModpackError("不支持的整合包归档格式")
-    if manifest.get("pack_id") != pack_id or manifest.get("mode") not in ("full", "source-only"):
-        raise ModpackError("整合包清单身份或模式无效")
-    files = manifest.get("files")
-    roots = tuple(name for name in ("config.yml", "src", "data", "backups") if (root / name).exists())
-    if not isinstance(files, dict) or _files(root, roots) != files:
-        raise ModpackError("整合包文件与 manifest.json 哈希不一致")
-    return manifest
 
 
 def import_pack(manager: ModpackManager, pack_id: str, archive_path: Path, *, force: bool) -> Path:
@@ -130,10 +43,10 @@ def import_pack(manager: ModpackManager, pack_id: str, archive_path: Path, *, fo
             parent = Path(raw); staging = parent / pack_id; staging.mkdir()
             try:
                 with tarfile.open(archive_path, "r:gz") as archive:
-                    archive.extractall(staging, members=_members(archive))
+                    archive.extractall(staging, members=archive_members(archive))
             except (OSError, tarfile.TarError) as exc:
                 raise ModpackError(f"整合包归档处理失败：{exc}") from exc
-            manifest = _verify(staging, pack_id)
+            manifest = verify_extracted(staging, pack_id)
             load_pack(pack_id, parent)
             if manifest["mode"] == "source-only" and target.is_dir():
                 for name in ("data", "backups"):

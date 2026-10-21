@@ -87,7 +87,7 @@ mcsp deploy modpack <id>   上传 terminal/modpacks/<id>.tgz
 校验；`deploy` 只消费已经生成的归档，不隐式重新打包。`manager` 命令空间继续透明转发
 远端 Manager API，不与本地 `modpack` 命令合并。
 
-整合包格式、配置解析、工作区操作、manifest、哈希和安全归档逻辑以 `lib/modpack.py` 为
+整合包格式、配置解析、工作区操作、manifest、哈希和安全归档逻辑以 `lib/modpack_sdk.py` 为
 源码真源，发行前同步到 Terminal 与 Manager。Docker、Job、远端状态、运行数据和备份
 生命周期仍只属于 Manager。
 
@@ -97,11 +97,12 @@ mcsp deploy modpack <id>   上传 terminal/modpacks/<id>.tgz
 复制到需要它们的组件，`release.py check` 和单元测试检查副本字节一致：
 
 ```text
+docker_sdk.py
 manager_sdk.py
 observability.py
 power.py
 providers/*.py
-modpack.py
+modpack_sdk.py
 ```
 
 共享文件不允许从组件副本反向覆盖 `/lib`。同步后若工作树出现变化，开发者应检查并提交，
@@ -151,7 +152,8 @@ Windows runner 使用 PyInstaller 构建，不从 Linux 交叉编译。运行时
 所有路径使用 `pathlib`；临时目录使用 `tempfile`；不得依赖 POSIX chmod、符号链接或
 `fcntl`。Windows 包以 ZIP 分发，避免解压工具错误处理可执行权限。
 
-`mcsp local manager` 在本地 `modpack create/remove/list/check/export/import` 完成后删除。
+`mcsp local manager` 已删除；本地文件操作统一使用
+`modpack create/remove/list/check/export/import`。
 Windows 与 Linux Terminal 使用相同 Python 领域逻辑，不维护 Windows 专用命令分支。
 
 ## CI 与验收
@@ -175,11 +177,8 @@ mcsp[.exe] modpack import release-test
 还必须验证三个独立包不读取源码树外文件、捆绑包中的 payload 哈希与独立包一致、归档不含
 密钥与运行数据、shell 入口通过语法检查、Python 模块可编译、完整单元测试通过。
 
-## 实施顺序
+## 实施状态
 
-1. 抽取 `lib/modpack.py`，迁移 Terminal/Manager 的重复格式与归档逻辑。
-2. 实现本地 `modpack` 六个命令，改造 `deploy modpack <id>`，删除 `local manager`。
-3. 实现共享源码 `sync/check` 和组件文件清单。
-4. 实现 Linux 三份独立包及 Linux Bundle。
-5. 消除 Terminal 的 POSIX 假设并建立 Windows PyInstaller 构建。
-6. 建立跨平台 `verify`、manifest、checksum 和 CI 发布流程。
+发行前架构项已经完成：共享整合包领域层、本地 `modpack` 六个命令、只消费标准归档的
+`deploy modpack <id>`、移除 `local manager`、共享 Docker 命令与镜像部署原语、共享源码
+同步检查、跨平台 PyInstaller 构建、manifest、checksum 与 CI 发布流程。

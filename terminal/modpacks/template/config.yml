@@ -1,0 +1,14 @@
+name: 整合包名称
+java: 17
+mem-limit: 8g
+port: 25565
+eula: false
+version: 自定义版本名称
+backup:
+  enabled: false
+  interval: 6h
+  retain: 7
+  quiesce-seconds: 5
+read-only:
+  enabled: false
+  persistent: []

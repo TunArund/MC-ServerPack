@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
-import tarfile
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
-
-import yaml
 
 from . import remote
 from .config import (
@@ -22,6 +17,7 @@ from .config import (
 from .deploy import RuntimeDeployment
 from .output import renderer
 from .manager_sdk import ManagerSdk, ManagerSdkError, format_job_event
+from .modpack_sdk import ModpackError, validate_pack_id
 from .power import Power, PowerError, PowerTarget, create_power
 
 
@@ -222,30 +218,19 @@ class Manager:
             return "POST", f"/v1/modpacks/{pack}/restore", {"backup": backup, "auto_restart": "--auto-restart" in arguments}, True
         raise ManagerError(f"不支持的 Manager 命令：{action}")
 
-    def local(self, arguments: list[str], *, capture: bool = False):
-        return remote.run(
-            [str(SOURCE_ROOT / "manager/manager.sh"), *arguments], capture=capture,
-        )
-
     def deploy_modpack(self, pack_id: str) -> None:
-        renderer.progress(f"[整合包 1/3] 验证本地整合包：{pack_id}")
-        if not re.fullmatch(r"[A-Za-z0-9-]+", pack_id):
-            raise ManagerError("整合包 ID 仅允许大小写字母、数字和减号")
-        local = SOURCE_ROOT / "manager/modpacks" / pack_id
-        if not (local / "src").is_dir() or not (local / "config.yml").is_file():
-            raise ManagerError(f"本地整合包不存在或不完整：{pack_id}")
-        archive = self._source_archive(pack_id, local)
         try:
-            size = archive.stat().st_size
-            renderer.progress(f"[整合包 2/3] 分块上传 {size} 字节并校验 SHA-256")
-            renderer.progress("[整合包 3/3] 由远端 Manager 校验并原子导入")
-            progress = _JobProgress()
-            self._sdk().import_archive(
-                archive, force=True, on_event=progress,
-            )
-            progress.finish()
-        finally:
-            shutil.rmtree(archive.parent, ignore_errors=True)
+            validate_pack_id(pack_id)
+        except ModpackError as exc:
+            raise ManagerError(str(exc)) from exc
+        archive = ROOT / "modpacks" / f"{pack_id}.tgz"
+        if not archive.is_file():
+            raise ManagerError(f"本地整合包归档不存在：{archive}；请先执行 modpack export {pack_id}")
+        renderer.progress(f"[整合包 1/2] 上传 {archive.name} 并校验 SHA-256")
+        renderer.progress("[整合包 2/2] 由远端 Manager 校验并原子导入")
+        progress = _JobProgress()
+        self._sdk().import_archive(archive, force=True, on_event=progress)
+        progress.finish()
 
     def import_archive(self, archive: Path, *, force: bool = False) -> None:
         progress = _JobProgress()
@@ -262,34 +247,6 @@ class Manager:
             include_backups=include_backups, auto_stop=auto_stop,
         )
         sdk.download_export(metadata, destination)
-
-    @staticmethod
-    def _file_hash(path: Path) -> str:
-        return ManagerSdk.file_sha256(path)
-
-    def _source_archive(self, pack_id: str, source: Path) -> Path:
-        temporary_root = Path(tempfile.mkdtemp(prefix="mcsp-transfer-"))
-        output = temporary_root / f"{pack_id}.tgz"
-        roots = ("config.yml", "src")
-        files: dict[str, str] = {}
-        for name in roots:
-            root = source / name
-            paths = [root] if root.is_file() else sorted(root.rglob("*"))
-            for path in paths:
-                if path.is_symlink(): raise ManagerError(f"整合包不能包含符号链接：{path.relative_to(source)}")
-                if path.is_file(): files[path.relative_to(source).as_posix()] = f"sha256:{self._file_hash(path)}"
-        try: name = yaml.safe_load((source / "config.yml").read_text(encoding="utf-8")).get("name", pack_id)
-        except Exception as exc: raise ManagerError(f"整合包 config.yml 无效：{exc}") from exc
-        manifest = {"format": 1, "pack_id": pack_id, "name": name,
-                    "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                    "mode": "source-only", "include_backups": False, "files": files}
-        manifest_path = temporary_root / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        with tarfile.open(output, "w:gz") as archive:
-            archive.add(manifest_path, arcname="manifest.json")
-            for name in roots: archive.add(source / name, arcname=name)
-        manifest_path.unlink()
-        return output
 
     def run(
         self, action: str, pack_id: Optional[str] = None, *,

@@ -33,6 +33,9 @@
 
 - `manager/src/manager_sdk.py`、`lib/manager_sdk.py`、`monitor/src/manager_sdk.py` 必须字节一致。
 - Terminal、Manager、Monitor 的 `power.py` 和 Provider 协议保持相同，以便直接复制同步。
+- `lib/modpack_sdk.py` 是工作区、manifest、哈希和安全归档真源；Terminal 与 Manager 携带一致副本。
+- `lib/docker_sdk.py` 封装远端 Docker 准备、Docker 命令、Compose 生命周期与镜像部署原语；
+  组件只注入连接、资源、配置渲染和镜像命名。
 - 共享文件只在一处作语义设计，同步到其他位置后必须运行边界测试。
 
 ## 配置和密钥
@@ -91,8 +94,6 @@ python3 -m unittest discover -s dev/tests -q
 ## TODO
 - MC-ServerPack/manager/runtime迁移到manager/data/{xxx.dockerfile,.dockerignore}
 减少目录，并扁平化
-- 将 Terminal、Manager 与 Monitor 重复的 Docker 部署逻辑提炼到 `/lib`，各运行时只保留
-  参数和生命周期编排；在统一部署契约前不提前复制或增加兼容分支。
 - 完善 Manager 升级预检、旧状态迁移、旧镜像清理和证书 SAN 变更检测。
 - 完成 QQ 整合包管理：列表、状态、日志、启停和 enable/disable；所有写操作仅管理员可用。
 - 实现 COS 备份，覆盖恶意归档、分块中断续传、配额、恢复回滚和日志脱敏。

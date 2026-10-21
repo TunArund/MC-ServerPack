@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RELEASE_ROOT = ROOT / "dev/release"
 BUILD_ROOT = RELEASE_ROOT / "build"
 DIST_ROOT = RELEASE_ROOT / "dist"
-SHARED_FILES = ("manager_sdk.py", "observability.py", "power.py")
+SHARED_FILES = ("docker_sdk.py", "manager_sdk.py", "observability.py", "power.py")
+SHARED_MODPACK_FILES = ("modpack_sdk.py",)
 SHARED_PROVIDERS = ("example.py", "tencent.py")
 COMPONENTS = ("terminal", "manager", "monitor")
 EXCLUDED_NAMES = {
@@ -95,10 +96,9 @@ def sync_shared() -> None:
         providers.mkdir(parents=True, exist_ok=True)
         for name in SHARED_PROVIDERS:
             shutil.copy2(ROOT / "lib/providers" / name, providers / name)
-    optional = ROOT / "lib/modpack.py"
-    if optional.is_file():
-        for component in ("terminal", "manager"):
-            shutil.copy2(optional, ROOT / component / "src/modpack.py")
+    for component in ("terminal", "manager"):
+        for name in SHARED_MODPACK_FILES:
+            shutil.copy2(ROOT / "lib" / name, ROOT / component / "src" / name)
 
 
 def check_shared() -> None:
@@ -107,10 +107,9 @@ def check_shared() -> None:
             _same(ROOT / "lib" / name, ROOT / component / "src" / name)
         for name in SHARED_PROVIDERS:
             _same(ROOT / "lib/providers" / name, ROOT / component / "src/providers" / name)
-    modpack = ROOT / "lib/modpack.py"
-    if modpack.exists():
-        for component in ("terminal", "manager"):
-            _same(modpack, ROOT / component / "src/modpack.py")
+    for component in ("terminal", "manager"):
+        for name in SHARED_MODPACK_FILES:
+            _same(ROOT / "lib" / name, ROOT / component / "src" / name)
 
 
 def _same(source: Path, destination: Path) -> None:
@@ -242,6 +241,7 @@ def build_terminal(context: Context, target_platform: str) -> Path:
         shutil.copy2(ROOT / "terminal" / name, stage / name)
     for name in ("logs", "modpacks", "payloads"):
         (stage / name).mkdir()
+    shutil.copytree(ROOT / "terminal/modpacks/template", stage / "modpacks/template")
     output = context.output / f"mc-serverpack-terminal-{suffix}"
     if target_platform == "windows":
         zip_directory(stage, output, "MC-ServerPack")
@@ -367,7 +367,17 @@ def verify(context: Context) -> None:
         )
         if executable:
             try:
-                run([str(executable), "--help"], cwd=executable.parent, capture=True)
+                smoke_commands = (
+                    ("--help",),
+                    ("config", "init"),
+                    ("modpack", "create", "release-test"),
+                    ("modpack", "check", "release-test"),
+                    ("modpack", "export", "release-test"),
+                    ("modpack", "remove", "release-test", "--force"),
+                    ("modpack", "import", "release-test"),
+                )
+                for arguments in smoke_commands:
+                    run([str(executable), *arguments], cwd=executable.parent, capture=True)
             except ReleaseError as exc:
                 log = executable.parent / "logs/terminal.log"
                 detail = log.read_text(encoding="utf-8", errors="replace")[-8000:] if log.is_file() else ""

@@ -72,7 +72,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_only_terminal_installs_docker(self) -> None:
         terminal = (ROOT / "terminal/src/docker.py").read_text(encoding="utf-8")
         installer = (ROOT / "terminal/src/docker-install.sh").read_text(encoding="utf-8")
-        manager = (ROOT / "manager/src/docker.py").read_text(encoding="utf-8")
+        manager = (ROOT / "lib/docker_sdk.py").read_text(encoding="utf-8")
         manager_entry = (ROOT / "manager/manager.sh").read_text(encoding="utf-8")
         monitor_entry = (ROOT / "monitor/monitor.sh").read_text(encoding="utf-8")
         self.assertIn("DockerProvisioner", terminal)
@@ -139,7 +139,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertTrue((ROOT / "manager/src/backup.py").is_file())
         self.assertFalse((ROOT / "manager/src/archive.py").exists())
         transfer = (ROOT / "manager/src/transfer.py").read_text(encoding="utf-8")
-        self.assertIn("def export_pack", transfer)
+        self.assertIn("archive_members, export_pack, file_sha256, verify_extracted", transfer)
         self.assertIn("def import_pack", transfer)
 
     def test_manager_jobs_are_separate_from_routes_and_schedule(self) -> None:
@@ -176,7 +176,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(
             modules,
             [
-                "app.py", "config.py", "manager_sdk.py", "message.py", "network.py",
+                "app.py", "config.py", "docker_sdk.py", "manager_sdk.py", "message.py", "network.py",
                 "observability.py", "power.py", "qqbot.py", "schedule.py", "targets.py",
             ],
         )
@@ -190,7 +190,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         script = (ROOT / "monitor/monitor.sh").read_text(encoding="utf-8")
         self.assertIn('export MC_CONTAINER_UID="$(id -u)"', script)
         self.assertIn('export MC_CONTAINER_GID="$(id -g)"', script)
-        manager = (ROOT / "manager/src/docker.py").read_text(encoding="utf-8")
+        manager = (ROOT / "lib/docker_sdk.py").read_text(encoding="utf-8")
         manager_config = (ROOT / "manager/src/config.py").read_text(encoding="utf-8")
         self.assertIn("MC_CONTAINER_UID", manager)
         self.assertIn("拒绝以 root 运行", manager)

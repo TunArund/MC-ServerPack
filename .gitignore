@@ -5,6 +5,9 @@ __pycache__/
 /terminal/config.yml
 /terminal/logs/*
 !/terminal/logs/.gitkeep
+/terminal/modpacks/*
+!/terminal/modpacks/template/
+!/terminal/modpacks/template/**
 /manager/config.yml
 /manager/.schedule-state.json
 /manager/schedule.log

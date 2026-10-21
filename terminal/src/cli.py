@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import sys
@@ -26,6 +27,7 @@ from .manager import Manager, ManagerError
 from .observability import configure_logging
 from .observability import operation_id as operation_id_context
 from .manager_sdk import ManagerSdkError
+from .modpack_sdk import ModpackError, ModpackWorkspace
 from .observability import redact_argv
 from .monitor import Monitor
 from .output import renderer
@@ -128,6 +130,9 @@ class CliServices:
     def deploy_modpack(self, pack_id: str) -> None:
         self.manager_runtime().deploy_modpack(pack_id)
 
+    def modpack_workspace(self) -> ModpackWorkspace:
+        return ModpackWorkspace(ROOT / "modpacks")
+
     def export_modpack(self, pack_id: str, destination: Path, **options) -> None:
         self.manager_runtime().export_archive(pack_id, destination, **options)
 
@@ -138,15 +143,6 @@ class CliServices:
         progress(f"[配置] 读取 {target} 部署连接：{self.config_path}")
         host, user = deployment_connection(self.config_path, target)
         DockerProvisioner(host, user, transport=self.transport).install()
-
-    def local_manager(self, arguments: list[str]) -> None:
-        result = self.manager_runtime().local(
-            arguments, capture=renderer.json_mode,
-        )
-        if renderer.json_mode and result is not None:
-            raw = result.stdout or b""
-            value = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-            renderer.result(value, data=True)
 
     def manager_command(
         self, action: str, pack_id: Optional[str] = None, *,
@@ -280,6 +276,16 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     deploy_pack = deploy_commands.add_parser("modpack", help="上传整合包")
     deploy_pack.add_argument("pack_id")
 
+    modpack = commands.add_parser("modpack", help="管理 Terminal 本地整合包")
+    modpack_commands = modpack.add_subparsers(dest="action", required=True)
+    for action in ("create", "check", "export", "import"):
+        command = modpack_commands.add_parser(action)
+        command.add_argument("pack_id")
+    remove_local = modpack_commands.add_parser("remove")
+    remove_local.add_argument("pack_id")
+    remove_local.add_argument("--force", action="store_true")
+    modpack_commands.add_parser("list")
+
     for action in ("start", "stop", "status"):
         control = commands.add_parser(action, help=f"{action} Manager 服务器或 Monitor 容器")
         control.add_argument("target", choices=("manager", "monitor"))
@@ -330,14 +336,6 @@ def make_parser(*, source_mode: bool = SOURCE_MODE) -> argparse.ArgumentParser:
     export.add_argument("--auto-stop", action="store_true")
     import_command = manager_commands.add_parser("import", help="上传并导入标准整合包归档")
     import_command.add_argument("archive", type=Path); import_command.add_argument("--force", action="store_true")
-
-    local = commands.add_parser("local", help="调用本机运行时")
-    local_runtime = local.add_subparsers(dest="runtime", required=True)
-    local_manager = local_runtime.add_parser("manager")
-    local_manager.add_argument(
-        "arguments", nargs=argparse.REMAINDER,
-        help="原样传给本机 Manager 入口的参数",
-    )
 
     monitor = commands.add_parser("monitor", help="调用远端 Monitor")
     monitor_commands = monitor.add_subparsers(dest="action", required=True)
@@ -417,6 +415,32 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
                 renderer.result(f"{action}：{path}")
             return 0
         _check_config(args.path or args.config)
+        return 0
+
+    if args.module == "modpack":
+        workspace = (service or CliServices(args.config)).modpack_workspace()
+        if args.action == "create":
+            path = workspace.create(args.pack_id)
+            renderer.result(f"已创建本地整合包：{path}")
+        elif args.action == "remove":
+            if not args.force:
+                try:
+                    answer = renderer.ask(f"将删除本地整合包 {args.pack_id}；输入 yes 确认：")
+                except EOFError:
+                    answer = ""
+                if answer.strip().lower() != "yes":
+                    renderer.result("已取消删除")
+                    return 0
+            workspace.remove(args.pack_id)
+            renderer.result(f"已删除本地整合包：{args.pack_id}")
+        elif args.action == "list":
+            renderer.result(json.dumps({"modpacks": workspace.list()}, ensure_ascii=False, indent=2), data=True)
+        elif args.action == "check":
+            renderer.result(json.dumps(workspace.check(args.pack_id), ensure_ascii=False, indent=2), data=True)
+        elif args.action == "export":
+            renderer.result(f"已导出本地整合包：{workspace.export(args.pack_id)}")
+        elif args.action == "import":
+            renderer.result(f"已导入本地整合包：{workspace.import_archive(args.pack_id)}")
         return 0
 
     services = service or CliServices(args.config)
@@ -510,9 +534,6 @@ def dispatch(argv: Optional[list[str]] = None, service: Optional[CliServices] = 
 
     if args.module == "manager":
         return _dispatch_manager(args, services)
-    if args.module == "local":
-        services.local_manager(args.arguments)
-        return 0
     if args.module == "monitor":
         if args.action == "add-admin":
             identifier = services.add_monitor_admin()
@@ -552,7 +573,7 @@ def _main(arguments: list[str]) -> int:
         raise
     except (
         AccountError, CommandError, ConfigError, DeployError, ManagerError,
-        ManagerSdkError, PowerError, ProviderError, OSError,
+        ManagerSdkError, ModpackError, PowerError, ProviderError, OSError,
     ) as exc:
         if not getattr(exc, "reported", False):
             renderer.error(f"错误：{exc}")

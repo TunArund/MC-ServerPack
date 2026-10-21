@@ -10,7 +10,7 @@ from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from terminal.src.cli import CliServices, dispatch, main
+from terminal.src.cli import CliServices, dispatch, main, make_parser
 from lib.power import InstanceStatus
 
 
@@ -340,10 +340,8 @@ class TerminalCliRedesignTests(unittest.TestCase):
 
     def test_local_manager_arguments_are_forwarded_transparently(self) -> None:
         services = FakeServices()
-        dispatch(["local", "manager", "remove", "Server-01", "--force"], services)
-        self.assertEqual(services.calls, [(
-            "local-manager", ["remove", "Server-01", "--force"],
-        )])
+        with self.assertRaises(SystemExit):
+            dispatch(["local", "manager", "remove", "Server-01", "--force"], services)
 
     def test_manager_start_is_forwarded_without_terminal_business_flags(self) -> None:
         services = FakeServices()
@@ -369,12 +367,12 @@ class TerminalCliRedesignTests(unittest.TestCase):
             "manager", "list", None, (), False,
         )])
 
-    def test_local_namespace_is_explicit(self) -> None:
-        services = FakeServices()
-        dispatch(["local", "manager", "create", "Pack-01"], services)
-        self.assertEqual(services.calls, [(
-            "local-manager", ["create", "Pack-01"],
-        )])
+    def test_modpack_namespace_is_explicit(self) -> None:
+        args = make_parser().parse_args(["modpack", "create", "Pack-01"])
+        self.assertEqual(
+            (args.module, args.action, args.pack_id),
+            ("modpack", "create", "Pack-01"),
+        )
 
     def test_monitor_namespace_calls_remote_monitor(self) -> None:
         services = FakeServices()

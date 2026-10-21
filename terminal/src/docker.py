@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from . import remote
+from .docker_sdk import DockerProvisioner as SharedDockerProvisioner
 
 
 def _resource(name: str) -> Path:
@@ -21,20 +22,13 @@ def _resource(name: str) -> Path:
     raise RuntimeError(f"缺少 Terminal 资源文件：{name}")
 
 
-class DockerProvisioner:
-    """Terminal 直接在目标服务器安装 Docker，不依赖运行时源码。"""
+class DockerProvisioner(SharedDockerProvisioner):
+    """为共享 Provisioner 注入 Terminal 资源与 SSH 目标。"""
 
     def __init__(
         self, host: str, user: str, *, transport: remote.Transport | None = None,
     ) -> None:
-        self.host = host
-        self.user = user
-        self.transport = transport or remote.Transport()
-
-    def install(self) -> None:
         script = _resource("docker-install.sh").read_text(encoding="utf-8")
-        self.transport.ssh_logged(
-            remote.target(self.user, self.host),
-            ["bash", "-s", "--"], input_text=script,
-            label=f"准备 Docker：{self.user}@{self.host}",
+        super().__init__(
+            remote.target(user, host), script, transport or remote.Transport(),
         )

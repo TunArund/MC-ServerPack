@@ -77,14 +77,16 @@ TLS CA。Terminal 会取回密钥和 CA；部署 Monitor 时会复用它们。
 ## 创建第一个整合包
 
 ```bash
-cp -a manager/modpacks/template manager/modpacks/mc-vanilla
+./terminal/mcsp.sh modpack create mc-vanilla
 ```
 
 将服务端 JAR 和所需文件放入
-`manager/modpacks/mc-vanilla/src/`，再编辑
-`manager/modpacks/mc-vanilla/config.yml`。默认会自动选择唯一的顶层JAR启动
+`terminal/modpacks/mc-vanilla/src/`，再编辑
+`terminal/modpacks/mc-vanilla/config.yml`。默认会自动选择唯一的顶层 JAR 启动。
 
 ```bash
+./terminal/mcsp.sh modpack check mc-vanilla
+./terminal/mcsp.sh modpack export mc-vanilla
 ./terminal/mcsp.sh deploy modpack mc-vanilla
 ./terminal/mcsp.sh manager start mc-vanilla
 ./terminal/mcsp.sh manager enable mc-vanilla
