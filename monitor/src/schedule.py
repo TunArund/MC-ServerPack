@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .power import InstanceStatus, PowerError
+from .power_sdk import InstanceStatus, PowerError
 
 ZONE = ZoneInfo("Asia/Shanghai")
 

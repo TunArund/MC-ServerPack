@@ -19,8 +19,8 @@ from .config import (
 from .manager_sdk import ManagerSdk
 from .message import messages
 from .network import Network
-from .observability import configure_logging as configure_observability
-from .power import PowerTarget, create_power
+from .observability_sdk import configure_logging as configure_observability
+from .power_sdk import PowerTarget, create_power
 from .qqbot import QQBot, discover_target
 from .schedule import MonitorService, PowerSchedule, StateStore
 from .targets import TargetStore

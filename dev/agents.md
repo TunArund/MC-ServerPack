@@ -31,11 +31,15 @@
 
 ## 共享源码
 
+- `lib/config_sdk.py` 只提供通用配置类型校验；组件配置模型、字段组合和业务默认值仍由各自
+  的 `config.py` 负责。
 - `manager/src/manager_sdk.py`、`lib/manager_sdk.py`、`monitor/src/manager_sdk.py` 必须字节一致。
-- Terminal、Manager、Monitor 的 `power.py` 和 Provider 协议保持相同，以便直接复制同步。
+- Terminal、Manager、Monitor 的 `power_sdk.py` 和 Provider 协议保持相同，以便直接复制同步。
 - `lib/modpack_sdk.py` 是工作区、manifest、哈希和安全归档真源；Terminal 与 Manager 携带一致副本。
 - `lib/docker_sdk.py` 封装远端 Docker 准备、Docker 命令、Compose 生命周期与镜像部署原语；
   组件只注入连接、资源、配置渲染和镜像命名。
+- `lib/docker-install.sh` 是 Docker Engine 安装脚本真源；发行工具将其同步到 Terminal，
+  由 Terminal 独立包携带并在远端执行。
 - 共享文件只在一处作语义设计，同步到其他位置后必须运行边界测试。
 
 ## 配置和密钥
@@ -65,7 +69,7 @@
   `5 MiB × 3` 轮转；异常使用 traceback，结构化字段通过 `extra` 传递并递归脱敏。
 - 日志真源为 `terminal/logs/terminal.log`、`manager/data/logs/service.log`、
   `manager/data/logs/api.log`、`monitor/data/service.log`。容器 stderr 使用同一 JSON 格式。
-- `lib/observability.py` 是配置、上下文、格式化和脱敏的源码真源；三个独立组件在 `src/`
+- `lib/observability_sdk.py` 是配置、上下文、格式化和脱敏的源码真源；三个独立组件在 `src/`
   携带字节一致副本，并由边界测试约束。
 
 ## Monitor 约束

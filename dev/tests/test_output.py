@@ -10,7 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 from pathlib import Path
 
-from lib.observability import REDACTED, configure_logging, redact_argv
+from lib.observability_sdk import REDACTED, configure_logging, redact_argv
 from manager.src.jobs import Job
 from manager.src.job_bridge import main as bridge_main
 

@@ -116,8 +116,9 @@ root 身份运行。
 
 ## 源码边界
 
-`src/` 是唯一 Python 源码根目录：`app.py` 负责组装，`config.py` 负责加载配置，
-`power.py` 负责电源及 Provider 加载，`schedule.py` 负责日程、状态与服务循环，
+`src/` 是唯一 Python 源码根目录：`app.py` 负责组装，`config.py` 负责组件配置模型，
+`config_sdk.py` 提供共享类型校验，
+`power_sdk.py` 负责电源及 Provider 加载，`schedule.py` 负责日程、状态与服务循环，
 `network.py` 只负责 QQ 鉴权和消息收发，`message.py` 只负责读取、校验和渲染
 `message.yml`，`qqbot.py` 负责权限和业务服务路由，`targets.py` 负责管理员、
 订阅目标与待审批申请。QQ Bot 不读取调度状态，两者只在 `app.py` 中获得同一个电源

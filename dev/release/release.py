@@ -22,8 +22,15 @@ ROOT = Path(__file__).resolve().parents[2]
 RELEASE_ROOT = ROOT / "dev/release"
 BUILD_ROOT = RELEASE_ROOT / "build"
 DIST_ROOT = RELEASE_ROOT / "dist"
-SHARED_FILES = ("docker_sdk.py", "manager_sdk.py", "observability.py", "power.py")
+SHARED_FILES = (
+    "config_sdk.py",
+    "docker_sdk.py",
+    "manager_sdk.py",
+    "observability_sdk.py",
+    "power_sdk.py",
+)
 SHARED_MODPACK_FILES = ("modpack_sdk.py",)
+SHARED_TERMINAL_FILES = ("docker-install.sh",)
 SHARED_PROVIDERS = ("example.py", "tencent.py")
 COMPONENTS = ("terminal", "manager", "monitor")
 EXCLUDED_NAMES = {
@@ -99,6 +106,8 @@ def sync_shared() -> None:
     for component in ("terminal", "manager"):
         for name in SHARED_MODPACK_FILES:
             shutil.copy2(ROOT / "lib" / name, ROOT / component / "src" / name)
+    for name in SHARED_TERMINAL_FILES:
+        shutil.copy2(ROOT / "lib" / name, ROOT / "terminal/src" / name)
 
 
 def check_shared() -> None:
@@ -110,6 +119,8 @@ def check_shared() -> None:
     for component in ("terminal", "manager"):
         for name in SHARED_MODPACK_FILES:
             _same(ROOT / "lib" / name, ROOT / component / "src" / name)
+    for name in SHARED_TERMINAL_FILES:
+        _same(ROOT / "lib" / name, ROOT / "terminal/src" / name)
 
 
 def _same(source: Path, destination: Path) -> None:

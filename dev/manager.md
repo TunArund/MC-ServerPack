@@ -44,9 +44,10 @@ manager/
 │   ├── transfer.py     # 标准归档和分块传输
 │   ├── schedule.py     # 聚合调度
 │   ├── config.py       # Manager 和整合包配置
+│   ├── config_sdk.py   # 共享配置类型校验
 │   ├── bootstrap.py    # API 密钥和 TLS 证书初始化
 │   ├── manager_sdk.py  # 共享 API 客户端/签名实现
-│   ├── power.py
+│   ├── power_sdk.py
 │   └── providers/
 ├── runtime/
 │   ├── compose.yml

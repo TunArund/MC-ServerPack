@@ -1,4 +1,4 @@
-"""与云厂商无关的实例电源状态机。"""
+"""与云厂商无关的实例电源 SDK。"""
 
 from __future__ import annotations
 

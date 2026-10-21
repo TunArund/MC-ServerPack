@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from terminal.src.cli import CliServices, dispatch, main, make_parser
-from lib.power import InstanceStatus
+from lib.power_sdk import InstanceStatus
 
 
 class FakeServices:

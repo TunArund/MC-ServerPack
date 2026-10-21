@@ -97,10 +97,12 @@ mcsp deploy modpack <id>   上传 terminal/modpacks/<id>.tgz
 复制到需要它们的组件，`release.py check` 和单元测试检查副本字节一致：
 
 ```text
+config_sdk.py
 docker_sdk.py
+docker-install.sh -> terminal/src/docker-install.sh
 manager_sdk.py
-observability.py
-power.py
+observability_sdk.py
+power_sdk.py
 providers/*.py
 modpack_sdk.py
 ```

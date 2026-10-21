@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from manager.src.config import ManagerLimits
-from manager.src.power import Power, PowerError, PowerTarget
-from manager.src.power import ProviderError, list_providers, load_provider
+from manager.src.power_sdk import Power, PowerError, PowerTarget
+from manager.src.power_sdk import ProviderError, list_providers, load_provider
 from manager.src.providers import tencent
 from manager.src.schedule import create_power
 
@@ -103,7 +103,7 @@ class PowerTests(unittest.TestCase):
         )
         with (
             patch.dict("os.environ", {"POWER_SECRET_KEY": "token"}),
-            patch("manager.src.power.load_provider", return_value=SimpleNamespace()),
+            patch("manager.src.power_sdk.load_provider", return_value=SimpleNamespace()),
         ):
             self.assertIsInstance(create_power(settings, self.root), Power)
 

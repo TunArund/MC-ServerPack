@@ -8,8 +8,16 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .config_sdk import ConfigError
+from .config_sdk import boolean
+from .config_sdk import clock as _clock
+from .config_sdk import positive_integer as _positive_integer
+from .config_sdk import timezone as _timezone
+
+_boolean = partial(boolean, default=False)
 
 try:
     import yaml
@@ -24,7 +32,6 @@ MANAGER_CONFIG = MANAGER_ROOT / "data/config.yml"
 PACK_ID_RE = re.compile(r"[A-Za-z0-9-]+")
 MEMORY_RE = re.compile(r"([1-9]\d*)([kKmMgGtT])(?:[bB])?")
 INTERVAL_RE = re.compile(r"([1-9]\d*)([mhd])")
-TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
 DEFAULT_COMMAND = ("mc-auto",)
 EMPTY_JSON_DEFAULTS = {
@@ -35,10 +42,6 @@ EMPTY_JSON_DEFAULTS = {
     "usernamecache.json": "{}\n",
     "whitelist.json": "[]\n",
 }
-
-
-class ConfigError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -172,39 +175,6 @@ def normalize_persistent(value: object) -> PersistentPath:
     if path.is_absolute() or not raw or any(part in ("", ".", "..") for part in path.parts):
         raise ConfigError(f"持久化路径必须是安全的相对路径：{value}")
     return PersistentPath(path.as_posix(), directory)
-
-
-def _positive_integer(value: object, field: str, *, minimum: int = 1) -> int:
-    if type(value) is not int or value < minimum:
-        raise ConfigError(f"{field} 必须是不小于 {minimum} 的整数")
-    return value
-
-
-def _boolean(value: object, field: str, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if type(value) is not bool:
-        raise ConfigError(f"{field} 必须是 true 或 false")
-    return value
-
-
-def _clock(value: object, field: str) -> str:
-    if type(value) is int and 0 <= value < 1440:
-        value = f"{value // 60:02d}:{value % 60:02d}"
-    if not isinstance(value, str) or not TIME_RE.fullmatch(value):
-        raise ConfigError(f"{field} 必须是 HH:MM")
-    return value
-
-
-def _timezone(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{field} 必须是非空字符串")
-    name = value.strip()
-    try:
-        ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ConfigError(f"{field} 必须是有效的 IANA 时区，例如 Asia/Shanghai") from exc
-    return name
 
 
 def load_limits(path: Path = MANAGER_CONFIG) -> ManagerLimits:

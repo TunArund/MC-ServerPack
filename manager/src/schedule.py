@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from .backup import list_backups
 from .config import MANAGER_ROOT, ManagerLimits, PackSpec
-from .power import PowerError, PowerTarget, create_power as build_power
+from .power_sdk import PowerError, PowerTarget, create_power as build_power
 
 
 ZONE = ZoneInfo("Asia/Shanghai")

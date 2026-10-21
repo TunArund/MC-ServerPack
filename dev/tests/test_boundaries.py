@@ -83,11 +83,15 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertNotIn("download.docker.com", source)
         self.assertNotIn("install docker", manager_entry)
 
+    def test_docker_installer_is_synchronized_from_lib(self) -> None:
+        expected = (ROOT / "lib/docker-install.sh").read_bytes()
+        self.assertEqual(expected, (ROOT / "terminal/src/docker-install.sh").read_bytes())
+
     def test_power_core_is_identical_in_all_runtimes(self) -> None:
-        expected = (ROOT / "lib/power.py").read_bytes()
-        self.assertEqual(expected, (ROOT / "terminal/src/power.py").read_bytes())
-        self.assertEqual(expected, (ROOT / "manager/src/power.py").read_bytes())
-        self.assertEqual(expected, (ROOT / "monitor/src/power.py").read_bytes())
+        expected = (ROOT / "lib/power_sdk.py").read_bytes()
+        self.assertEqual(expected, (ROOT / "terminal/src/power_sdk.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "manager/src/power_sdk.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "monitor/src/power_sdk.py").read_bytes())
 
         self.assertNotIn(b"load_adapter", expected)
 
@@ -100,10 +104,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertNotIn(b"from manager", expected)
 
     def test_observability_is_identical_in_all_runtimes(self) -> None:
-        expected = (ROOT / "lib/observability.py").read_bytes()
-        self.assertEqual(expected, (ROOT / "terminal/src/observability.py").read_bytes())
-        self.assertEqual(expected, (ROOT / "manager/src/observability.py").read_bytes())
-        self.assertEqual(expected, (ROOT / "monitor/src/observability.py").read_bytes())
+        expected = (ROOT / "lib/observability_sdk.py").read_bytes()
+        self.assertEqual(expected, (ROOT / "terminal/src/observability_sdk.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "manager/src/observability_sdk.py").read_bytes())
+        self.assertEqual(expected, (ROOT / "monitor/src/observability_sdk.py").read_bytes())
 
     def test_shared_provider_implementations_are_identical(self) -> None:
         for name in ("tencent.py", "example.py"):
@@ -176,8 +180,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(
             modules,
             [
-                "app.py", "config.py", "docker_sdk.py", "manager_sdk.py", "message.py", "network.py",
-                "observability.py", "power.py", "qqbot.py", "schedule.py", "targets.py",
+                "app.py", "config.py", "config_sdk.py", "docker_sdk.py", "manager_sdk.py",
+                "message.py", "network.py",
+                "observability_sdk.py", "power_sdk.py", "qqbot.py", "schedule.py", "targets.py",
             ],
         )
         self.assertFalse((ROOT / "monitor/src/monitor").exists())
@@ -232,7 +237,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                         if isinstance(node, ast.ImportFrom) and node.module:
                             self.assertFalse(
                                 node.module.endswith("power"),
-                                f"{path}: provider must not import power.py",
+                                f"{path}: provider must not import power_sdk.py",
                             )
 
 

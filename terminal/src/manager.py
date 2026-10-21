@@ -18,7 +18,7 @@ from .deploy import RuntimeDeployment
 from .output import renderer
 from .manager_sdk import ManagerSdk, ManagerSdkError, format_job_event
 from .modpack_sdk import ModpackError, validate_pack_id
-from .power import Power, PowerError, PowerTarget, create_power
+from .power_sdk import Power, PowerError, PowerTarget, create_power
 
 
 class ManagerError(ManagerSdkError, remote.CommandError):

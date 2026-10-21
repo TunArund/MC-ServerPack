@@ -24,15 +24,15 @@ from .deploy import (
 )
 from .docker import DockerProvisioner
 from .manager import Manager, ManagerError
-from .observability import configure_logging
-from .observability import operation_id as operation_id_context
+from .observability_sdk import configure_logging
+from .observability_sdk import operation_id as operation_id_context
 from .manager_sdk import ManagerSdkError
 from .modpack_sdk import ModpackError, ModpackWorkspace
-from .observability import redact_argv
+from .observability_sdk import redact_argv
 from .monitor import Monitor
 from .output import renderer
-from .power import InstanceStatus, PowerError
-from .power import ProviderError, load_provider
+from .power_sdk import InstanceStatus, PowerError
+from .power_sdk import ProviderError, load_provider
 from .remote import CommandError, Transport, shell_join
 
 

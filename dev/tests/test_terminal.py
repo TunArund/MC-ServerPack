@@ -16,7 +16,7 @@ from terminal.src.config import load as load_config
 from terminal.src.deploy import RuntimeDeployment
 from terminal.src.manager import Manager
 from terminal.src.monitor import Monitor
-from lib.power import InstanceStatus, Power, PowerError, PowerTarget
+from lib.power_sdk import InstanceStatus, Power, PowerError, PowerTarget
 from lib.providers import tencent
 from terminal.src.remote import CommandError, fit_terminal, shell_join
 from manager.src.config import ConfigError as ManagerConfigError, validate_pack_id

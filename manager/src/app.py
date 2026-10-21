@@ -17,7 +17,7 @@ from . import schedule
 from .config import ConfigError, MANAGER_ROOT, load_api_settings, load_limits
 from .manager_sdk import signature
 from .modpacks import ModpackManager
-from .observability import configure_logging
+from .observability_sdk import configure_logging
 from .router import Request, Response, Router
 
 

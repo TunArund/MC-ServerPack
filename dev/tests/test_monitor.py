@@ -11,7 +11,7 @@ import yaml
 
 from monitor.src.app import AsyncPower
 from monitor.src.config import ConfigError, load, qq_credentials
-from monitor.src.power import InstanceStatus, PowerError
+from monitor.src.power_sdk import InstanceStatus, PowerError
 from monitor.src.schedule import (
     MonitorService, PowerSchedule, StateStore, latest_event, next_start_event,
 )

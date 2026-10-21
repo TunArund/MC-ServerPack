@@ -10,8 +10,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .config_sdk import ConfigError
+from .config_sdk import boolean as _boolean
+from .config_sdk import clock as _clock
+from .config_sdk import mapping as _mapping
+from .config_sdk import positive_integer as _positive_int
+from .config_sdk import text as _text
+from .config_sdk import timezone as _timezone
 from .remote import HOST_RE
 
 try:
@@ -30,14 +36,9 @@ else:
     SOURCE_ROOT = ROOT.parent
 CONFIG_FILE = ROOT / "config.yml"
 ENV_FILE = ROOT / ".env"
-TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
 REMOTE_DIR_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
-
-
-class ConfigError(RuntimeError):
-    """配置无法安全使用。"""
 
 
 def initialize(path: str | Path = CONFIG_FILE) -> tuple[tuple[Path, bool], ...]:
@@ -157,43 +158,6 @@ class AppConfig:
     cos: CosConfig
 
 
-def _mapping(value: object, field: str, *, optional: bool = False) -> dict[str, Any]:
-    if value is None and optional:
-        return {}
-    if not isinstance(value, dict):
-        raise ConfigError(f"{field} 必须是对象")
-    return value
-
-
-def _text(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{field} 必须是非空字符串")
-    return value.strip()
-
-
-def _boolean(value: object, field: str, *, default: bool | None = None) -> bool:
-    if value is None and default is not None:
-        return default
-    if type(value) is not bool:
-        raise ConfigError(f"{field} 必须是 true 或 false")
-    return value
-
-
-def _positive_int(value: object, field: str, *, minimum: int = 1) -> int:
-    if type(value) is not int or value < minimum:
-        raise ConfigError(f"{field} 必须是不小于 {minimum} 的整数")
-    return value
-
-
-def _clock(value: object, field: str) -> str:
-    # PyYAML 1.1 may parse an unquoted 20:00 as the sexagesimal integer 1200.
-    if type(value) is int and 0 <= value < 1440:
-        value = f"{value // 60:02d}:{value % 60:02d}"
-    if not isinstance(value, str) or not TIME_RE.fullmatch(value):
-        raise ConfigError(f"{field} 必须是 HH:MM")
-    return value
-
-
 def _optional_clock(section: dict[str, Any], enabled: bool, key: str, field: str) -> str | None:
     value = section.get(key)
     if enabled:
@@ -216,15 +180,6 @@ def _user(value: object, field: str) -> str:
             f"deploy {field} --create-user 创建"
         )
     return user
-
-
-def _timezone(value: object, field: str) -> str:
-    name = _text(value, field)
-    try:
-        ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ConfigError(f"{field} 必须是有效的 IANA 时区，例如 Asia/Shanghai") from exc
-    return name
 
 
 def _endpoint(section: dict[str, Any], field: str) -> Endpoint:

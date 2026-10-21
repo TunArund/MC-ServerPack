@@ -5,19 +5,23 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from .config_sdk import ConfigError
+from .config_sdk import boolean
+from .config_sdk import clock as _clock
+from .config_sdk import mapping as _mapping
+from .config_sdk import text as _text
+from .config_sdk import timezone as _timezone
+
+_boolean = partial(boolean, default=False)
+
 
 CONFIG_FILE = Path(os.environ.get("MCSP_CONFIG", "/app/config.yml"))
-TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
-
-
-class ConfigError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -49,34 +53,6 @@ class MonitorConfig:
     manager_api: ManagerApiConfig
 
 
-def _mapping(value: object, field: str) -> dict:
-    if not isinstance(value, dict):
-        raise ConfigError(f"{field} 必须是对象")
-    return value
-
-
-def _text(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{field} 必须是非空字符串")
-    return value.strip()
-
-
-def _boolean(value: object, field: str, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if type(value) is not bool:
-        raise ConfigError(f"{field} 必须是 true 或 false")
-    return value
-
-
-def _clock(value: object, field: str) -> str:
-    if type(value) is int and 0 <= value < 1440:
-        value = f"{value // 60:02d}:{value % 60:02d}"
-    if not isinstance(value, str) or not TIME_RE.fullmatch(value):
-        raise ConfigError(f"{field} 必须是 HH:MM")
-    return value
-
-
 def _optional_clock(section: dict, enabled: bool, key: str, field: str) -> str | None:
     value = section.get(key)
     if enabled:
@@ -92,11 +68,7 @@ def load(path: Path = CONFIG_FILE) -> MonitorConfig:
     except (OSError, yaml.YAMLError) as exc:
         raise ConfigError(f"Monitor 配置读取失败：{exc}") from exc
     root = _mapping(document, "config.yml")
-    timezone = _text(root.get("timezone"), "timezone")
-    try:
-        ZoneInfo(timezone)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ConfigError("timezone 必须是有效的 IANA 时区，例如 Asia/Shanghai") from exc
+    timezone = _timezone(root.get("timezone"), "timezone")
     manager = _mapping(root.get("manager"), "manager")
     power = _mapping(manager.get("power-api"), "manager.power-api")
     provider = _text(power.get("provider"), "manager.power-api.provider")

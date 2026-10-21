@@ -29,7 +29,7 @@ QQ Gateway / QQ HTTP API
             │                    targets.py ──> data/qqbot.json
             │
             ├──> schedule.py ──> data/state.json
-            ├──> power.py ──> 云厂商 Provider
+            ├──> power_sdk.py ──> 云厂商 Provider
             └──> manager_sdk.py ──> Manager HTTPS API
 
 monitor.sh ──> Docker Compose ──> app.py 组装以上服务
@@ -50,6 +50,7 @@ monitor/
 ├── src/
 │   ├── app.py          # 依赖组装、进程入口与日志
 │   ├── config.py       # 配置与密钥校验
+│   ├── config_sdk.py   # 共享配置类型校验
 │   ├── schedule.py     # 电源日程、状态机和聚合服务循环
 │   ├── qqbot.py        # QQ 权限、订阅和业务服务路由
 │   ├── network.py      # QQ token、WebSocket 和 HTTP 收发
@@ -57,7 +58,7 @@ monitor/
 │   ├── message.yml     # 默认文案、按钮文案和布局
 │   ├── targets.py      # 管理员、订阅目标和待审批申请
 │   ├── manager_sdk.py  # 受限 Manager API 客户端
-│   ├── power.py        # 通用云电源状态机
+│   ├── power_sdk.py    # 通用云电源状态机
 │   ├── providers/
 │   └── requirements.txt
 └── data/
@@ -83,7 +84,7 @@ monitor/
 - `targets.py` 是 QQ 身份与订阅的持久化真源，不依赖网络传输。
 - `schedule.py` 管理电源日程和持久化状态；QQ Bot 通过注入的函数调用它，不直接
   读写 `state.json`。
-- `power.py` 负责 Provider 加载和幂等的 status/start/stop 状态机。
+- `power_sdk.py` 负责 Provider 加载和幂等的 status/start/stop 状态机。
 
 YAML 可调整文案、按钮名称、顺序和显隐，但不得执行 Python/Shell。新增业务行为
 必须先在 `qqbot.py` 注册稳定服务 ID，再由 `message.yml` 引用。
@@ -205,7 +206,7 @@ def start(instance_id: str, region: str, secret_id: str, secret_key: str) -> dic
 def stop(instance_id: str, region: str, secret_id: str, secret_key: str) -> dict: ...
 ```
 
-返回值由 `power.py` 统一解析为云实例状态。Provider 只适配厂商 API，不复制等待、
+返回值由 `power_sdk.py` 统一解析为云实例状态。Provider 只适配厂商 API，不复制等待、
 幂等和业务判断。
 
 ## 安全与日志

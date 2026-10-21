@@ -1,4 +1,4 @@
-"""MCSP 共享可观测性：日志配置、上下文和敏感信息脱敏。"""
+"""MCSP 共享可观测性 SDK：日志配置、上下文和敏感信息脱敏。"""
 
 from __future__ import annotations
 

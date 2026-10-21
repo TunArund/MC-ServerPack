@@ -12,9 +12,12 @@ terminal/
 ├── .env.example
 ├── requirements.txt
 ├── src/
+│   ├── config_sdk.py
+│   ├── docker_sdk.py
 │   ├── manager_sdk.py
-│   ├── observability.py
-│   ├── power.py
+│   ├── modpack_sdk.py
+│   ├── observability_sdk.py
+│   ├── power_sdk.py
 │   └── providers/
 ├── logs/
 ├── modpacks/
