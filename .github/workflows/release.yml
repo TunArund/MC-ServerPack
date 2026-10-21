@@ -59,7 +59,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: linux-release
-          path: dev/release/shared
+          path: ${{ runner.temp }}/linux-release
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -69,7 +69,7 @@ jobs:
         run: |
           $version = "${{ inputs.version || github.ref_name }}" -replace '^v', ''
           New-Item -ItemType Directory -Force "dev/release/dist/$version" | Out-Null
-          $data = Get-ChildItem "dev/release/shared" -Recurse -Filter "mcsp-data.zip" | Select-Object -First 1
+          $data = Get-ChildItem "$env:RUNNER_TEMP/linux-release" -Recurse -Filter "mcsp-data.zip" | Select-Object -First 1
           if (-not $data) { throw "linux-release does not contain mcsp-data.zip" }
           Copy-Item $data.FullName "dev/release/dist/$version/mcsp-data.zip"
           python dev/release/release.py --version $version build platform --platform windows
