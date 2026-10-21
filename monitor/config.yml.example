@@ -11,7 +11,7 @@ manager:
   api:
     host: manageraddr
     port: 27016
-  auto-start: true
+  auto-start: false
   start-at: '19:55'
-  auto-stop: true
+  auto-stop: false
   stop-at: '23:05'

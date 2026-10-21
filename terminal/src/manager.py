@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 from . import remote
 from .config import (
-    CONFIG_FILE, ROOT, SOURCE_ROOT, ManagerConfig, load_env, load_manager,
+    CONFIG_FILE, MANAGER_STATE_ROOT, ROOT, SOURCE_ROOT, ManagerConfig, load_env, load_manager,
     render_runtime_section,
 )
 from .deploy import RuntimeDeployment
@@ -60,7 +60,7 @@ class Manager:
         self.config_path = config_path
         self.config = config or load_manager(config_path)
         self.transport = transport or remote.Transport()
-        self.tls_directory = SOURCE_ROOT / "manager/data/tls"
+        self.tls_directory = MANAGER_STATE_ROOT / "tls"
         self.endpoint = self.config.endpoint
         self.deployment = RuntimeDeployment(
             SOURCE_ROOT / "manager", self.endpoint, "manager.sh",

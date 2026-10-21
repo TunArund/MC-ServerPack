@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import inspect
+import pkgutil
 import re
 import sys
 import time
@@ -30,12 +32,24 @@ def _provider_source(provider: str, providers_dir: Path) -> Path:
     return providers_dir / f"{provider}.py"
 
 
-def list_providers(*, providers_dir: Path = PROVIDERS_DIR) -> tuple[str, ...]:
-    if not providers_dir.is_dir():
-        return ()
+def list_providers(*, providers_dir: Path | None = None) -> tuple[str, ...]:
+    if providers_dir is not None:
+        if not providers_dir.is_dir():
+            return ()
+        return tuple(sorted(
+            path.stem for path in providers_dir.glob("*.py")
+            if path.name != "__init__.py" and PROVIDER_ID_RE.fullmatch(path.stem)
+        ))
+    package_name = f"{__package__}.providers"
+    try:
+        package = importlib.import_module(package_name)
+    except ModuleNotFoundError as exc:
+        if exc.name == package_name:
+            return ()
+        raise
     return tuple(sorted(
-        path.stem for path in providers_dir.glob("*.py")
-        if path.name != "__init__.py" and PROVIDER_ID_RE.fullmatch(path.stem)
+        item.name for item in pkgutil.iter_modules(package.__path__)
+        if PROVIDER_ID_RE.fullmatch(item.name)
     ))
 
 
@@ -54,8 +68,23 @@ def check_provider(adapter: ModuleType, *, name: str = "provider") -> None:
 
 
 def load_provider(
-    provider: str, *, providers_dir: Path = PROVIDERS_DIR,
+    provider: str, *, providers_dir: Path | None = None,
 ) -> ModuleType:
+    if not PROVIDER_ID_RE.fullmatch(provider):
+        raise ProviderError("无效 provider ID；仅允许大小写字母、数字和下划线")
+    if providers_dir is None:
+        module_name = f"{__package__}.providers.{provider}"
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            if exc.name == module_name:
+                raise ProviderError(f"未找到 provider：{provider}.py") from exc
+            raise ProviderError(f"provider 加载失败：{provider}.py：{exc}") from exc
+        except Exception as exc:
+            raise ProviderError(f"provider 加载失败：{provider}.py：{exc}") from exc
+        check_provider(module, name=f"{provider}.py")
+        return module
+
     source = _provider_source(provider, providers_dir)
     if not source.is_file():
         raise ProviderError(f"未找到 provider：{source.name}")

@@ -96,12 +96,15 @@ class RuntimeDeploymentTests(unittest.TestCase):
             ["bash", "-n"], input=options["input_text"], text=True, check=True,
         )
 
-    def test_docker_script_can_be_loaded_from_one_file_bundle(self) -> None:
+    def test_docker_script_can_be_loaded_from_data_tree(self) -> None:
         bundle = self.root / "bundle"
-        resource = bundle / "terminal/src/docker-install.sh"
+        resource = bundle / "data/docker-install.sh"
         resource.parent.mkdir(parents=True)
         resource.write_text("#!/bin/sh\necho bundled\n", encoding="utf-8")
-        with patch.object(sys, "_MEIPASS", str(bundle), create=True):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", str(bundle / "mcsp.exe")),
+        ):
             self.assertEqual(_resource("docker-install.sh"), resource)
 
     def test_logged_command_collapses_success_and_keeps_full_log(self) -> None:

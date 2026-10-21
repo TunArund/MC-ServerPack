@@ -1,13 +1,13 @@
 # 发行设计
 
-本文记录 MC-ServerPack 的共享源码同步、独立组件打包、跨平台 Terminal 和捆绑发行方案。
+本文记录 MC-ServerPack 的共享源码同步、独立组件打包、跨平台便携运行时和模块化发行方案。
 构建入口已经实现，并由 `.github/workflows/release.yml` 在 Linux 与 Windows 原生 runner
 上构建。本文同时保留后续本地 `modpack` 领域抽取的实施边界；尚未实现的命令不能仅凭
 出现在本文中就视为可用功能。
 
 ## 目录边界
 
-所有发行相关源码、设计、暂存文件和产物统一放在 `dev/release/`，不得再散落到 `dev/`
+所有发行相关源码、设计、暂存文件和产物统一放在 `dev/release/`，不得散落到 `dev/`
 根目录：
 
 ```text
@@ -26,38 +26,48 @@ GitHub 要求工作流入口位于 `.github/workflows/`，因此该目录中的 
 
 ## 目标产物
 
-一次正式发行生成三份独立组件包和一份捆绑包。Terminal 按宿主平台分别构建，Manager
-与 Monitor 始终部署到 Linux Docker 主机，其源码包与操作 Terminal 的平台无关。
+一次正式发行只生成两个首次安装包、一个平台无关的数据更新包和两个独立服务端组件包。
+不再提供 Terminal one-file、Terminal 独立包或另行命名的 bundle。
 
 ```text
 dev/release/dist/<version>/
-├── mc-serverpack-terminal-linux-x64.tar.gz
-├── mc-serverpack-terminal-windows-x64.zip
-├── mc-serverpack-manager.tar.gz
-├── mc-serverpack-monitor.tar.gz
-├── mc-serverpack-bundle-linux-x64.tar.gz
-├── mc-serverpack-bundle-windows-x64.zip
-├── manifest.json
-└── checksums.sha256
+├── mcsp-linux-x64.tar.gz
+├── mcsp-windows-x64.zip
+├── mcsp-data.zip
+├── mcsp-manager.tar.gz
+├── mcsp-monitor.tar.gz
+└── release.json
 ```
 
-捆绑包不是第四套源码。它组合相同版本的 Terminal 可执行文件以及 Manager、Monitor 两个
-payload，方便 Terminal 直接部署：
+完整平台包分为稳定运行库、可替换程序数据和用户数据：
 
 ```text
 MC-ServerPack/
 ├── mcsp[.exe]
-├── config.yml.example
-├── .env.example
+├── lib/                Python 运行时与第三方依赖，低频更新
+├── data/               可由 mcsp-data.zip 整体替换
+│   ├── mcsp.pyz        Terminal 业务代码
+│   ├── version.json
+│   ├── config.yml.example
+│   ├── .env.example
+│   ├── docker-install.sh
+│   ├── modpacks/template/
+│   ├── manager/        可直接同步到远端的 Manager 发行树
+│   └── monitor/        可直接同步到远端的 Monitor 发行树
+├── config.yml          用户配置，不随更新覆盖
+├── .env                用户密钥，不随更新覆盖
 ├── logs/
-├── modpacks/
-└── payloads/
-    ├── manager/        可直接同步到远端的 Manager 发行树
-    └── monitor/        可直接同步到远端的 Monitor 发行树
+├── state/              TLS CA 等 Terminal 持久状态，不随更新覆盖
+└── modpacks/           用户整合包，不随更新覆盖
 ```
 
-PyInstaller 单文件模式只封装 Terminal 自身；捆绑包在可执行文件旁保留展开后的部署资源，
-避免运行时解压到系统临时目录，也避免把 `_MEIPASS` 误当作用户数据目录。
+`mcsp-data.zip` 只包含完整的 `data/`，同时适用于 Windows 与 Linux。完整平台包通过
+PyInstaller onedir 生成小型 `mcsp[.exe]` 启动器和 `lib/`；启动器从相邻的
+`data/mcsp.pyz` 加载 Terminal，不把业务源码编译进启动器。只有 Python 或第三方依赖变化
+时才需要重新下载完整平台包，普通源码与 Manager/Monitor 更新只下载 `mcsp-data.zip`。
+
+`release.json` 是唯一发行元数据，记录版本、运行时兼容版本、commit、dirty 状态以及每个
+资产的大小和 SHA-256；不再单独生成 `manifest.json` 与 `checksums.sha256`。
 
 ## 本地整合包约定
 
@@ -117,28 +127,30 @@ modpack_sdk.py
 ```text
 python dev/release/release.py sync
 python dev/release/release.py check
-python dev/release/release.py build terminal
+python dev/release/release.py build data
+python dev/release/release.py build platform --platform windows
+python dev/release/release.py build platform --platform linux
 python dev/release/release.py build manager
 python dev/release/release.py build monitor
-python dev/release/release.py build bundle
 python dev/release/release.py build all
 python dev/release/release.py verify
-python dev/release/release.py checksums
+python dev/release/release.py metadata
 ```
 
 - `sync`：同步共享源码，不构建产物。
 - `check`：检查 Git 版本、共享副本、组件清单、禁止的跨组件导入和必要资源。
 - `build`：在 `dev/release/build/` 暂存，在 `dev/release/dist/<version>/` 原子生成产物。
 - `verify`：解压到系统临时目录并从发行内容运行检查，不从源码树补文件。
-- `checksums`：为最终产物生成 SHA-256，并写包含版本、commit、平台和文件清单的 manifest。
+- `metadata`：生成包含版本、运行时兼容版本、commit、大小和 SHA-256 的 `release.json`。
 
 默认拒绝从脏工作树构建正式版本；本地调试可显式使用 `--allow-dirty`，manifest 必须标记
 `dirty: true`。版本由显式 `--version` 或 Git tag 提供，不能从当前日期隐式生成。
 
 ## 组件清单
 
-Terminal 包含可执行文件、配置示例、空日志/整合包目录、Docker 安装脚本、本地整合包
-模板及许可证。不得包含真实 `config.yml`、`.env`、日志、缓存、测试或用户整合包。
+`data/` 包含 Terminal `mcsp.pyz`、配置示例、Docker 安装脚本、本地整合包模板以及
+Manager/Monitor 两棵独立发行树。不得包含真实 `config.yml`、`.env`、日志、缓存、测试或
+用户整合包。平台完整包额外包含启动器、`lib/`、空日志目录和空整合包目录。
 
 Manager 包含 `manager.sh`、`src/`、`runtime/`、`modpacks/template/`、配置示例及空数据目录；
 Monitor 包含 `monitor.sh`、`src/`、Dockerfile、Compose、配置示例及空数据目录。两者均不得
@@ -146,11 +158,12 @@ Monitor 包含 `monitor.sh`、`src/`、Dockerfile、Compose、配置示例及空
 
 ## Windows Terminal
 
-Windows 只运行 Terminal，Manager 与 Monitor 仍部署到 Linux。Windows 可执行文件由
-Windows runner 使用 PyInstaller 构建，不从 Linux 交叉编译。运行时不能依赖 Bash、WSL、
-本机 Docker、系统 Python、`ssh` 或 `scp`；SSH/SFTP 使用 Paramiko。
+Windows 只运行 Terminal，Manager 与 Monitor 仍部署到 Linux。Windows 启动器与 `lib/`
+由 Windows runner 使用 PyInstaller onedir 构建，不从 Linux 交叉编译。运行时不能依赖
+Bash、WSL、本机 Docker、系统 Python、`ssh` 或 `scp`；SSH/SFTP 使用 Paramiko。
 
-构建必须显式收集动态 Provider、`docker-install.sh`、配置模板、modpack 模板和 `tzdata`。
+构建必须在 `lib/` 收集 Paramiko、PyYAML、腾讯云 SDK 和 `tzdata`；动态 Provider、
+`docker-install.sh`、配置模板与 modpack 模板属于 `data/`。
 所有路径使用 `pathlib`；临时目录使用 `tempfile`；不得依赖 POSIX chmod、符号链接或
 `fcntl`。Windows 包以 ZIP 分发，避免解压工具错误处理可执行权限。
 
@@ -160,8 +173,9 @@ Windows 与 Linux Terminal 使用相同 Python 领域逻辑，不维护 Windows 
 
 ## CI 与验收
 
-Ubuntu runner 构建 Manager、Monitor、Linux Terminal 和 Linux Bundle；Windows runner
-构建 Windows Terminal。最终汇总 Job 只组合已经校验且 commit 相同的产物。
+Ubuntu runner 构建 Manager、Monitor、`mcsp-data.zip` 和 Linux 完整包；Windows runner
+构建 Windows 完整包。最终汇总 Job 只收集已经校验且 commit 相同的产物并生成
+`release.json`。
 
 每个平台至少验证：
 
@@ -176,11 +190,13 @@ mcsp[.exe] modpack remove release-test --force
 mcsp[.exe] modpack import release-test
 ```
 
-还必须验证三个独立包不读取源码树外文件、捆绑包中的 payload 哈希与独立包一致、归档不含
-密钥与运行数据、shell 入口通过语法检查、Python 模块可编译、完整单元测试通过。
+还必须验证独立包不读取源码树外文件、`data/manager` 与 `data/monitor` 分别和独立包一致、
+两个平台完整包的 `data/` 与 `mcsp-data.zip` 一致、归档不含密钥与运行数据、shell 入口通过
+语法检查、Python 模块可编译、完整单元测试通过。
 
 ## 实施状态
 
 发行前架构项已经完成：共享整合包领域层、本地 `modpack` 六个命令、只消费标准归档的
 `deploy modpack <id>`、移除 `local manager`、共享 Docker 命令与镜像部署原语、共享源码
-同步检查、跨平台 PyInstaller 构建、manifest、checksum 与 CI 发布流程。
+共享同步、模块化 `lib/`/`data/` 跨平台构建、单一 `release.json`、发行验证与新版 CI
+发布流程均已实现。

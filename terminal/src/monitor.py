@@ -9,7 +9,7 @@ from typing import Optional
 
 from . import remote
 from .config import (
-    CONFIG_FILE, SOURCE_ROOT, MonitorConfig, load_env, load_monitor,
+    CONFIG_FILE, MANAGER_STATE_ROOT, SOURCE_ROOT, MonitorConfig, load_env, load_monitor,
     render_runtime_section,
 )
 from .deploy import DeployError, RuntimeDeployment
@@ -49,7 +49,7 @@ class Monitor:
                 "Monitor 需要与 Manager 相同的 MANAGER_API_KEY；"
                 "请先部署 Manager，或在 .env 中填入该密钥"
             )
-        ca = SOURCE_ROOT / "manager/data/tls/ca.crt"
+        ca = MANAGER_STATE_ROOT / "tls/ca.crt"
         return (
             ((ca, "data/tls/ca.crt", 0o644),) if ca.is_file() else ()
         )

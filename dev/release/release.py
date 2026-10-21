@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -14,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+import zipapp
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +41,7 @@ EXCLUDED_NAMES = {
     "build", "dist",
 }
 SECRET_NAMES = {".env", "config.yml"}
+RUNTIME_FORMAT = 1
 
 
 class ReleaseError(RuntimeError):
@@ -219,41 +223,137 @@ def zip_directory(source: Path, destination: Path, root_name: str) -> None:
 def build_component(context: Context, component: str) -> Path:
     stage = BUILD_ROOT / context.version / component
     stage_component(component, stage)
-    output = context.output / f"mc-serverpack-{component}.tar.gz"
+    output = context.output / f"mcsp-{component}.tar.gz"
     tar_directory(stage, output, component)
     return output
 
 
-def build_terminal(context: Context, target_platform: str) -> Path:
-    suffix = "windows-x64.zip" if target_platform == "windows" else "linux-x64.tar.gz"
-    stage = BUILD_ROOT / context.version / f"terminal-{target_platform}" / "MC-ServerPack"
-    if stage.parent.exists():
-        shutil.rmtree(stage.parent)
-    stage.mkdir(parents=True)
-    entry = stage.parent / "entry.py"
-    entry.write_text("from terminal.src.cli import main\nraise SystemExit(main())\n", encoding="utf-8")
-    separator = ";" if os.name == "nt" else ":"
-    executable_name = "mcsp.exe" if target_platform == "windows" else "mcsp"
-    run([
-        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
-        "--name", "mcsp", "--paths", str(ROOT),
-        "--distpath", str(stage), "--workpath", str(stage.parent / "pyinstaller"),
-        "--specpath", str(stage.parent),
-        "--add-data", f"{ROOT / 'terminal/src/docker-install.sh'}{separator}terminal/src",
-        "--collect-all", "tzdata",
-        "--hidden-import", "terminal.src.providers.tencent",
-        "--hidden-import", "terminal.src.providers.example",
-        str(entry),
-    ])
-    built = stage / executable_name
-    if not built.is_file():
-        raise ReleaseError(f"PyInstaller 未生成 {built}")
+def _build_application_archive(destination: Path) -> None:
+    source = destination.parent / ".mcsp-app"
+    if source.exists():
+        shutil.rmtree(source)
+    (source / "terminal/src").mkdir(parents=True)
+    (source / "terminal/__init__.py").write_text("", encoding="utf-8")
+    (source / "terminal/src/__init__.py").write_text("", encoding="utf-8")
+    for path in sorted((ROOT / "terminal/src").rglob("*")):
+        relative = path.relative_to(ROOT / "terminal/src")
+        if path.is_file() and "__pycache__" not in relative.parts and path.suffix == ".py":
+            target = source / "terminal/src" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+    (source / "__main__.py").write_text(
+        "from terminal.src.cli import main\nraise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    zipapp.create_archive(source, destination, compressed=True)
+    shutil.rmtree(source)
+
+
+def stage_data(context: Context, destination: Path) -> None:
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    _build_application_archive(destination / "mcsp.pyz")
     for name in ("config.yml.example", ".env.example", "readme.md"):
-        shutil.copy2(ROOT / "terminal" / name, stage / name)
-    for name in ("logs", "modpacks", "payloads"):
+        shutil.copy2(ROOT / "terminal" / name, destination / name)
+    shutil.copy2(ROOT / "lib/docker-install.sh", destination / "docker-install.sh")
+    shutil.copytree(ROOT / "terminal/modpacks/template", destination / "modpacks/template")
+    for component in ("manager", "monitor"):
+        stage_component(component, destination / component)
+    (destination / "version.json").write_text(
+        json.dumps({
+            "format": 1,
+            "version": context.version,
+            "runtime-format": RUNTIME_FORMAT,
+            "commit": git("rev-parse", "HEAD"),
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def build_data(context: Context) -> Path:
+    data = BUILD_ROOT / context.version / "data" / "data"
+    stage_data(context, data)
+    output = context.output / "mcsp-data.zip"
+    zip_directory(data, output, "data")
+    return output
+
+
+def _extract_data(context: Context, destination: Path) -> None:
+    archive = context.output / "mcsp-data.zip"
+    if not archive.is_file():
+        build_data(context)
+    extract_archive(archive, destination)
+
+
+def application_imports() -> tuple[str, ...]:
+    """Return absolute imports needed by the external Terminal application."""
+    names: set[str] = set()
+    for path in (ROOT / "terminal/src").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names.add(node.module)
+    result = []
+    for name in sorted(names):
+        if name.split(".", 1)[0] in {"terminal", "manager", "monitor", "lib"}:
+            continue
+        try:
+            available = importlib.util.find_spec(name) is not None
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            available = False
+        if available:
+            result.append(name)
+    return tuple(result)
+
+
+def build_platform(context: Context, target_platform: str) -> Path:
+    expected_os = "windows" if os.name == "nt" else "linux"
+    if target_platform != expected_os:
+        raise ReleaseError(f"{target_platform} 运行库必须在对应原生平台构建")
+    root = BUILD_ROOT / context.version / f"platform-{target_platform}"
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    entry = root / "launcher.py"
+    entry.write_text(
+        "from pathlib import Path\n"
+        "import importlib\n"
+        "import sys\n\n"
+        "archive = Path(sys.executable).resolve().parent / 'data/mcsp.pyz'\n"
+        "if not archive.is_file():\n"
+        "    raise SystemExit(f'缺少程序数据：{archive}')\n"
+        "sys.path.insert(0, str(archive))\n"
+        "main = importlib.import_module('terminal.src.cli').main\n"
+        "raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    dist = root / "pyinstaller-dist"
+    command = [
+        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
+        "--contents-directory", "lib", "--name", "mcsp",
+        "--distpath", str(dist), "--workpath", str(root / "pyinstaller"),
+        "--specpath", str(root),
+        "--collect-all", "tzdata",
+    ]
+    for name in application_imports():
+        command.extend(("--hidden-import", name))
+    command.append(str(entry))
+    run(command)
+    built = dist / "mcsp"
+    stage = root / "MC-ServerPack"
+    shutil.copytree(built, stage)
+    executable = stage / ("mcsp.exe" if target_platform == "windows" else "mcsp")
+    if not executable.is_file() or not (stage / "lib").is_dir():
+        raise ReleaseError("PyInstaller 未生成模块化启动器与 lib 运行库")
+    _extract_data(context, stage)
+    for name in ("logs", "modpacks", "state"):
         (stage / name).mkdir()
-    shutil.copytree(ROOT / "terminal/modpacks/template", stage / "modpacks/template")
-    output = context.output / f"mc-serverpack-terminal-{suffix}"
+    suffix = "windows-x64.zip" if target_platform == "windows" else "linux-x64.tar.gz"
+    output = context.output / f"mcsp-{suffix}"
     if target_platform == "windows":
         zip_directory(stage, output, "MC-ServerPack")
     else:
@@ -279,39 +379,6 @@ def _check_archive_names(names) -> None:
             raise ReleaseError(f"归档包含不安全路径：{name}")
 
 
-def build_bundle(context: Context, target_platform: str) -> Path:
-    terminal_suffix = "windows-x64.zip" if target_platform == "windows" else "linux-x64.tar.gz"
-    terminal_archive = context.output / f"mc-serverpack-terminal-{terminal_suffix}"
-    manager_archive = context.output / "mc-serverpack-manager.tar.gz"
-    monitor_archive = context.output / "mc-serverpack-monitor.tar.gz"
-    for path in (terminal_archive, manager_archive, monitor_archive):
-        if not path.is_file():
-            raise ReleaseError(f"构建 bundle 前缺少：{path.name}")
-    stage = BUILD_ROOT / context.version / f"bundle-{target_platform}"
-    if stage.exists():
-        shutil.rmtree(stage)
-    stage.mkdir(parents=True)
-    extract_archive(terminal_archive, stage)
-    payloads = stage / "MC-ServerPack/payloads"
-    payloads.mkdir(exist_ok=True)
-    # Keep deployable trees beside the frozen executable.  A one-file
-    # executable's modules are extracted to a transient PyInstaller directory,
-    # so runtime deployment must never depend on that directory.
-    for name, archive in (("manager", manager_archive), ("monitor", monitor_archive)):
-        extracted = stage / f".{name}-payload"
-        extracted.mkdir()
-        extract_archive(archive, extracted)
-        shutil.move(str(extracted / name), str(payloads / name))
-        extracted.rmdir()
-    suffix = "windows-x64.zip" if target_platform == "windows" else "linux-x64.tar.gz"
-    output = context.output / f"mc-serverpack-bundle-{suffix}"
-    if target_platform == "windows":
-        zip_directory(stage / "MC-ServerPack", output, "MC-ServerPack")
-    else:
-        tar_directory(stage / "MC-ServerPack", output, "MC-ServerPack")
-    return output
-
-
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -324,31 +391,34 @@ def write_metadata(context: Context) -> None:
     context.output.mkdir(parents=True, exist_ok=True)
     artifacts = sorted(
         path for path in context.output.iterdir()
-        if path.is_file() and path.name not in {"manifest.json", "checksums.sha256"}
+        if path.is_file() and path.name != "release.json"
     )
-    entries = [{"name": path.name, "size": path.stat().st_size, "sha256": sha256(path)} for path in artifacts]
-    manifest = {
-        "format": 1, "version": context.version,
-        "commit": git("rev-parse", "HEAD"), "dirty": dirty(),
-        "artifacts": entries,
+    entries = {
+        path.name: {"size": path.stat().st_size, "sha256": sha256(path)}
+        for path in artifacts
     }
-    (context.output / "manifest.json").write_text(
+    manifest = {
+        "format": 1, "version": context.version, "runtime-format": RUNTIME_FORMAT,
+        "commit": git("rev-parse", "HEAD"), "dirty": dirty(),
+        "files": entries,
+    }
+    (context.output / "release.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-    )
-    (context.output / "checksums.sha256").write_text(
-        "".join(f"{item['sha256']}  {item['name']}\n" for item in entries), encoding="utf-8",
     )
 
 
 def verify(context: Context) -> None:
-    manifest_path = context.output / "manifest.json"
+    manifest_path = context.output / "release.json"
     if not manifest_path.is_file():
-        raise ReleaseError("缺少 manifest.json；请先运行 checksums")
+        raise ReleaseError("缺少 release.json；请先运行 metadata")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for item in manifest.get("artifacts", []):
-        path = context.output / item["name"]
-        if not path.is_file() or sha256(path) != item["sha256"]:
-            raise ReleaseError(f"发行校验失败：{path.name}")
+    if manifest.get("runtime-format") != RUNTIME_FORMAT:
+        raise ReleaseError("release.json runtime-format 不兼容")
+    for name, item in manifest.get("files", {}).items():
+        path = context.output / name
+        if (not path.is_file() or path.stat().st_size != item.get("size")
+                or sha256(path) != item.get("sha256")):
+            raise ReleaseError(f"发行校验失败：{name}")
     with tempfile.TemporaryDirectory(prefix="mcsp-release-") as raw:
         root = Path(raw)
         extracted: dict[str, Path] = {}
@@ -361,26 +431,37 @@ def verify(context: Context) -> None:
                 for path in target.rglob("*"):
                     if path.is_file() and path.name == ".env":
                         raise ReleaseError(f"发行包包含真实配置或密钥：{archive.name}:{path.name}")
-        manager = extracted.get("mc-serverpack-manager.tar.gz")
-        monitor = extracted.get("mc-serverpack-monitor.tar.gz")
-        for platform_name in ("linux-x64.tar.gz", "windows-x64.zip"):
-            bundle = extracted.get(f"mc-serverpack-bundle-{platform_name}")
-            if not bundle:
-                continue
+        manager = extracted.get("mcsp-manager.tar.gz")
+        monitor = extracted.get("mcsp-monitor.tar.gz")
+        data = extracted.get("mcsp-data.zip")
+        if data:
+            version = json.loads((data / "data/version.json").read_text(encoding="utf-8"))
+            if version.get("version") != context.version or version.get("runtime-format") != RUNTIME_FORMAT:
+                raise ReleaseError("mcsp-data.zip 版本信息不正确")
             for name, standalone in (("manager", manager), ("monitor", monitor)):
-                if standalone and _tree_hash(bundle / "MC-ServerPack/payloads" / name) != _tree_hash(standalone / name):
-                    raise ReleaseError(f"捆绑包的 {name} payload 与独立包不一致")
+                if standalone and _tree_hash(data / "data" / name) != _tree_hash(standalone / name):
+                    raise ReleaseError(f"data/{name} 与独立包不一致")
+        for platform_name in ("linux-x64.tar.gz", "windows-x64.zip"):
+            package = extracted.get(f"mcsp-{platform_name}")
+            if not package:
+                continue
+            installation = package / "MC-ServerPack"
+            if not (installation / "lib").is_dir() or not (installation / "data/mcsp.pyz").is_file():
+                raise ReleaseError(f"完整包结构不正确：mcsp-{platform_name}")
+            if data and _tree_hash(installation / "data") != _tree_hash(data / "data"):
+                raise ReleaseError(f"完整包 data 与 mcsp-data.zip 不一致：{platform_name}")
         executable = (
-            extracted.get("mc-serverpack-terminal-windows-x64.zip") / "MC-ServerPack/mcsp.exe"
-            if os.name == "nt" and extracted.get("mc-serverpack-terminal-windows-x64.zip") else
-            extracted.get("mc-serverpack-terminal-linux-x64.tar.gz") / "MC-ServerPack/mcsp"
-            if os.name != "nt" and extracted.get("mc-serverpack-terminal-linux-x64.tar.gz") else None
+            extracted.get("mcsp-windows-x64.zip") / "MC-ServerPack/mcsp.exe"
+            if os.name == "nt" and extracted.get("mcsp-windows-x64.zip") else
+            extracted.get("mcsp-linux-x64.tar.gz") / "MC-ServerPack/mcsp"
+            if os.name != "nt" and extracted.get("mcsp-linux-x64.tar.gz") else None
         )
         if executable:
             try:
                 smoke_commands = (
                     ("--help",),
                     ("config", "init"),
+                    ("config", "check"),
                     ("modpack", "create", "release-test"),
                     ("modpack", "check", "release-test"),
                     ("modpack", "export", "release-test"),
@@ -415,10 +496,10 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("sync")
     commands.add_parser("check")
     build = commands.add_parser("build")
-    build.add_argument("target", choices=("terminal", "manager", "monitor", "bundle", "all"))
+    build.add_argument("target", choices=("data", "platform", "manager", "monitor", "all"))
     build.add_argument("--platform", choices=("linux", "windows"), default=("windows" if os.name == "nt" else "linux"))
     commands.add_parser("verify")
-    commands.add_parser("checksums")
+    commands.add_parser("metadata")
     return result
 
 
@@ -437,17 +518,17 @@ def main(arguments: list[str] | None = None) -> int:
             context.output.mkdir(parents=True, exist_ok=True)
             if args.target in ("manager", "monitor"):
                 build_component(context, args.target)
-            elif args.target == "terminal":
-                build_terminal(context, args.platform)
-            elif args.target == "bundle":
-                build_bundle(context, args.platform)
+            elif args.target == "data":
+                build_data(context)
+            elif args.target == "platform":
+                build_platform(context, args.platform)
             else:
                 build_component(context, "manager")
                 build_component(context, "monitor")
-                build_terminal(context, args.platform)
-                build_bundle(context, args.platform)
+                build_data(context)
+                build_platform(context, args.platform)
             write_metadata(context)
-        elif args.command == "checksums":
+        elif args.command == "metadata":
             write_metadata(context)
         elif args.command == "verify":
             verify(context)

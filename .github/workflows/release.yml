@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r terminal/requirements.txt pyinstaller
-      - name: Build Linux artifacts
+      - name: Build Linux artifacts and shared data
         shell: bash
         run: |
           VERSION="${{ inputs.version || github.ref_name }}"
@@ -45,7 +45,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: dev/release/dist/
+          path: |
+            dev/release/dist/*/mcsp-linux-x64.tar.gz
+            dev/release/dist/*/mcsp-data.zip
+            dev/release/dist/*/mcsp-manager.tar.gz
+            dev/release/dist/*/mcsp-monitor.tar.gz
 
   windows:
     needs: test
@@ -56,16 +60,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r terminal/requirements.txt pyinstaller
-      - name: Build Windows Terminal
+      - name: Build Windows portable package
         shell: pwsh
         run: |
           $version = "${{ inputs.version || github.ref_name }}" -replace '^v', ''
-          python dev/release/release.py --version $version build terminal --platform windows
+          python dev/release/release.py --version $version build platform --platform windows
           python dev/release/release.py --version $version verify
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-terminal
-          path: dev/release/dist/
+          name: windows-release
+          path: dev/release/dist/*/mcsp-windows-x64.zip
 
   publish:
     needs: [linux, windows]
@@ -75,15 +79,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dev/release/collected
-      - name: Assemble Windows bundle and metadata
+      - name: Assemble release metadata
         shell: bash
         run: |
           VERSION="${{ inputs.version || github.ref_name }}"
           VERSION="${VERSION#v}"
           mkdir -p "dev/release/dist/$VERSION"
           find dev/release/collected -type f -path "*/$VERSION/*" -exec cp {} "dev/release/dist/$VERSION/" \;
-          python dev/release/release.py --version "$VERSION" --allow-dirty build bundle --platform windows
-          python dev/release/release.py --version "$VERSION" checksums
+          python dev/release/release.py --version "$VERSION" metadata
           python dev/release/release.py --version "$VERSION" verify
       - uses: actions/upload-artifact@v4
         with:

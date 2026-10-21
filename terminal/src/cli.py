@@ -16,7 +16,7 @@ from typing import Iterator, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from .config import (
-    CONFIG_FILE, ROOT, ConfigError, deployment_connection,
+    CONFIG_FILE, DATA_ROOT, ROOT, ConfigError, deployment_connection,
     deployment_host, initialize, load, load_monitor,
 )
 from .deploy import (
@@ -131,7 +131,9 @@ class CliServices:
         self.manager_runtime().deploy_modpack(pack_id)
 
     def modpack_workspace(self) -> ModpackWorkspace:
-        return ModpackWorkspace(ROOT / "modpacks")
+        return ModpackWorkspace(
+            ROOT / "modpacks", template=DATA_ROOT / "modpacks/template",
+        )
 
     def export_modpack(self, pack_id: str, destination: Path, **options) -> None:
         self.manager_runtime().export_archive(pack_id, destination, **options)

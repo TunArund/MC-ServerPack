@@ -10,10 +10,9 @@ from .docker_sdk import DockerProvisioner as SharedDockerProvisioner
 
 
 def _resource(name: str) -> Path:
-    """Locate a source resource or a resource bundled by a one-file release."""
-    bundle_root = getattr(sys, "_MEIPASS", None)
-    if bundle_root:
-        bundled = Path(bundle_root) / "terminal/src" / name
+    """Locate a source resource or a resource in the replaceable data tree."""
+    if getattr(sys, "frozen", False):
+        bundled = Path(sys.executable).resolve().parent / "data" / name
         if bundled.is_file():
             return bundled
     source = Path(__file__).resolve().with_name(name)

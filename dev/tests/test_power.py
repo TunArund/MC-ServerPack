@@ -120,6 +120,15 @@ class PowerTests(unittest.TestCase):
         self.assertEqual(adapter.status("i", "r", "", "token"), {"state": "RUNNING"})
         self.assertEqual(list_providers(providers_dir=providers), ("xxxaaa",))
 
+    def test_packaged_provider_does_not_require_a_source_file(self) -> None:
+        with patch(
+            "manager.src.power_sdk._provider_source",
+            side_effect=AssertionError("packaged provider must use package import"),
+        ):
+            adapter = load_provider("tencent")
+        self.assertIs(adapter, tencent)
+        self.assertIn("tencent", list_providers())
+
     def test_provider_requires_all_actions(self) -> None:
         providers = self.root / "providers"
         providers.mkdir()

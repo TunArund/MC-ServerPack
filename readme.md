@@ -1,189 +1,172 @@
 # MC-ServerPack
 
-面向个人 Minecraft 服务器的部署与管理工具。Terminal 在你的电脑上负责编排，Manager
-运行游戏服务端，Monitor 可选地提供定时开关机、告警和 QQ Bot。
+MC-ServerPack 是面向个人 Minecraft Java 服务器的部署与管理工具，由三个可独立部署的
+组件组成。通常只需在自己的电脑上运行 Terminal，由它通过 SSH 部署远端组件并完成日常
+管理。
+
+普通用户请从 [GitHub Releases](https://github.com/TunArund/MC-ServerPack/releases)
+下载对应平台的完整包；它包含稳定 `lib/` 运行库和可替换的 `data/` 程序层。
+使用方法见 [Terminal 手册](./terminal/readme.md)。
+
+## 架构概览
 
 ```mermaid
 flowchart LR
-  T[Terminal] -->|SSH/SFTP 部署| M[Manager]
-  T -->|HTTPS + HMAC| M
-  T -->|SSH/SFTP 部署| N[Monitor]
-  N -->|电源 API| C[Manager 服务器]
-  N -->|Manager API| M
-  Q[QQ] --> N
+  U[用户] --> T[Terminal<br/>Windows / Linux]
+  T -->|SSH / SFTP<br/>部署与配置| M[Manager<br/>游戏服务器]
+  T -->|HTTPS + HMAC<br/>日常管理| M
+  T -->|SSH / SFTP<br/>可选部署| N[Monitor<br/>常在线主机]
+  N -->|腾讯云 CVM API<br/>开机 / 关机 / 状态| C[Manager 服务器]
+  N -->|Manager API<br/>整合包状态| M
+  Q[QQ Bot] <--> N
+  M --> D[Docker]
+  D --> P[Minecraft 整合包容器]
 ```
 
-## 组件
+- **Terminal**：运行在用户电脑上，保存总配置和本地整合包，准备远端账号与 Docker，
+  部署 Manager/Monitor，并透明调用 Manager API。
+- **Manager**：运行在 Minecraft 服务器上，通过 Docker 管理多个整合包、控制台、备份、
+  导入导出和定时关服，暴露Manager HTTP API进行交互
+- **Monitor**：可选，适合放在 7×24 小时在线的主机上；负责定时开关 Manager 服务器、
+  状态监控、告警和 QQ Bot。
+- **lib**：共享 SDK 与 Provider 的源码真源。发行时复制到各组件，各组件运行时不会跨目录
+  导入 `lib/`，因此三者仍可独立部署。
 
-- **Terminal**：保存总配置，准备远端账号和 Docker，部署组件并调用 Manager API。
-- **Manager**：必需。以常驻容器管理整合包、备份、迁移和定时任务。
-- **Monitor**：可选。7×24 小时监控 Manager 服务器，通过 QQ 发送告警和公开通知。
+Manager 和 Monitor 的目标宿主机只需 Linux、SSH、Docker Engine 与 Compose 插件。
+Terminal 能协助安装 Docker，远端不需要安装本项目的 Python 环境。
 
-Manager 和 Monitor 均可独立部署，远端宿主机只需 Docker Engine 与 Compose
-插件，不需要项目 Python 环境。
+## 目录索引
 
-## 准备 Terminal
-
-Linux 发行版使用 `./mcsp`，Windows 在 CMD/PowerShell 中使用 `mcsp.exe`。
-源码用户需要 Python 3.9+：
-
-```bash
-python3 -m pip install -r terminal/requirements.txt
-./terminal/mcsp.sh --help
+```text
+MC-ServerPack/
+├── terminal/       # 本地控制端、总配置、日志和本地 modpacks 工作区
+├── manager/        # Minecraft 运行时、Manager API 和远端 modpacks
+├── monitor/        # 服务器监控、调度、告警和 QQ Bot
+├── lib/            # 共享 SDK、Docker 安装脚本和云 Provider 真源
+├── dev/            # 架构设计、测试及发行工具
+└── readme.md        # 项目架构与文档入口
 ```
 
-初始化配置：
+- [Terminal 手册](./terminal/readme.md)：下载、快速上手、本地整合包和输出方式。
+- [Manager 手册](./manager/readme.md)：独立部署、配置与全部运维命令。
+- [Monitor 手册](./monitor/readme.md)：调度、QQ Bot、告警、订阅和消息模板。
 
-```bash
-./terminal/mcsp.sh config init
-# 编辑 terminal/config.yml 和 terminal/.env
-./terminal/mcsp.sh config check
+## 组件交互
+
+### 部署链路
+
+Terminal 根据 `config.yml` 通过 SSH/SFTP 连接目标主机，检查环境、增量同步组件文件，
+再调用组件自己的安装入口。Manager 首次安装会生成 Manager API 密钥和私有 TLS CA，
+Terminal 取回后供自身与 Monitor 使用。
+
+### 管理与整合包链路
+
+`mcsp manager ...` 通过 HTTPS 调用 Manager API，并使用 `MANAGER_API_KEY` 做 HMAC
+认证。长操作进入 Manager Job 队列，Terminal 消费任务事件并显示进度。
+
+本地 `mcsp modpack ...` 只管理 `terminal/modpacks/`；远端 `mcsp manager ...` 管理
+`manager/modpacks/`。标准部署链路为：
+
+```text
+terminal/modpacks/<id>/
+  -> mcsp modpack export <id>
+terminal/modpacks/<id>.tgz
+  -> mcsp deploy modpack <id>
+manager/modpacks/<id>/
 ```
 
-`manager.timezone` 和 `monitor.timezone` 使用 IANA 时区，例如
-`Asia/Shanghai`。`manager.host` 是 Manager 主机的域名或 IP。
+### 电源与监控链路
 
-## 首次部署
-
-如果服务器只有 root，先创建普通部署用户：
-
-```bash
-./terminal/mcsp.sh deploy manager --create-user
-./terminal/mcsp.sh deploy monitor --create-user
-```
-
-然后准备 Docker 并部署：
-
-```bash
-./terminal/mcsp.sh deploy manager --install-docker
-./terminal/mcsp.sh deploy manager
-
-# 可选
-./terminal/mcsp.sh deploy monitor --install-docker
-./terminal/mcsp.sh deploy monitor
-```
-
-`deploy manager` 首次运行会在 Manager 内自动生成 `MANAGER_API_KEY` 和私有
-TLS CA。Terminal 会取回密钥和 CA；部署 Monitor 时会复用它们。
-
-检查环境：
-
-```bash
-./terminal/mcsp.sh deploy --test-all
-./terminal/mcsp.sh deploy manager --test
-./terminal/mcsp.sh deploy monitor --test
-```
-
-## 创建第一个整合包
-
-```bash
-./terminal/mcsp.sh modpack create mc-vanilla
-```
-
-将服务端 JAR 和所需文件放入
-`terminal/modpacks/mc-vanilla/src/`，再编辑
-`terminal/modpacks/mc-vanilla/config.yml`。默认会自动选择唯一的顶层 JAR 启动。
-
-```bash
-./terminal/mcsp.sh modpack check mc-vanilla
-./terminal/mcsp.sh modpack export mc-vanilla
-./terminal/mcsp.sh deploy modpack mc-vanilla
-./terminal/mcsp.sh manager start mc-vanilla
-./terminal/mcsp.sh manager enable mc-vanilla
-```
-
-`eula: true` 表示你已接受 Minecraft EULA；未接受时 Manager 会拒绝启动。
-
-## 日常命令
-
-### 部署与配置
-
-```bash
-./terminal/mcsp.sh deploy manager --source
-./terminal/mcsp.sh deploy manager --config
-./terminal/mcsp.sh deploy monitor --source
-./terminal/mcsp.sh deploy monitor --config
-./terminal/mcsp.sh deploy modpack <id>
-```
-
-### Manager 服务器电源
-
-```bash
-./terminal/mcsp.sh status manager
-./terminal/mcsp.sh start manager
-./terminal/mcsp.sh stop manager
-```
-
-`stop manager` 会先要求 Manager 停止所有整合包，成功后才关闭服务器。
-
-### 整合包
-
-```bash
-./terminal/mcsp.sh manager list
-./terminal/mcsp.sh manager status <id>
-./terminal/mcsp.sh manager start <id>
-./terminal/mcsp.sh manager stop <id>
-./terminal/mcsp.sh manager enable <id> [--now]
-./terminal/mcsp.sh manager disable <id> [--now]
-./terminal/mcsp.sh manager logs <id> --lines 100
-./terminal/mcsp.sh manager console <id> say hello
-./terminal/mcsp.sh manager property <id> online-mode false
-./terminal/mcsp.sh manager backup <id>
-./terminal/mcsp.sh manager backup list <id>
-./terminal/mcsp.sh manager restore <id> [<backup>] --auto-restart
-./terminal/mcsp.sh manager export <id> ./<id>.tgz
-./terminal/mcsp.sh manager import ./<id>.tgz
-```
-
-完整的 Manager 部署、配置和命令说明见
-[manager/readme.md](./manager/readme.md)。
-
-### Monitor
-
-```bash
-./terminal/mcsp.sh status monitor
-./terminal/mcsp.sh start monitor
-./terminal/mcsp.sh stop monitor
-./terminal/mcsp.sh monitor add-admin
-./terminal/mcsp.sh monitor test-alert
-./terminal/mcsp.sh monitor reset-messages
-./terminal/mcsp.sh monitor reset-targets
-```
-
-QQ 管理员验证、订阅和消息模板见
-[monitor/readme.md](./monitor/readme.md)。
+Terminal 可以直接调用云 Provider 开关 Manager 主机。启用 Monitor 后，Monitor 也可按
+日程调用同一 Provider，并通过 Manager API 确认服务状态。腾讯云 Provider 使用
+`DescribeInstances`、`StartInstances` 和 `StopInstances`。
 
 ## 部署账号
 
-`manager.user` 和 `monitor.user` 必须是非 root 用户。`--create-user` 会交互询问
-现有管理账号和新用户名，安装 SSH 公钥、锁定密码、授予免密 sudo，
-并在 Docker 组存在时加入该组。
-
-`--key` 接受用于 SSH 登录的私钥路径：
+`manager.user` 和 `monitor.user` 必须是普通 Linux 用户，不能使用 root。已有具备免密
+`sudo` 的普通用户时，直接写入配置即可；否则执行：
 
 ```bash
-./terminal/mcsp.sh deploy manager --create-user --key ~/.ssh/id_ed25519
+./mcsp deploy manager --create-user
+./mcsp deploy monitor --create-user  # 仅启用 Monitor 时需要
 ```
 
-## 密钥
+命令先询问现有管理员 SSH 用户名并验证登录，再询问要创建的部署用户名。它会创建或复用
+该用户、写入本机 SSH 公钥、锁定密码、授予免密 sudo；若服务器已有 `docker` 组，也会
+将新用户加入该组。创建完成后命令退出，不会同时部署运行时。
 
-`.env` 中的云 API 凭据：
+默认自动寻找 SSH 密钥，也可显式指定私钥；程序使用对应的 `.pub` 公钥：
+
+```bash
+./mcsp deploy manager --create-user --key ~/.ssh/id_ed25519
+```
+
+现有管理账号需要是 root，或已经具备免密 sudo。之后的正常部署使用新建的普通用户。
+
+## 腾讯云 API 密钥获取
+
+1. 打开 <https://console.cloud.tencent.com/cam>。
+2. 选择“新建用户”→“快速创建”。
+3. 访问方式选择：控制台登录关闭，编程访问开启。
+4. 在用户权限中选择“新建自定义策略”→“按策略语法创建”→“空白模板”。
+5. 填入以下策略：
+
+```json
+{
+  "statement": [
+    {
+      "action": [
+        "cvm:DescribeInstances",
+        "cvm:StartInstances",
+        "cvm:StopInstances"
+      ],
+      "effect": "allow",
+      "resource": [
+        "*"
+      ]
+    }
+  ],
+  "version": "2.0"
+}
+```
+
+6. 创建完成后回到 CAM，点击用户名，在“API 密钥”中选择“新建密钥”。
+7. 将得到的值填入 Terminal 的 `.env`：
 
 ```dotenv
 POWER_SECRET_ID=
 POWER_SECRET_KEY=
 ```
 
-只有 Token 时填入 `POWER_SECRET_KEY`，`POWER_SECRET_ID` 留空。Manager 和 Monitor
-控制同一台服务器时应使用同一组 AK/SK。
+不要提交或分享 `.env`。Manager 与 Monitor 控制同一台服务器时使用同一组密钥。
+`MANAGER_API_KEY` 是 Manager API 的 HMAC 密钥，不是腾讯云密钥；通常由 Manager 首次
+部署自动生成，无需手工填写。
 
-`MANAGER_API_KEY` 是 Manager API 的 HMAC 密钥，不是云厂商凭据。它通常由
-Manager 首次安装自动生成，无需手工填写。
+### 按量计费实例与固定 IP
 
-## 文档
+腾讯云 Provider 关机时使用软关机和“关机不收费”模式，具体调用见
+[`lib/providers/tencent.py`](./lib/providers/tencent.py)。这种模式下
+实例公网 IP 可能在开关机后变化；需要把 CVM 的IP调整为弹性公网 IP
+## 开发与发行
 
-- [Manager 手册](./manager/readme.md)：独立部署、配置与全部运维命令。
-- [Monitor 手册](./monitor/readme.md)：调度、QQ Bot、告警与消息模板。
-- [Manager 架构](./dev/manager.md)：内部设计、API、任务、日志和目录边界。
-- [Monitor 架构](./dev/monitor.md)：状态机、QQ 分层、命令、订阅和通知设计。
-- [开发准则](./dev/agents.md)：通用开发约束、测试环境与 TODO。
+源码用户可在仓库根目录执行：
+
+```bash
+python3 -m pip install -r terminal/requirements.txt
+./terminal/mcsp.sh --help
+python3 -m unittest discover -s dev/tests -p 'test_*.py'
+python3 dev/release/release.py check
+```
+
+共享源码只修改 `lib/` 真源，再由发行工具同步：
+
+```bash
+python3 dev/release/release.py --allow-dirty sync
+```
+
+开发文档：
+
+- [Manager 架构](./dev/manager.md)
+- [Monitor 架构](./dev/monitor.md)
+- [开发准则](./dev/agents.md)
+- [发行说明](./dev/release/readme.md)

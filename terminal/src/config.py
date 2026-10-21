@@ -27,13 +27,17 @@ except ModuleNotFoundError:  # Report a project-specific error from ``load``.
 
 
 if getattr(sys, "frozen", False):
-    # PyInstaller one-file extracts Python modules below sys._MEIPASS.  User
-    # configuration and bundled deployment resources live beside mcsp.exe.
+    # The portable launcher and stable runtime live beside the replaceable
+    # data tree. User configuration remains at the installation root.
     ROOT = Path(sys.executable).resolve().parent
-    SOURCE_ROOT = ROOT / "payloads"
+    DATA_ROOT = ROOT / "data"
+    SOURCE_ROOT = DATA_ROOT
+    MANAGER_STATE_ROOT = ROOT / "state/manager"
 else:
     ROOT = Path(__file__).resolve().parents[1]
+    DATA_ROOT = ROOT
     SOURCE_ROOT = ROOT.parent
+    MANAGER_STATE_ROOT = SOURCE_ROOT / "manager/data"
 CONFIG_FILE = ROOT / "config.yml"
 ENV_FILE = ROOT / ".env"
 MEMORY_RE = re.compile(r"[1-9]\d*[kKmMgGtT](?:[bB])?")
@@ -44,9 +48,10 @@ PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_]+")
 def initialize(path: str | Path = CONFIG_FILE) -> tuple[tuple[Path, bool], ...]:
     """从示例创建 Terminal 配置与密钥文件，不覆盖已有文件。"""
     config = Path(path)
+    template_root = DATA_ROOT if getattr(sys, "frozen", False) else config.parent
     targets = (
-        (config.with_name(config.name + ".example"), config, 0o644),
-        (config.parent / ".env.example", config.parent / ".env", 0o600),
+        (template_root / (config.name + ".example"), config, 0o644),
+        (template_root / ".env.example", config.parent / ".env", 0o600),
     )
     for source, _, _ in targets:
         if not source.is_file():
