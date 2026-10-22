@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version without v prefix
+        description: Release version in vM.N format
         required: true
         type: string
   push:
@@ -39,7 +39,6 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ inputs.version || github.ref_name }}"
-          VERSION="${VERSION#v}"
           python dev/release/release.py --version "$VERSION" build all --platform linux
           python dev/release/release.py --version "$VERSION" verify
       - uses: actions/upload-artifact@v4
@@ -67,7 +66,7 @@ jobs:
       - name: Build Windows portable package
         shell: pwsh
         run: |
-          $version = "${{ inputs.version || github.ref_name }}" -replace '^v', ''
+          $version = "${{ inputs.version || github.ref_name }}"
           New-Item -ItemType Directory -Force "dev/release/dist/$version" | Out-Null
           $data = Get-ChildItem "$env:RUNNER_TEMP/linux-release" -Recurse -Filter "mcsp-data.zip" | Select-Object -First 1
           if (-not $data) { throw "linux-release does not contain mcsp-data.zip" }
@@ -91,7 +90,6 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ inputs.version || github.ref_name }}"
-          VERSION="${VERSION#v}"
           mkdir -p "dev/release/dist/$VERSION"
           find dev/release/collected -type f -path "*/$VERSION/*" -exec cp {} "dev/release/dist/$VERSION/" \;
           python dev/release/release.py --version "$VERSION" metadata
@@ -104,5 +102,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
           files: dev/release/dist/*/*

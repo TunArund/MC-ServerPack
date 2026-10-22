@@ -5,6 +5,16 @@
 上构建。本文同时保留后续本地 `modpack` 领域抽取的实施边界；尚未实现的命令不能仅凭
 出现在本文中就视为可用功能。
 
+## 版本命名
+
+项目仅使用大版本 `M` 与小版本 `N`，版本统一写为 `vM.N`，例如 `v1.0`、`v1.1`、
+`v2.0`。不使用补丁版本、日期版本、预发行后缀或构建元数据。`M`、`N` 均为非负整数，
+除数字 `0` 本身外不得包含前导零。
+
+Git tag、GitHub Release、`release.py --version`、`MCSP_VERSION`、`release.json`、
+`data/version.json` 以及 `dev/release/dist/<version>/` 目录都使用带 `v` 前缀的完整版本；
+发行脚本拒绝其他格式。小范围修改如需发布也递增 `N`，不另设补丁号。
+
 ## 目录边界
 
 所有发行相关源码、设计、暂存文件和产物统一放在 `dev/release/`，不得散落到 `dev/`
@@ -44,6 +54,8 @@ dev/release/dist/<version>/
 ```text
 MC-ServerPack/
 ├── mcsp[.exe]
+├── LICENSE
+├── NOTICE
 ├── lib/                Python 运行时与第三方依赖，低频更新
 ├── data/               可由 mcsp-data.zip 整体替换
 │   ├── mcsp.pyz        Terminal 业务代码
@@ -144,7 +156,8 @@ python dev/release/release.py metadata
 - `metadata`：生成包含版本、运行时兼容版本、commit、大小和 SHA-256 的 `release.json`。
 
 默认拒绝从脏工作树构建正式版本；本地调试可显式使用 `--allow-dirty`，manifest 必须标记
-`dirty: true`。版本由显式 `--version` 或 Git tag 提供，不能从当前日期隐式生成。
+`dirty: true`。版本由显式 `--version`、`MCSP_VERSION` 或当前 commit 的 Git tag 提供，
+不能从当前日期隐式生成，且必须符合 `vM.N`。
 
 ## 组件清单
 
@@ -154,7 +167,8 @@ Manager/Monitor 两棵独立发行树。不得包含真实 `config.yml`、`.env`
 
 Manager 包含 `manager.sh`、`src/`、`runtime/`、`modpacks/template/`、配置示例及空数据目录；
 Monitor 包含 `monitor.sh`、`src/`、Dockerfile、Compose、配置示例及空数据目录。两者均不得
-包含密钥、TLS 私钥、Job、传输缓存、QQ 目标、备份或运行日志。
+包含密钥、TLS 私钥、Job、传输缓存、QQ 目标、备份或运行日志。所有完整包、数据包和独立
+组件包均包含 Apache License 2.0 的 `LICENSE` 与 `NOTICE`。
 
 ## Windows Terminal
 

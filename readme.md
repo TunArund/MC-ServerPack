@@ -170,3 +170,10 @@ python3 dev/release/release.py --allow-dirty sync
 - [Monitor 架构](./dev/monitor.md)
 - [开发准则](./dev/agents.md)
 - [发行说明](./dev/release/readme.md)
+
+## License
+
+Copyright 2026 TunArund
+
+本项目使用 [Apache License 2.0](./LICENSE) 授权。分发源码或二进制时请保留
+[LICENSE](./LICENSE) 与 [NOTICE](./NOTICE) 中的版权和归属声明。

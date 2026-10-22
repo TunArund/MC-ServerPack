@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,7 @@ EXCLUDED_NAMES = {
 }
 SECRET_NAMES = {".env", "config.yml"}
 RUNTIME_FORMAT = 1
+VERSION_PATTERN = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 
 
 class ReleaseError(RuntimeError):
@@ -88,9 +90,8 @@ def current_version(explicit: str | None) -> str:
             value = git("describe", "--tags", "--exact-match")
         except ReleaseError as exc:
             raise ReleaseError("需要 --version、MCSP_VERSION 或当前 commit 的 Git tag") from exc
-    value = value.removeprefix("v")
-    if not value or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_" for character in value):
-        raise ReleaseError("版本只能包含字母、数字、点、减号和下划线")
+    if not VERSION_PATTERN.fullmatch(value):
+        raise ReleaseError("版本必须使用 vM.N 格式，例如 v1.0")
     return value
 
 
@@ -134,6 +135,7 @@ def _same(source: Path, destination: Path) -> None:
 
 def check_repository(*, allow_dirty: bool) -> None:
     required = (
+        "LICENSE", "NOTICE",
         "terminal/mcsp.sh", "terminal/config.yml.example", "terminal/.env.example",
         "manager/manager.sh", "manager/runtime/compose.yml",
         "monitor/monitor.sh", "monitor/compose.yml", "monitor/Dockerfile",
@@ -184,6 +186,8 @@ def stage_component(component: str, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    for name in ("LICENSE", "NOTICE"):
+        shutil.copy2(ROOT / name, destination / name)
     for name in (("logs", "modpacks") if component == "terminal" else ("data",)):
         (destination / name).mkdir(exist_ok=True)
 
@@ -257,6 +261,8 @@ def stage_data(context: Context, destination: Path) -> None:
     _build_application_archive(destination / "mcsp.pyz")
     for name in ("config.yml.example", ".env.example", "readme.md"):
         shutil.copy2(ROOT / "terminal" / name, destination / name)
+    for name in ("LICENSE", "NOTICE"):
+        shutil.copy2(ROOT / name, destination / name)
     shutil.copy2(ROOT / "lib/docker-install.sh", destination / "docker-install.sh")
     shutil.copytree(ROOT / "terminal/modpacks/template", destination / "modpacks/template")
     for component in ("manager", "monitor"):
@@ -350,6 +356,8 @@ def build_platform(context: Context, target_platform: str) -> Path:
     if not executable.is_file() or not (stage / "lib").is_dir():
         raise ReleaseError("PyInstaller 未生成模块化启动器与 lib 运行库")
     _extract_data(context, stage)
+    for name in ("LICENSE", "NOTICE"):
+        shutil.copy2(stage / "data" / name, stage / name)
     for name in ("logs", "modpacks", "state"):
         (stage / name).mkdir()
     suffix = "windows-x64.zip" if target_platform == "windows" else "linux-x64.tar.gz"
@@ -431,6 +439,20 @@ def verify(context: Context) -> None:
                 for path in target.rglob("*"):
                     if path.is_file() and path.name == ".env":
                         raise ReleaseError(f"发行包包含真实配置或密钥：{archive.name}:{path.name}")
+        license_roots = {
+            "mcsp-data.zip": "data",
+            "mcsp-manager.tar.gz": "manager",
+            "mcsp-monitor.tar.gz": "monitor",
+            "mcsp-linux-x64.tar.gz": "MC-ServerPack",
+            "mcsp-windows-x64.zip": "MC-ServerPack",
+        }
+        for name, target in extracted.items():
+            root_name = license_roots.get(name)
+            has_license_files = root_name and all(
+                (target / root_name / item).is_file() for item in ("LICENSE", "NOTICE")
+            )
+            if root_name and not has_license_files:
+                raise ReleaseError(f"发行包缺少 LICENSE 或 NOTICE：{name}")
         manager = extracted.get("mcsp-manager.tar.gz")
         monitor = extracted.get("mcsp-monitor.tar.gz")
         data = extracted.get("mcsp-data.zip")
